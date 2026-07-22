@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,8 +20,10 @@ from app.models import (
     CoursePackage,
     SourceIngestionJob,
     SourceIngestionRecord,
+    SourceStructureQuality,
 )
 from app.services.ai_model_catalog import default_text_selection
+from app.services.ai_logging import ai_usage_logger
 from app.services.open_notebook_adapter import (
     OpenNotebookAdapter,
     OpenNotebookAdapterError,
@@ -52,6 +55,12 @@ from app.services.source_structure_store import (
     SourceStructureStore,
     source_structure_store,
 )
+from app.services.repository_source import (
+    is_github_repository_url,
+    repository_source_processor,
+)
+from app.services.repository_store import RepositoryStore, repository_store
+from app.services.github_app import github_app_service
 from app.services.source_url_snapshot import (
     SourceUrlSnapshotError,
     fetch_url_source_snapshot,
@@ -146,6 +155,8 @@ class SourceIngestionService:
         directory_processor: SourceDirectoryProcessor | None = None,
         import_automation_runner: SourceImportAutomationRunner | None = None,
         media_transcription_provider: object | None = None,
+        repository_processor: object = repository_source_processor,
+        repository_data_store: RepositoryStore = repository_store,
     ) -> None:
         self.adapter = adapter
         self.open_notebook_backend = OpenNotebookSourceBackend(
@@ -168,6 +179,8 @@ class SourceIngestionService:
         self.directory_catalog_enabled = directory_processor is not None or structure_indexer is None
         self.import_automation_runner = import_automation_runner
         self.media_transcription_provider = media_transcription_provider
+        self.repository_processor = repository_processor
+        self.repository_store = repository_data_store
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
@@ -187,8 +200,21 @@ class SourceIngestionService:
         package: CoursePackage,
         source_uri: str,
         title: str = "",
+        catalog_model: AIModelSelection | None = None,
+        learning_goal: str = "",
+        supersedes_source_id: str | None = None,
     ) -> SourceIngestionRecord:
         normalized_uri = _validate_public_url(source_uri)
+        if is_github_repository_url(normalized_uri):
+            return self.queue_repository_source(
+                owner_user_id=owner_user_id,
+                package=package,
+                source_uri=normalized_uri,
+                title=title,
+                catalog_model=catalog_model,
+                learning_goal=learning_goal,
+                supersedes_source_id=supersedes_source_id,
+            )
         if is_youtube_url(normalized_uri):
             return self._save_youtube_transcript_source(
                 owner_user_id=owner_user_id,
@@ -245,6 +271,220 @@ class SourceIngestionService:
             }
         )
         return self._save_and_index(ready, job)
+
+    def queue_repository_source(
+        self,
+        *,
+        owner_user_id: str,
+        package: CoursePackage,
+        source_uri: str,
+        title: str = "",
+        catalog_model: AIModelSelection | None = None,
+        learning_goal: str = "",
+        supersedes_source_id: str | None = None,
+    ) -> SourceIngestionRecord:
+        if not github_app_service.enabled:
+            raise SourceIngestionError("GitHub repository sources are disabled.")
+        selected_model = catalog_model or default_text_selection()
+        record = SourceIngestionRecord(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            title=title.strip() or source_uri,
+            source_type="code_repository",
+            source_uri=source_uri,
+            file_name="repository.zip",
+            mime_type="application/vnd.openclass.code-repository+zip",
+            status="queued",
+            structure_status="pending",
+            metadata={
+                "adapter": "github_repository_v1",
+                "package_title": package.title,
+                "catalog_model": selected_model.model_dump(mode="json"),
+                "learning_goal": learning_goal.strip(),
+                "supersedes_source_id": supersedes_source_id,
+            },
+        )
+        queued = self.store.save_source(record)
+        self._start_job(
+            queued,
+            adapter="github_repository_v1",
+            phase="queued",
+            progress=5,
+        )
+        return self._attach_job(queued)
+
+    def process_repository_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord:
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None or record.source_type != "code_repository":
+            raise SourceIngestionError("Repository source not found.")
+        job = self.job_store.latest_for_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        ) or self._start_job(
+            record,
+            adapter="github_repository_v1",
+            phase="queued",
+            progress=5,
+        )
+        current = self.store.save_source(record.model_copy(update={"status": "fetching", "error": ""}))
+        activities: list[AgentActivityEvent] = []
+
+        def report_progress(phase: str, progress: int) -> None:
+            nonlocal current, job
+            status = "fetching" if progress < 48 else "parsing" if progress < 72 else "indexing"
+            current = self.store.save_source(current.model_copy(update={"status": status}))
+            job = self._update_job(
+                job,
+                record=current,
+                status=status,
+                progress=progress,
+                phase=phase,
+                agent_activity=activities,
+            )
+
+        def report_activity(event: AgentActivityEvent) -> None:
+            nonlocal job
+            activities.append(event)
+            job = self._update_job(
+                job,
+                record=current,
+                status="indexing",
+                progress=max(job.progress, 72),
+                phase="analyzing_repository",
+                agent_activity=activities,
+            )
+
+        raw_model = record.metadata.get("catalog_model")
+        started_at = time.monotonic()
+        try:
+            catalog_model = AIModelSelection.model_validate(raw_model)
+        except (TypeError, ValueError):
+            catalog_model = default_text_selection()
+        try:
+            result = self.repository_processor.process(
+                record=record,
+                source_uri=str(record.source_uri or ""),
+                learning_goal=str(record.metadata.get("learning_goal") or ""),
+                catalog_model=catalog_model,
+                supersedes_source_id=(
+                    str(record.metadata.get("supersedes_source_id"))
+                    if record.metadata.get("supersedes_source_id")
+                    else None
+                ),
+                progress_callback=report_progress,
+                activity_callback=report_activity,
+            )
+            self.repository_store.save_repository(
+                snapshot=result.snapshot,
+                files=result.files,
+                nodes=result.nodes,
+            )
+        except Exception as exc:
+            (workspace_state.UPLOAD_DIR / "sources" / f"{record.id}.repository.zip").unlink(missing_ok=True)
+            ai_usage_logger.log_event(
+                "repository_source_import_failed",
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_ingestion_id=source_id,
+                elapsed_seconds=round(time.monotonic() - started_at, 3),
+                error_type=type(exc).__name__,
+            )
+            failed = self.store.save_source(
+                self._failed_record(current, str(exc), phase="repository_import")
+            )
+            self._finish_job(
+                job,
+                record=failed,
+                status="failed",
+                progress=100,
+                phase="failed",
+                error=str(exc),
+            )
+            return self._attach_job(failed)
+
+        learning_nodes = [node for node in result.nodes if node.tree_kind == "learning"]
+        verified_learning_nodes = [node for node in learning_nodes if node.selectable]
+        readable_files = [item for item in result.files if item.text_status == "ready"]
+        analyzed_files = [item for item in readable_files if item.metadata.get("analyzed")]
+        coverage_ratio = len(analyzed_files) / len(readable_files) if readable_files else 0.0
+        ready = self.store.save_source(
+            current.model_copy(
+                update={
+                    "title": current.title if current.title != current.source_uri else f"{result.snapshot.owner}/{result.snapshot.name}",
+                    "file_name": f"{result.snapshot.name}-{result.snapshot.resolved_commit_sha[:12]}.zip",
+                    "size_bytes": result.archive_size,
+                    "status": "ready",
+                    "error": "",
+                    "structure_status": "ready",
+                    "structure_strategy": "code_repository_v1",
+                    "structure_quality": SourceStructureQuality(
+                        level="fully_verified" if learning_nodes and len(verified_learning_nodes) == len(learning_nodes) else "partially_verified" if verified_learning_nodes else "unverified",
+                        text_readiness="ready" if readable_files else "empty",
+                        confidence=1.0 if verified_learning_nodes else 0.5,
+                        total_chapter_count=len(learning_nodes),
+                        verified_chapter_count=len(verified_learning_nodes),
+                        unverified_chapter_count=len(learning_nodes) - len(verified_learning_nodes),
+                        verified_leaf_count=len(verified_learning_nodes),
+                        expected_leaf_count=len(learning_nodes),
+                        verified_ratio=(len(verified_learning_nodes) / len(learning_nodes) if learning_nodes else 0.0),
+                        boundary_valid_ratio=1.0,
+                        body_coverage_ratio=coverage_ratio,
+                        diagnostics=result.warnings,
+                    ),
+                    "metadata": {
+                        **current.metadata,
+                        "local_source_path": result.snapshot.archive_path,
+                        "repository_owner": result.snapshot.owner,
+                        "repository_name": result.snapshot.name,
+                        "repository_visibility": result.snapshot.visibility,
+                        "repository_commit_sha": result.snapshot.resolved_commit_sha,
+                        "repository_requested_ref": result.snapshot.requested_ref,
+                        "repository_scope_path": result.snapshot.scope_path,
+                        "repository_snapshot_hash": result.snapshot.archive_hash,
+                        "repository_manifest_hash": result.snapshot.manifest_hash,
+                        "repository_file_count": len(result.files),
+                        "repository_readable_file_count": len(readable_files),
+                        "repository_analyzed_file_count": len(analyzed_files),
+                        "repository_learning_coverage": coverage_ratio,
+                        "repository_warnings": result.warnings,
+                    },
+                }
+            )
+        )
+        ai_usage_logger.log_event(
+            "repository_source_import_completed",
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_ingestion_id=source_id,
+            elapsed_seconds=round(time.monotonic() - started_at, 3),
+            visibility=result.snapshot.visibility,
+            archive_bytes=result.archive_size,
+            total_file_count=len(result.files),
+            readable_file_count=len(readable_files),
+            analyzed_file_count=len(analyzed_files),
+            learning_node_count=len(learning_nodes),
+            verified_learning_node_count=len(verified_learning_nodes),
+            coverage_ratio=coverage_ratio,
+        )
+        self._finish_job(
+            job,
+            record=ready,
+            status="ready",
+            progress=100,
+            phase="ready",
+        )
+        return self._attach_job(ready)
 
     def add_file_source(
         self,
@@ -586,6 +826,8 @@ class SourceIngestionService:
             package_id=record.package_id,
             source_id=record.id,
         )
+        if record.source_type == "code_repository":
+            self.repository_store.delete_source(record.id)
         removed = self.store.delete_source(
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
@@ -646,6 +888,8 @@ class SourceIngestionService:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
+        if record.source_type == "code_repository":
+            raise SourceIngestionError("Repository snapshots are immutable; create a new snapshot instead.")
         normalized = content.strip()
         if not normalized:
             raise SourceIngestionError("Source content cannot be empty.")
@@ -761,6 +1005,8 @@ class SourceIngestionService:
             return self._retry_source_unlocked(current)
 
     def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+        if record.source_type == "code_repository":
+            raise SourceIngestionError("Repository snapshots are immutable; create a new snapshot instead.")
         record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:

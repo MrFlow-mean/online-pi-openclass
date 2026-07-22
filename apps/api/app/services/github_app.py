@@ -40,7 +40,7 @@ class GitHubAppService:
 
     @property
     def enabled(self) -> bool:
-        return (os.getenv("OPENCLASS_GITHUB_SOURCE_ENABLED", "0").strip().lower() not in {"0", "false", "off"})
+        return (os.getenv("OPENCLASS_GITHUB_SOURCE_ENABLED", "1").strip().lower() not in {"0", "false", "off"})
 
     @property
     def configured(self) -> bool:
