@@ -889,6 +889,7 @@ class ResourcePageStructure(BaseModel):
 ResourceSourceType = Literal[
     "local_file",
     "web_url",
+    "code_repository",
     "audio_file",
     "video_file",
     "video_url",
@@ -908,6 +909,7 @@ SourceStructureQualityLevel = Literal[
 ]
 SourceTextReadiness = Literal["unknown", "ready", "sparse", "very_sparse", "empty"]
 SourceStructureStrategy = Literal[
+    "code_repository_v1",
     "codex_directory_v1",
     "codex_catalog",
     "epub_navigation",
@@ -924,6 +926,7 @@ SourceStructureStrategy = Literal[
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
 SourceChapterMappingStatus = Literal["verified", "partial", "unverified", "unmapped"]
 SourceRangeKind = Literal[
+    "file_lines",
     "pdf_pages",
     "epub_spine",
     "docx_paragraphs",
@@ -937,7 +940,7 @@ SourceCatalogRunStatus = Literal["queued", "running", "succeeded", "failed"]
 SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
 SourceVisualAnchorStatus = Literal["verified", "unverified"]
 SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
-SourceScopeKind = Literal["source", "chapter", "page_range"]
+SourceScopeKind = Literal["source", "chapter", "page_range", "repository_node"]
 SourceQueryScopeMode = Literal[
     "chapter",
     "page_range",
@@ -967,15 +970,17 @@ class SourceRange(BaseModel):
     def validate_range(self) -> "SourceRange":
         if not self.end_inclusive:
             raise ValueError("SourceRange.end must be inclusive.")
-        if self.kind == "pdf_pages":
+        if self.kind in {"pdf_pages", "file_lines"}:
             if not isinstance(self.start, int) or isinstance(self.start, bool):
-                raise ValueError("PDF source ranges require an integer start page.")
+                raise ValueError("Page and file-line ranges require an integer start.")
             if not isinstance(self.end, int) or isinstance(self.end, bool):
-                raise ValueError("PDF source ranges require an integer end page.")
+                raise ValueError("Page and file-line ranges require an integer end.")
             if self.start < 1 or self.end < 1:
-                raise ValueError("PDF source ranges use 1-based physical pages.")
+                raise ValueError("Page and file-line ranges use 1-based positions.")
             if self.end < self.start:
                 raise ValueError("SourceRange.end must not precede SourceRange.start.")
+            if self.kind == "file_lines" and not self.container.strip():
+                raise ValueError("File-line ranges require a repository path container.")
         elif isinstance(self.start, int) and isinstance(self.end, int) and self.end < self.start:
             raise ValueError("SourceRange.end must not precede SourceRange.start.")
         return self
@@ -1126,6 +1131,127 @@ class SourceIngestionRecord(BaseModel):
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+RepositoryTreeKind = Literal["project", "learning"]
+RepositoryNodeKind = Literal["root", "directory", "file", "module", "flow", "entrypoint", "concept"]
+RepositoryConnectionStatus = Literal["connected", "revoked", "suspended", "disconnected"]
+
+
+class RepositorySnapshot(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("reposnapshot"))
+    owner_user_id: str
+    package_id: str
+    source_ingestion_id: str
+    provider: str = "github"
+    repository_id: int | None = None
+    owner: str
+    name: str
+    visibility: str = "public"
+    requested_ref: str = ""
+    resolved_commit_sha: str
+    scope_path: str = ""
+    scope_kind: Literal["repository", "directory", "file"] = "repository"
+    default_branch: str = ""
+    archive_path: str = Field(default="", exclude=True)
+    archive_hash: str
+    manifest_hash: str
+    license_spdx: str = ""
+    supersedes_source_id: str | None = None
+    created_at: str = Field(default_factory=now_iso)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RepositoryFileEntry(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("repofile"))
+    source_ingestion_id: str
+    path: str
+    blob_sha: str = ""
+    content_hash: str = ""
+    size_bytes: int = 0
+    line_count: int = 0
+    language: str = ""
+    text_status: Literal["ready", "binary", "oversized", "unsupported", "unreadable"] = "ready"
+    skip_reason: str = ""
+    archive_entry: str = Field(default="", exclude=True)
+    order_index: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RepositoryNodeEvidence(BaseModel):
+    file_id: str
+    path: str
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    reason: str = ""
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_lines(self) -> "RepositoryNodeEvidence":
+        if self.line_end < self.line_start:
+            raise ValueError("Repository evidence end line must not precede its start line.")
+        return self
+
+
+class RepositoryMapNode(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("reponode"))
+    source_ingestion_id: str
+    tree_kind: RepositoryTreeKind
+    node_kind: RepositoryNodeKind
+    parent_id: str | None = None
+    title: str
+    path: str = ""
+    description: str = ""
+    level: int = Field(default=0, ge=0)
+    order_index: int = 0
+    selectable: bool = False
+    coverage_status: Literal["complete", "partial", "unexamined"] = "unexamined"
+    evidence: list[RepositoryNodeEvidence] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RepositoryMapView(BaseModel):
+    source: SourceIngestionRecord
+    snapshot: RepositorySnapshot
+    project_nodes: list[RepositoryMapNode] = Field(default_factory=list)
+    learning_nodes: list[RepositoryMapNode] = Field(default_factory=list)
+    analyzed_file_count: int = 0
+    readable_file_count: int = 0
+    total_file_count: int = 0
+    coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GitHubInstallationView(BaseModel):
+    installation_id: int
+    account_id: int | None = None
+    account_login: str = ""
+    account_type: str = ""
+    repository_selection: str = "selected"
+    status: RepositoryConnectionStatus = "connected"
+    permissions: dict[str, str] = Field(default_factory=dict)
+    repository_count: int = 0
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class GitHubConnectionView(BaseModel):
+    enabled: bool
+    configured: bool
+    connected: bool
+    installations: list[GitHubInstallationView] = Field(default_factory=list)
+    message: str = ""
+
+
+class GitHubRepositoryView(BaseModel):
+    id: int
+    full_name: str
+    owner: str
+    name: str
+    private: bool = False
+    default_branch: str = ""
+    html_url: str
+    description: str = ""
+    installation_id: int | None = None
 
 
 class SourceUrlImportRequest(BaseModel):
@@ -1470,6 +1596,8 @@ class SelectionRef(BaseModel):
     catalog_version: int | None = Field(default=None, ge=0)
     source_content_hash: str | None = None
     source_scope_kind: SourceScopeKind = "chapter"
+    source_repository_node_id: str | None = None
+    source_repository_tree_kind: RepositoryTreeKind | None = None
 
 
 class SourceQueryRef(BaseModel):
