@@ -71,6 +71,21 @@ def resolve_source_grounded_board_plan(
     """
     if selection is None or selection.kind != "source":
         return None
+    if selection.source_scope_kind == "repository_node":
+        from app.services.repository_grounding import (
+            RepositoryGroundingError,
+            resolve_repository_grounded_board_plan,
+        )
+
+        try:
+            return resolve_repository_grounded_board_plan(
+                owner_user_id=owner_user_id,
+                lesson=lesson,
+                selection=selection,
+                query=query,
+            )
+        except RepositoryGroundingError as exc:
+            raise SourceGroundedBoardError(str(exc)) from exc
     if not selection.source_ingestion_id:
         raise SourceGroundedBoardError("这份资料引用缺少可验证的章节位置，请重新从资料目录中选择章节。")
     is_whole_source = selection.source_scope_kind == "source"
