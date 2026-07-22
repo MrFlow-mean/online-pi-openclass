@@ -539,6 +539,7 @@ export interface ResourceSourceUnit {
 }
 
 export type ResourceSourceType =
+  | "code_repository"
   | "local_file"
   | "web_url"
   | "audio_file"
@@ -560,6 +561,7 @@ export type SourceStructureQualityLevel =
   | "search_only";
 export type SourceTextReadiness = "unknown" | "ready" | "sparse" | "very_sparse" | "empty";
 export type SourceStructureStrategy =
+  | "code_repository_v1"
   | "codex_directory_v1"
   | "codex_catalog"
   | "epub_navigation"
@@ -745,6 +747,7 @@ export interface SourceCatalogEvidence {
 }
 
 export type SourceRangeKind =
+  | "file_lines"
   | "pdf_pages"
   | "epub_spine"
   | "docx_paragraphs"
@@ -1203,10 +1206,113 @@ export interface SelectionRef {
   source_locator?: string;
   source_page_start?: number | null;
   source_page_end?: number | null;
-  source_scope_kind?: "source" | "chapter" | "page_range";
+  source_scope_kind?: "source" | "chapter" | "page_range" | "repository_node";
+  source_repository_node_id?: string | null;
+  source_repository_tree_kind?: RepositoryTreeKind | null;
   source_range?: SourceRange | null;
   catalog_version?: number | null;
   source_content_hash?: string;
+}
+
+export type RepositoryTreeKind = "project" | "learning";
+export type RepositoryNodeKind =
+  | "root"
+  | "directory"
+  | "file"
+  | "module"
+  | "flow"
+  | "entrypoint"
+  | "concept";
+
+export interface RepositoryNodeEvidence {
+  file_id: string;
+  path: string;
+  line_start: number;
+  line_end: number;
+  reason: string;
+  confidence: number;
+}
+
+export interface RepositoryMapNode {
+  id: string;
+  source_ingestion_id: string;
+  tree_kind: RepositoryTreeKind;
+  node_kind: RepositoryNodeKind;
+  parent_id?: string | null;
+  title: string;
+  path: string;
+  description: string;
+  level: number;
+  order_index: number;
+  selectable: boolean;
+  coverage_status: "complete" | "partial" | "unexamined";
+  evidence: RepositoryNodeEvidence[];
+  metadata: Record<string, unknown>;
+}
+
+export interface RepositorySnapshot {
+  id: string;
+  source_ingestion_id: string;
+  provider: string;
+  repository_id?: number | null;
+  owner: string;
+  name: string;
+  visibility: string;
+  requested_ref: string;
+  resolved_commit_sha: string;
+  scope_path: string;
+  scope_kind: "repository" | "directory" | "file";
+  default_branch: string;
+  archive_hash: string;
+  manifest_hash: string;
+  license_spdx: string;
+  supersedes_source_id?: string | null;
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface RepositoryMapView {
+  source: SourceIngestionRecord;
+  snapshot: RepositorySnapshot;
+  project_nodes: RepositoryMapNode[];
+  learning_nodes: RepositoryMapNode[];
+  analyzed_file_count: number;
+  readable_file_count: number;
+  total_file_count: number;
+  coverage_ratio: number;
+  warnings: string[];
+}
+
+export interface GitHubInstallationView {
+  installation_id: number;
+  account_id?: number | null;
+  account_login: string;
+  account_type: string;
+  repository_selection: string;
+  status: "connected" | "revoked" | "suspended" | "disconnected";
+  permissions: Record<string, string>;
+  repository_count: number;
+  updated_at: string;
+}
+
+export interface GitHubConnectionView {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  installations: GitHubInstallationView[];
+  message: string;
+}
+
+export interface GitHubRepositoryView {
+  id: number;
+  full_name: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  default_branch: string;
+  html_url: string;
+  description: string;
+  installation_id?: number | null;
 }
 
 export type FormulaInkAction = "reference" | "replace";

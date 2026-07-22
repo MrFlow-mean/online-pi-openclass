@@ -32,6 +32,9 @@ import type {
   AIModelSelection,
   AccountActionResponse,
   PasswordResetRequest,
+  GitHubConnectionView,
+  GitHubRepositoryView,
+  RepositoryMapView,
   SourceCatalogBatchView,
   SourceCatalogView,
   SourceIngestionRecord,
@@ -818,6 +821,34 @@ export const api = {
       body: formData,
     });
   },
+  getGitHubConnectionStatus() {
+    return request<GitHubConnectionView>("/api/integrations/github/status");
+  },
+  startGitHubInstall(nextPath = "/studio") {
+    return request<{ install_url: string }>("/api/integrations/github/install/start", {
+      method: "POST",
+      body: JSON.stringify({ next_path: nextPath }),
+    });
+  },
+  listGitHubRepositories() {
+    return request<GitHubRepositoryView[]>("/api/integrations/github/repositories");
+  },
+  disconnectGitHub() {
+    return request<GitHubConnectionView>("/api/integrations/github/connection", {
+      method: "DELETE",
+    });
+  },
+  getRepositoryMap(packageId: string, sourceId: string) {
+    return request<RepositoryMapView>(
+      `/api/packages/${packageId}/sources/${sourceId}/repository-map`
+    );
+  },
+  refreshRepositorySource(packageId: string, sourceId: string) {
+    return request<SourceIngestionRecord>(
+      `/api/packages/${packageId}/sources/${sourceId}/repository-refresh`,
+      { method: "POST" }
+    );
+  },
   async importPackageSource(
     packageId: string,
     payload: {
@@ -826,6 +857,7 @@ export const api = {
       text?: string;
       title?: string;
       catalogModel?: AIModelSelection | null;
+      learningGoal?: string;
     },
     options: { onUploadProgress?: (progress: number) => void } = {}
   ) {
@@ -844,6 +876,9 @@ export const api = {
     }
     if (payload.catalogModel) {
       formData.append("catalog_model", JSON.stringify(payload.catalogModel));
+    }
+    if (payload.learningGoal) {
+      formData.append("learning_goal", payload.learningGoal);
     }
     if (payload.file && typeof XMLHttpRequest !== "undefined") {
       return new Promise<SourceIngestionRecord>((resolve, reject) => {

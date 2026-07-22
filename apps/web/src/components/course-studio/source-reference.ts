@@ -3,6 +3,8 @@ import type {
   SourceCatalogView,
   SourceChapter,
   SourceIngestionRecord,
+  RepositoryMapNode,
+  RepositoryMapView,
   SourceRange,
 } from "@/types";
 import { sourceRangeDisplayLabel } from "@/lib/source-range-display";
@@ -20,6 +22,29 @@ export function createOpenNotebookSourceSelection(source: SourceIngestionRecord)
 }
 
 export const createWholeSourceSelection = createOpenNotebookSourceSelection;
+
+export function createRepositoryNodeSelection(
+  source: SourceIngestionRecord,
+  map: RepositoryMapView,
+  node: RepositoryMapNode
+): SelectionRef {
+  const location = node.path || node.title;
+  return {
+    kind: "source",
+    excerpt: `《${source.title}》 · ${node.title} · ${map.snapshot.resolved_commit_sha.slice(0, 12)}`,
+    heading_path: [node.title],
+    source_ingestion_id: source.id,
+    source_title: source.title,
+    source_uri: source.source_uri,
+    source_chapter_id: node.id,
+    source_chapter_title: node.title,
+    source_locator: location,
+    source_scope_kind: "repository_node",
+    source_repository_node_id: node.id,
+    source_repository_tree_kind: node.tree_kind,
+    source_content_hash: map.snapshot.manifest_hash,
+  };
+}
 
 export function createSourceChapterSelection(
   source: SourceIngestionRecord,
