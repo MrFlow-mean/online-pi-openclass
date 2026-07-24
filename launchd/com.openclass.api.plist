@@ -9,15 +9,17 @@
   <key>RunAtLoad</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>__LAUNCH_DIR__</string>
+  <string>__LAUNCH_PARENT__</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>cd "__LAUNCH_DIR__" &amp;&amp; while true; do echo "[openclass-api] $(date '+%Y-%m-%d %H:%M:%S') starting FastAPI server on :8000"; .venv/bin/python -m uvicorn app.main:app --app-dir apps/api; code=$?; echo "[openclass-api] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
+    <string>-c</string>
+    <string>cd "__LAUNCH_DIR__" &amp;&amp; while true; do echo "[openclass-api] $(date '+%Y-%m-%d %H:%M:%S') starting FastAPI server on :8000"; .venv/bin/python -m uvicorn app.main:app --app-dir apps/api --env-file "__OPENCLASS_ENV_FILE__"; code=$?; echo "[openclass-api] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>OPENCLASS_ENV_FILE</key>
+    <string>__OPENCLASS_ENV_FILE__</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

@@ -94,6 +94,20 @@ npm run dev              # 同时启动前后端
 
 也可以双击 `start-ai-board.command`，它会通过本地守护进程启动前后端，并打开 `launcher/personal-home.html`。日常长时间使用优先用这个入口。
 
+使用 LaunchAgent（macOS 后台启动服务）长期运行时，先安装守护配置：
+
+```bash
+./scripts/install-launch-agents.sh
+```
+
+安装器会在首次运行时把当前 `.env` 复制到 `~/.config/openclass/runtime.env`，后续 API 直接读取这份工作树外配置。切换 Git worktree（Git 工作树）时必须使用：
+
+```bash
+./scripts/switch-local-runtime.sh /absolute/path/to/openclass-worktree
+```
+
+切换脚本会先停止服务，再替换 `.openclass-launch`，最后验证 Web、API 和认证提供方；健康检查或已有认证能力减少时会自动回滚。不要直接改 `.openclass-launch` 符号链接，也不要在多个工作树中复制包含密钥的 `.env`。
+
 生产或长期运行时，建议把数据目录指到稳定持久化路径：
 
 ```bash

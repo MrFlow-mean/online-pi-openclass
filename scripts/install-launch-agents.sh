@@ -4,7 +4,10 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LAUNCH_DIR="$HOME/.openclass-launch"
+LAUNCH_PARENT="$(dirname "$LAUNCH_DIR")"
 LAUNCH_BIN_DIR="$HOME/.openclass-launch-bin"
+RUNTIME_CONFIG_DIR="${OPENCLASS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/openclass}"
+RUNTIME_ENV_FILE="${OPENCLASS_ENV_FILE:-$RUNTIME_CONFIG_DIR/runtime.env}"
 WEB_RUNNER="$LAUNCH_BIN_DIR/keep-web-up.sh"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 WEB_LABEL="com.openclass.web"
@@ -16,7 +19,26 @@ API_TARGET="$LAUNCH_AGENTS_DIR/$API_LABEL.plist"
 
 mkdir -p "$LAUNCH_AGENTS_DIR"
 mkdir -p "$LAUNCH_BIN_DIR"
-ln -sfn "$PROJECT_DIR" "$LAUNCH_DIR"
+mkdir -p "$(dirname "$RUNTIME_ENV_FILE")"
+if [[ ! -e "$RUNTIME_ENV_FILE" ]]; then
+  if [[ -f "$PROJECT_DIR/.env" ]]; then
+    install -m 600 "$PROJECT_DIR/.env" "$RUNTIME_ENV_FILE"
+  else
+    install -m 600 /dev/null "$RUNTIME_ENV_FILE"
+  fi
+else
+  chmod 600 "$RUNTIME_ENV_FILE"
+fi
+if [[ -e "$LAUNCH_DIR" && ! -L "$LAUNCH_DIR" ]]; then
+  echo "Launch path exists and is not a symbolic link: $LAUNCH_DIR" >&2
+  exit 1
+fi
+launchctl bootout "gui/$(id -u)/$WEB_LABEL" >/dev/null 2>&1 || true
+launchctl bootout "gui/$(id -u)/$API_LABEL" >/dev/null 2>&1 || true
+# launchctl returns before the old shells have always released their working directory.
+sleep 1
+[[ ! -L "$LAUNCH_DIR" ]] || unlink "$LAUNCH_DIR"
+ln -s "$PROJECT_DIR" "$LAUNCH_DIR"
 cp "$PROJECT_DIR/scripts/keep-web-up.sh" "$WEB_RUNNER"
 chmod +x "$WEB_RUNNER"
 
@@ -46,10 +68,11 @@ install_agent() {
   sed \
     -e "s#__PROJECT_DIR__#$PROJECT_DIR#g" \
     -e "s#__LAUNCH_DIR__#$LAUNCH_DIR#g" \
+    -e "s#__LAUNCH_PARENT__#$LAUNCH_PARENT#g" \
     -e "s#__WEB_RUNNER__#$WEB_RUNNER#g" \
+    -e "s#__OPENCLASS_ENV_FILE__#$RUNTIME_ENV_FILE#g" \
     -e "s#__OPENCLASS_RUNTIME_PATH__#$RUNTIME_PATH#g" \
     "$template" > "$target"
-  launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$target"
   launchctl enable "gui/$(id -u)/$label"
   launchctl kickstart -k "gui/$(id -u)/$label"

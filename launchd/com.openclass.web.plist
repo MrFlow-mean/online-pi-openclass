@@ -9,7 +9,7 @@
   <key>RunAtLoad</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>__LAUNCH_DIR__</string>
+  <string>__LAUNCH_PARENT__</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
@@ -20,7 +20,7 @@
     <key>PATH</key>
     <string>__OPENCLASS_RUNTIME_PATH__</string>
     <key>OPENCLASS_PROJECT_DIR</key>
-    <string>__PROJECT_DIR__</string>
+    <string>__LAUNCH_DIR__</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/tmp/openclass-web.log</string>
