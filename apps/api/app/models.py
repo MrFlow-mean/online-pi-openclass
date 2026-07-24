@@ -1828,7 +1828,8 @@ class BatchLessonActionRequest(BaseModel):
 
 
 class GenerateLessonRequest(BaseModel):
-    topic: str
+    topic: str | None = None
+    timezone: str | None = None
     branch_from_lesson_id: str | None = None
     target_package_id: str | None = None
     start_blank: bool = False

@@ -38,7 +38,6 @@ import {
   type RealtimeTranscriptUpdate,
 } from "@/hooks/course-studio/use-realtime-voice";
 import { useWorkspaceActions } from "@/hooks/course-studio/use-workspace-actions";
-import { InlineNameForm } from "@/components/inline-name-form";
 import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
 import type {
   AIModelOption,
@@ -133,8 +132,6 @@ export function CourseStudio() {
     label: "调整课程工作台辅助宽度",
   });
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
-  const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
-
   const boardDraft = useBoardDraft({
     activeLesson,
     setError,
@@ -608,10 +605,9 @@ export function CourseStudio() {
     resetTransientUi: resetTransientUiForLessonSwitch,
     setError,
     setBusyAction,
-    onLessonCreated: () => setIsCreatingLessonInline(false),
   });
   const {
-    handleCreateLessonFromName,
+    handleCreateLesson,
     handleCloseLesson,
     handleSelectLesson,
   } = workspaceActions;
@@ -668,7 +664,6 @@ export function CourseStudio() {
       texts={studioTexts}
       lessons={openLessons}
       activeLessonId={activeLesson?.id ?? null}
-      isCreatingLessonInline={isCreatingLessonInline}
       isBusyCreating={busyAction === "generate"}
       onSelectLesson={(lessonId) => {
         if (lessonMerge.isActive) {
@@ -684,15 +679,13 @@ export function CourseStudio() {
         }
         void handleCloseLesson(lessonId);
       }}
-      onStartCreateLesson={() => {
+      onCreateLesson={() => {
         if (lessonMerge.isActive) {
           setError("合并期间不能创建新课程。");
           return;
         }
-        setIsCreatingLessonInline(true);
+        void handleCreateLesson();
       }}
-      onCancelCreateLesson={() => setIsCreatingLessonInline(false)}
-      onCreateLesson={handleCreateLessonFromName}
     />
   );
   const selectionPopoverNode = (
@@ -729,30 +722,18 @@ export function CourseStudio() {
               {studioTexts.emptyPackageBody}
             </p>
             <div className="mt-8 flex justify-center">
-              {isCreatingLessonInline ? (
-                <InlineNameForm
-                  label={studioTexts.firstPageNameLabel}
-                  placeholder={studioTexts.lessonNamePlaceholder}
-                  confirmLabel={studioTexts.confirm}
-                  cancelLabel={studioTexts.cancel}
-                  isBusy={busyAction === "generate"}
-                  className="w-full max-w-sm"
-                  onCancel={() => setIsCreatingLessonInline(false)}
-                  onSubmit={handleCreateLessonFromName}
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTopCollapsed(false);
-                    setIsCreatingLessonInline(true);
-                  }}
-                  className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
-                >
-                  <Plus className="h-4 w-4" />
-                  {studioTexts.createFirstPage}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setTopCollapsed(false);
+                  void handleCreateLesson();
+                }}
+                disabled={busyAction === "generate"}
+                className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:bg-stone-500"
+              >
+                <Plus className="h-4 w-4" />
+                {studioTexts.createFirstPage}
+              </button>
             </div>
           </div>
         </section>

@@ -16,6 +16,9 @@ from app.services.renderer import build_document_for_topic_render
 from app.services.rich_document import build_document
 
 
+UNTITLED_LESSON_TITLE = "无标题"
+
+
 def slugify(value: str) -> str:
     lowered = re.sub(r"\s+", "-", value.strip().lower())
     lowered = re.sub(r"[^a-z0-9\-\u4e00-\u9fff]+", "-", lowered)
@@ -61,7 +64,12 @@ def build_teaching_guide(
     )
 
 
-def _initial_history(document: BoardDocument) -> LessonHistoryGraph:
+def _initial_history(
+    document: BoardDocument,
+    *,
+    auto_title_pending: bool = False,
+    auto_title_timezone: str | None = None,
+) -> LessonHistoryGraph:
     commit = CommitRecord(
         label="Initial document",
         message=f"Generated starter rich document for {document.title}",
@@ -74,6 +82,8 @@ def _initial_history(document: BoardDocument) -> LessonHistoryGraph:
             "history_node_summary": f"Generated starter rich document for {document.title}",
             "active_requirement_sheet_after": None,
             "active_board_task_sheet_after": None,
+            "auto_title_pending": auto_title_pending,
+            "auto_title_timezone": auto_title_timezone,
         },
     )
     return LessonHistoryGraph(
@@ -111,7 +121,12 @@ def create_lesson(
     )
 
 
-def create_empty_lesson(title: str) -> Lesson:
+def create_empty_lesson(
+    title: str,
+    *,
+    auto_title_pending: bool = False,
+    auto_title_timezone: str | None = None,
+) -> Lesson:
     clean_title = _clean_topic(title)
     document = build_document(title=clean_title)
     lesson_id = new_id("lesson")
@@ -125,5 +140,17 @@ def create_empty_lesson(title: str) -> Lesson:
         board_document=document,
         learning_requirements=None,
         teaching_guide=guide,
-        history_graph=_initial_history(document),
+        history_graph=_initial_history(
+            document,
+            auto_title_pending=auto_title_pending,
+            auto_title_timezone=auto_title_timezone,
+        ),
+    )
+
+
+def create_untitled_lesson(*, timezone_name: str | None = None) -> Lesson:
+    return create_empty_lesson(
+        UNTITLED_LESSON_TITLE,
+        auto_title_pending=True,
+        auto_title_timezone=timezone_name,
     )

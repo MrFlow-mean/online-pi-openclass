@@ -82,6 +82,32 @@ def test_generate_lesson_without_target_uses_standalone_pool(monkeypatch) -> Non
     assert saved_workspaces == [workspace]
 
 
+def test_generate_lesson_without_topic_creates_pending_untitled_page(monkeypatch) -> None:
+    standalone_package = CoursePackage(id="course_standalone", title="单独课程", summary="", lessons=[])
+    workspace = WorkspaceState(packages=[standalone_package], active_package_id=standalone_package.id)
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda _user_id: (workspace, 0),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = workspace_router.generate_lesson(
+        GenerateLessonRequest(timezone="Asia/Shanghai"),
+        user=_user(),
+    )
+
+    lesson = standalone_package.lessons[0]
+    assert lesson.title == "无标题"
+    assert lesson.history_graph.commits[0].metadata["auto_title_pending"] is True
+    assert lesson.history_graph.commits[0].metadata["auto_title_timezone"] == "Asia/Shanghai"
+    assert response.active_lesson_id == lesson.id
+
+
 def test_generate_lesson_with_target_keeps_course_package_content_isolated(monkeypatch) -> None:
     standalone_package = CoursePackage(id="course_standalone", title="单独课程", summary="", lessons=[])
     course_package = CoursePackage(id="course_package", title="课程包", summary="", lessons=[])

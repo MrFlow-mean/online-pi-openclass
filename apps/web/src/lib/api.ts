@@ -697,7 +697,6 @@ export const api = {
     return response.json() as Promise<SourceIngestionRecord>;
   },
   generateLesson(
-    topic: string,
     options: {
       branchFromLessonId?: string | null;
       startBlank?: boolean;
@@ -707,7 +706,7 @@ export const api = {
     return request<CoursePackage>("/api/lessons/generate", {
       method: "POST",
       body: JSON.stringify({
-        topic,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         branch_from_lesson_id: options.branchFromLessonId ?? null,
         target_package_id: options.targetPackageId ?? null,
         start_blank: options.startBlank ?? false,

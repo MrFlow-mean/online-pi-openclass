@@ -40,7 +40,7 @@ from app.services.ai_execution_adapter import (
     DeepSeekAIExecutionAdapter,
     build_ai_execution_adapter,
 )
-from app.services.ai_model_catalog import build_model_catalog
+from app.services.ai_model_catalog import build_model_catalog, resolve_text_model_selection
 from app.services.blank_board_intake import process_blank_board_turn
 from app.services.board_visual_insertion import (
     BoardInsertionPlan,
@@ -525,24 +525,11 @@ def _codex_model(request: ChatRequest, *, user_id: str) -> str:
 
 
 def _text_model_selection(request: ChatRequest, *, user_id: str) -> AIModelSelection:
-    if request.text_model is not None:
-        selected_model = request.text_model.model.strip()
-        if request.text_model.provider in {"openai_codex", "deepseek"} and selected_model:
-            return request.text_model.model_copy(update={"model": selected_model})
-        raise RuntimeError(f"Unsupported text model provider: {request.text_model.provider}")
-    try:
-        default_selection = build_model_catalog(user_id).defaults["text"]
-        if isinstance(default_selection, AIModelSelection):
-            return default_selection
-        return AIModelSelection(
-            provider=getattr(default_selection, "provider", "openai_codex"),
-            model=str(getattr(default_selection, "model", DEFAULT_CODEX_MODEL)),
-        )
-    except Exception:
-        return AIModelSelection(
-            provider="openai_codex",
-            model=_codex_model(request, user_id=user_id),
-        )
+    return resolve_text_model_selection(
+        request.text_model,
+        user_id=user_id,
+        catalog_builder=build_model_catalog,
+    )
 
 
 def _codex_reasoning_effort(request: ChatRequest) -> str | None:

@@ -89,9 +89,21 @@ async function createPackageAndLesson(page: Page, unique: number) {
 
   await page.goto("/studio");
   await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+  await page.route(
+    "**/api/lessons/generate",
+    async (route) => {
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.continue({
+        postData: JSON.stringify({ ...payload, topic: `板书原图页面 ${unique}` }),
+        headers: {
+          ...route.request().headers(),
+          "content-type": "application/json",
+        },
+      });
+    },
+    { times: 1 }
+  );
   await page.getByRole("button", { name: "新建第一页" }).click();
-  await page.getByLabel("第一页名称").fill(`板书原图页面 ${unique}`);
-  await page.getByLabel("确认").click();
   await expect(page.locator(".ProseMirror")).toBeVisible();
 }
 

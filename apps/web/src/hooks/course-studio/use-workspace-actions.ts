@@ -18,7 +18,6 @@ type UseWorkspaceActionsOptions = {
   resetTransientUi: () => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setBusyAction: Dispatch<SetStateAction<string | null>>;
-  onLessonCreated: () => void;
 };
 
 export function useWorkspaceActions({
@@ -32,7 +31,6 @@ export function useWorkspaceActions({
   resetTransientUi,
   setError,
   setBusyAction,
-  onLessonCreated,
 }: UseWorkspaceActionsOptions) {
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
 
@@ -40,14 +38,11 @@ export function useWorkspaceActions({
     activeLessonIdRef.current = activeLesson?.id ?? null;
   }, [activeLesson?.id]);
 
-  async function saveGeneratedLesson(topic: string): Promise<boolean> {
-    if (!topic.trim()) {
-      return false;
-    }
+  async function saveGeneratedLesson(): Promise<boolean> {
     const initialActiveLessonId = activeLesson?.id ?? null;
     setBusyAction("generate");
     try {
-      const nextPackage = await api.generateLesson(topic.trim(), {
+      const nextPackage = await api.generateLesson({
         branchFromLessonId: coursePackage?.is_standalone ? null : activeLesson?.id,
         startBlank: true,
         targetPackageId: coursePackage?.id,
@@ -71,15 +66,11 @@ export function useWorkspaceActions({
     }
   }
 
-  async function handleCreateLessonFromName(topic: string) {
+  async function handleCreateLesson() {
     if (!(await flushAutoSave("create-lesson"))) {
       return false;
     }
-    const isCreated = await saveGeneratedLesson(topic);
-    if (isCreated) {
-      onLessonCreated();
-    }
-    return isCreated;
+    return saveGeneratedLesson();
   }
 
   async function handleOpenLesson(lessonId: string) {
@@ -124,7 +115,7 @@ export function useWorkspaceActions({
   }
 
   return {
-    handleCreateLessonFromName,
+    handleCreateLesson,
     handleOpenLesson,
     handleCloseLesson,
     handleSelectLesson,

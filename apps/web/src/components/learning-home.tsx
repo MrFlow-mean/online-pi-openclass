@@ -443,8 +443,14 @@ export function LearningHome() {
     setLessonMenuState(null);
     setLessonMoveMenuState(null);
     try {
-      const payload = await api.openPackage(standalonePackage.id);
+      await api.openPackage(standalonePackage.id);
+      const createdPackage = await api.generateLesson({
+        targetPackageId: standalonePackage.id,
+        startBlank: true,
+      });
+      const payload = await api.getWorkspace();
       setWorkspaceState(payload);
+      setSelectedLessonId(createdPackage.active_lesson_id ?? null);
       setError(null);
       router.push("/studio");
     } catch (actionError) {

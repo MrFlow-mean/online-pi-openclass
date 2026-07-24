@@ -1,9 +1,8 @@
 "use client";
 
 import clsx from "clsx";
-import { Plus, X } from "lucide-react";
+import { LoaderCircle, Plus, X } from "lucide-react";
 
-import { InlineNameForm } from "@/components/inline-name-form";
 import type { StudioUiBundle } from "@/lib/i18n/product-ui";
 import type { Lesson } from "@/types";
 
@@ -11,50 +10,37 @@ type LessonTabsProps = {
   texts: StudioUiBundle;
   lessons: Lesson[];
   activeLessonId: string | null;
-  isCreatingLessonInline: boolean;
   isBusyCreating: boolean;
   onSelectLesson: (lessonId: string) => void;
   onCloseLesson: (lessonId: string) => void;
-  onStartCreateLesson: () => void;
-  onCancelCreateLesson: () => void;
-  onCreateLesson: (topic: string) => Promise<boolean>;
+  onCreateLesson: () => void;
 };
 
 export function LessonTabs({
   texts,
   lessons,
   activeLessonId,
-  isCreatingLessonInline,
   isBusyCreating,
   onSelectLesson,
   onCloseLesson,
-  onStartCreateLesson,
-  onCancelCreateLesson,
   onCreateLesson,
 }: LessonTabsProps) {
   return (
     <nav className="flex min-w-0 items-center overflow-x-auto custom-scrollbar">
       <button
         type="button"
-        onClick={onStartCreateLesson}
+        onClick={onCreateLesson}
+        disabled={isBusyCreating}
         className="p-3 text-gray-300 transition-colors hover:text-black"
         title={texts.createPageTitle}
         aria-label={texts.createPageTitle}
       >
-        <Plus className="h-4 w-4" />
+        {isBusyCreating ? (
+          <LoaderCircle className="h-4 w-4 animate-spin" />
+        ) : (
+          <Plus className="h-4 w-4" />
+        )}
       </button>
-      {isCreatingLessonInline && lessons.length > 0 ? (
-        <InlineNameForm
-          label={texts.newPageNameLabel}
-          placeholder={texts.lessonNamePlaceholder}
-          confirmLabel={texts.confirm}
-          cancelLabel={texts.cancel}
-          variant="tab"
-          isBusy={isBusyCreating}
-          onCancel={onCancelCreateLesson}
-          onSubmit={onCreateLesson}
-        />
-      ) : null}
       {lessons.map((lesson) => (
         <button
           key={lesson.id}
