@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -17,6 +21,7 @@ from pydantic import BaseModel
 from app.models import AgentActivityEvent, new_id, now_iso
 from app.services.ai_logging import ai_usage_logger
 from app.services.config import DATA_DIR, load_root_dotenv
+from app.services.codex_app_server import CodexTurnCancelledError
 from app.services.structured_output import (
     json_object,
     validation_issues,
@@ -37,6 +42,23 @@ PI_TRANSIENT_ERROR_MARKERS = (
 )
 PI_OPENAI_CODEX_SERVICE_TIERS = {"priority"}
 PI_ACTIVITY_EMIT_CHARACTER_INTERVAL = 120
+PI_MAX_IMAGE_INPUTS = 8
+PI_MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
+PI_MAX_TOTAL_IMAGE_INPUT_BYTES = 40 * 1024 * 1024
+PI_PROCESS_POLL_SECONDS = 0.1
+PI_PROCESS_TERMINATE_GRACE_SECONDS = 1.0
+
+
+_DATA_IMAGE_PATTERN = re.compile(
+    r"^data:(image/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$",
+    re.IGNORECASE,
+)
+_IMAGE_SUFFIXES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +67,12 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PiStructuredResponse:
     output_parsed: BaseModel
+    activity: list[AgentActivityEvent]
+
+
+@dataclass(frozen=True)
+class PiTextResponse:
+    output_text: str
     activity: list[AgentActivityEvent]
 
 
@@ -64,16 +92,21 @@ class _PiActivityRecorder:
         provider: str,
         model: str,
         callback: Callable[[AgentActivityEvent], None] | None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> None:
         self.turn_id = turn_id
         self.request_id = request_id
         self.provider = provider
         self.model = model
         self.callback = callback
+        self.on_text_delta = on_text_delta
         self._events: dict[str, AgentActivityEvent] = {}
         self._order: list[str] = []
         self._character_counts: dict[str, int] = {}
         self._last_emitted_counts: dict[str, int] = {}
+        self.started_at = time.monotonic()
+        self.first_event_at: float | None = None
+        self.first_text_at: float | None = None
 
     @property
     def events(self) -> list[AgentActivityEvent]:
@@ -131,6 +164,8 @@ class _PiActivityRecorder:
             return
         if not isinstance(payload, dict):
             return
+        if self.first_event_at is None:
+            self.first_event_at = time.monotonic()
         event_type = str(payload.get("type") or "")
         runtime_id = self._event_id("runtime")
         if event_type == "agent_start":
@@ -196,6 +231,11 @@ class _PiActivityRecorder:
                 self._character_counts[event_id] = (
                     self._character_counts.get(event_id, 0) + len(delta)
                 )
+                if kind == "model_output" and delta:
+                    if self.first_text_at is None:
+                        self.first_text_at = time.monotonic()
+                    if self.on_text_delta is not None:
+                        self.on_text_delta(delta)
         character_count = self._character_counts.get(event_id, 0)
         if update_type.endswith("_end"):
             detail = f"模型{noun}阶段已完成"
@@ -235,6 +275,73 @@ class _PiActivityRecorder:
             detail=detail,
         )
 
+    def timing_payload(self) -> dict[str, int | None]:
+        completed_at = time.monotonic()
+        return {
+            "first_event_ms": (
+                round((self.first_event_at - self.started_at) * 1000)
+                if self.first_event_at is not None
+                else None
+            ),
+            "first_text_delta_ms": (
+                round((self.first_text_at - self.started_at) * 1000)
+                if self.first_text_at is not None
+                else None
+            ),
+            "completed_ms": round((completed_at - self.started_at) * 1000),
+        }
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=PI_PROCESS_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _valid_image_signature(mime_type: str, content: bytes) -> bool:
+    if mime_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime_type == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if mime_type == "image/webp":
+        return len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP"
+    if mime_type == "image/gif":
+        return content.startswith((b"GIF87a", b"GIF89a"))
+    return False
+
+
+def _stage_image_inputs(image_inputs: list[str], *, workspace: Path) -> list[Path]:
+    if len(image_inputs) > PI_MAX_IMAGE_INPUTS:
+        raise RuntimeError(f"Pi accepts at most {PI_MAX_IMAGE_INPUTS} image inputs per request")
+    staged: list[Path] = []
+    total_bytes = 0
+    for index, image_input in enumerate(image_inputs, start=1):
+        match = _DATA_IMAGE_PATTERN.fullmatch(image_input.strip())
+        if match is None:
+            raise RuntimeError("Pi image inputs must be bounded base64 data URLs")
+        mime_type = match.group(1).lower()
+        try:
+            content = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("Pi image input contains invalid base64 data") from exc
+        if not content or len(content) > PI_MAX_IMAGE_INPUT_BYTES:
+            raise RuntimeError("Pi image input exceeds the configured size limit")
+        total_bytes += len(content)
+        if total_bytes > PI_MAX_TOTAL_IMAGE_INPUT_BYTES:
+            raise RuntimeError("Pi image inputs exceed the configured total size limit")
+        if not _valid_image_signature(mime_type, content):
+            raise RuntimeError("Pi image input does not match its declared MIME type")
+        image_path = workspace / f"input-{index}{_IMAGE_SUFFIXES[mime_type]}"
+        image_path.write_bytes(content)
+        image_path.chmod(0o600)
+        staged.append(image_path)
+    return staged
+
 
 def _run_streaming_pi_process(
     command: list[str],
@@ -244,6 +351,7 @@ def _run_streaming_pi_process(
     env: dict[str, str],
     timeout: int,
     recorder: _PiActivityRecorder,
+    is_cancelled: Callable[[], bool] | None,
 ) -> subprocess.CompletedProcess[str]:
     process = subprocess.Popen(
         command,
@@ -278,20 +386,31 @@ def _run_streaming_pi_process(
         process.stdin.close()
     except BrokenPipeError:
         pass
-    try:
-        returncode = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        process.kill()
-        process.wait()
-        stdout_thread.join()
-        stderr_thread.join()
-        recorder.fail(f"模型请求在 {timeout} 秒后超时。")
-        raise subprocess.TimeoutExpired(
-            command,
-            timeout,
-            output="".join(stdout_lines),
-            stderr="".join(stderr_lines),
-        ) from exc
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        if is_cancelled is not None and is_cancelled():
+            _terminate_process(process)
+            stdout_thread.join()
+            stderr_thread.join()
+            recorder.fail("用户已停止当前模型请求。")
+            raise CodexTurnCancelledError("Pi turn was cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process(process)
+            stdout_thread.join()
+            stderr_thread.join()
+            recorder.fail(f"模型请求在 {timeout} 秒后超时。")
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout,
+                output="".join(stdout_lines),
+                stderr="".join(stderr_lines),
+            )
+        try:
+            process.wait(timeout=min(PI_PROCESS_POLL_SECONDS, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+    returncode = int(process.returncode or 0)
     stdout_thread.join()
     stderr_thread.join()
     return subprocess.CompletedProcess(
@@ -439,7 +558,7 @@ class PiTextClient:
         self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
         self._process_runner = process_runner
 
-    def _command(self, *, system_prompt: str) -> list[str]:
+    def _command(self, *, system_prompt: str, image_paths: list[Path] | None = None) -> list[str]:
         command = [
             self.binary,
             "--provider",
@@ -463,6 +582,7 @@ class PiTextClient:
             command.extend(["--thinking", self.reasoning_effort])
         if self.service_tier:
             command.extend(["--extension", str(_runtime_settings_extension_path())])
+        command.extend(f"@{path.name}" for path in image_paths or [])
         return command
 
     def _run_once(
@@ -473,6 +593,9 @@ class PiTextClient:
         turn_id: str,
         request_id: str,
         on_activity: Callable[[AgentActivityEvent], None] | None,
+        on_text_delta: Callable[[str], None] | None,
+        image_inputs: list[str] | None,
+        is_cancelled: Callable[[], bool] | None,
     ) -> str:
         load_root_dotenv()
         agent_dir = pi_agent_directory(
@@ -493,6 +616,8 @@ class PiTextClient:
         if self.service_tier:
             environment["OPENCLASS_PI_SERVICE_TIER"] = self.service_tier
         with tempfile.TemporaryDirectory(prefix="turn-", dir=workspace_root) as temporary:
+            temporary_path = Path(temporary)
+            image_paths = _stage_image_inputs(image_inputs or [], workspace=temporary_path)
             timeout_seconds = _pi_request_timeout_seconds()
             recorder = _PiActivityRecorder(
                 turn_id=turn_id,
@@ -500,17 +625,19 @@ class PiTextClient:
                 provider=self.provider,
                 model=self.model,
                 callback=on_activity,
+                on_text_delta=on_text_delta,
             )
             try:
-                command = self._command(system_prompt=system_prompt)
+                command = self._command(system_prompt=system_prompt, image_paths=image_paths)
                 if self._process_runner is None:
                     result = _run_streaming_pi_process(
                         command,
                         input_text=user_prompt,
-                        cwd=Path(temporary),
+                        cwd=temporary_path,
                         env=environment,
                         timeout=timeout_seconds,
                         recorder=recorder,
+                        is_cancelled=is_cancelled,
                     )
                 else:
                     result = self._process_runner(
@@ -518,7 +645,7 @@ class PiTextClient:
                         input=user_prompt,
                         text=True,
                         capture_output=True,
-                        cwd=temporary,
+                        cwd=temporary_path,
                         env=environment,
                         timeout=timeout_seconds,
                         check=False,
@@ -529,6 +656,14 @@ class PiTextClient:
                 raise RuntimeError(
                     f"Pi model request timed out after {timeout_seconds} seconds"
                 ) from exc
+            finally:
+                ai_usage_logger.log_event(
+                    "pi_request_timing",
+                    provider=self.provider,
+                    model=self.model,
+                    request_id=request_id,
+                    **recorder.timing_payload(),
+                )
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
             recorder.fail("模型进程返回失败状态。")
@@ -550,8 +685,19 @@ class PiTextClient:
         turn_id: str,
         request_kind: str,
         on_activity: Callable[[AgentActivityEvent], None] | None,
+        on_text_delta: Callable[[str], None] | None = None,
+        image_inputs: list[str] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> str:
         for attempt in range(PI_TRANSIENT_RETRY_ATTEMPTS + 1):
+            attempt_emitted_text = False
+
+            def publish_text_delta(delta: str) -> None:
+                nonlocal attempt_emitted_text
+                attempt_emitted_text = True
+                if on_text_delta is not None:
+                    on_text_delta(delta)
+
             try:
                 return self._run_once(
                     system_prompt=system_prompt,
@@ -559,9 +705,16 @@ class PiTextClient:
                     turn_id=turn_id,
                     request_id=f"{turn_id}:{request_kind}:{attempt + 1}",
                     on_activity=on_activity,
+                    on_text_delta=publish_text_delta if on_text_delta is not None else None,
+                    image_inputs=image_inputs,
+                    is_cancelled=is_cancelled,
                 )
             except RuntimeError as error:
-                if attempt >= PI_TRANSIENT_RETRY_ATTEMPTS or not _is_transient_pi_error(error):
+                if (
+                    attempt_emitted_text
+                    or attempt >= PI_TRANSIENT_RETRY_ATTEMPTS
+                    or not _is_transient_pi_error(error)
+                ):
                     raise
                 if on_activity is not None:
                     on_activity(
@@ -597,9 +750,8 @@ class PiTextClient:
         schema: type[StructuredModel],
         image_inputs: list[str] | None = None,
         on_activity: Callable[[AgentActivityEvent], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> PiStructuredResponse:
-        if image_inputs:
-            raise RuntimeError("The selected Pi runtime does not accept image inputs yet")
         turn_id = new_id("piturn")
         activity_by_id: dict[str, AgentActivityEvent] = {}
         activity_order: list[str] = []
@@ -631,6 +783,8 @@ class PiTextClient:
             turn_id=turn_id,
             request_kind="primary",
             on_activity=record_activity,
+            image_inputs=image_inputs,
+            is_cancelled=is_cancelled,
         )
         validation_event = AgentActivityEvent(
             turn_id=turn_id,
@@ -672,6 +826,8 @@ class PiTextClient:
                 turn_id=turn_id,
                 request_kind="repair",
                 on_activity=record_activity,
+                image_inputs=image_inputs,
+                is_cancelled=is_cancelled,
             )
             try:
                 parsed = schema.model_validate(json_object(repaired_text))
@@ -715,4 +871,47 @@ class PiTextClient:
         return PiStructuredResponse(
             output_parsed=parsed,
             activity=current_activity(),
+        )
+
+    def complete_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        image_inputs: list[str] | None = None,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> PiTextResponse:
+        turn_id = new_id("piturn")
+        activity_by_id: dict[str, AgentActivityEvent] = {}
+        activity_order: list[str] = []
+
+        def record_activity(event: AgentActivityEvent) -> None:
+            if event.id not in activity_by_id:
+                activity_order.append(event.id)
+            activity_by_id[event.id] = event
+            if on_activity is not None:
+                on_activity(event)
+
+        output_text = self._run(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            turn_id=turn_id,
+            request_kind="text",
+            on_activity=record_activity,
+            on_text_delta=on_text_delta,
+            image_inputs=image_inputs,
+            is_cancelled=is_cancelled,
+        )
+        ai_usage_logger.log_event(
+            "pi_text_request_completed",
+            provider=self.provider,
+            model=self.model,
+            turn_id=turn_id,
+            output_character_count=len(output_text),
+        )
+        return PiTextResponse(
+            output_text=output_text,
+            activity=[activity_by_id[event_id] for event_id in activity_order],
         )

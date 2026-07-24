@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
 
@@ -12,6 +14,7 @@ from pydantic import BaseModel
 from app.services.pi_agent_runtime import PiTextClient
 from app.models import AIModelSelection
 from app.services import ai_execution_adapter, pi_agent_runtime
+from app.services.codex_app_server import CodexTurnCancelledError
 
 
 class _Answer(BaseModel):
@@ -250,6 +253,180 @@ print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
     assert response.output_parsed.answer == "ok"
     assert observed
     assert observed[0][0] < finished_at - 0.25
+
+
+def test_pi_client_streams_plain_text_deltas_without_waiting_for_completion(tmp_path) -> None:
+    fake_pi = tmp_path / "fake-pi-text"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+import time
+
+sys.stdin.read()
+print(json.dumps({"type": "agent_start"}), flush=True)
+print(json.dumps({
+    "type": "message_update",
+    "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "第一段"},
+}), flush=True)
+time.sleep(0.25)
+print(json.dumps({
+    "type": "message_update",
+    "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "第二段"},
+}), flush=True)
+print(json.dumps({
+    "type": "message_end",
+    "message": {"role": "assistant", "content": [{"type": "text", "text": "第一段第二段"}]},
+}), flush=True)
+print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_pi, 0o700)
+    observed: list[tuple[float, str]] = []
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary=str(fake_pi),
+        runtime_root=tmp_path / "runtime",
+    ).complete_text(
+        system_prompt="Answer.",
+        user_prompt="Question",
+        on_text_delta=lambda delta: observed.append((time.monotonic(), delta)),
+    )
+    finished_at = time.monotonic()
+
+    assert response.output_text == "第一段第二段"
+    assert [delta for _, delta in observed] == ["第一段", "第二段"]
+    assert observed[0][0] < finished_at - 0.15
+
+
+def test_pi_client_stages_validated_image_inputs_for_the_cli(tmp_path) -> None:
+    captured: dict[str, object] = {}
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"bounded-test-image"
+    image_input = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        cwd = kwargs["cwd"]
+        image_argument = next(item for item in command if item.startswith("@input-"))
+        captured["image_bytes"] = (cwd / image_argument[1:]).read_bytes()
+        return subprocess.CompletedProcess(command, 0, _pi_stdout("image understood"), "")
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    ).complete_text(
+        system_prompt="Inspect the image.",
+        user_prompt="What is shown?",
+        image_inputs=[image_input],
+    )
+
+    assert response.output_text == "image understood"
+    assert captured["image_bytes"] == png_bytes
+
+
+def test_pi_client_rejects_an_image_whose_bytes_do_not_match_its_mime(tmp_path) -> None:
+    image_input = "data:image/png;base64," + base64.b64encode(b"not a png").decode("ascii")
+    client = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="does not match its declared MIME type"):
+        client.complete_text(
+            system_prompt="Inspect.",
+            user_prompt="Question",
+            image_inputs=[image_input],
+        )
+
+
+def test_pi_client_cancels_the_underlying_process_promptly(tmp_path) -> None:
+    fake_pi = tmp_path / "fake-pi-cancel"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+import time
+
+sys.stdin.read()
+print(json.dumps({"type": "agent_start"}), flush=True)
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_pi, 0o700)
+    cancel_event = threading.Event()
+    threading.Timer(0.2, cancel_event.set).start()
+    started_at = time.monotonic()
+
+    with pytest.raises(CodexTurnCancelledError):
+        PiTextClient(
+            owner_user_id="user_test",
+            provider="openai_codex",
+            model="gpt-5.5",
+            binary=str(fake_pi),
+            runtime_root=tmp_path / "runtime",
+        ).complete_text(
+            system_prompt="Answer.",
+            user_prompt="Question",
+            is_cancelled=cancel_event.is_set,
+        )
+
+    assert time.monotonic() - started_at < 2
+
+
+def test_pi_client_does_not_retry_after_visible_text_was_streamed(tmp_path) -> None:
+    calls = 0
+
+    def run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "agent_start"}),
+                json.dumps(
+                    {
+                        "type": "message_update",
+                        "assistantMessageEvent": {
+                            "type": "text_delta",
+                            "contentIndex": 0,
+                            "delta": "partial",
+                        },
+                    }
+                ),
+                _pi_error_stdout("WebSocket error"),
+            ]
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    client = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    )
+
+    with pytest.raises(RuntimeError, match="WebSocket error"):
+        client.complete_text(
+            system_prompt="Answer.",
+            user_prompt="Question",
+            on_text_delta=lambda _delta: None,
+        )
+
+    assert calls == 1
 
 
 def test_pi_client_accepts_a_bounded_request_timeout(monkeypatch, tmp_path) -> None:
