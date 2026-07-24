@@ -6,6 +6,7 @@ import type {
   CommunityComment,
   CommunityFeedSort,
   CommunityFollowResult,
+  CommunityIntegration,
   CommunityPost,
   CommunityPostDetail,
   CommunitySpace,
@@ -60,6 +61,10 @@ function queryString(values: Record<string, string | number | undefined>) {
 
 
 export const communityApi = {
+  getIntegration() {
+    return communityRequest<CommunityIntegration>("/api/community/integration");
+  },
+
   listSpaces(sort: CommunitySpaceSort = "active") {
     return communityRequest<CommunitySpace[]>(`/api/community/spaces${queryString({ sort })}`);
   },

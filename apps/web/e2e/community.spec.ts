@@ -1,5 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+const nativeIntegration = {
+  provider: "native",
+  public_url: null,
+  entry_url: "/community",
+  available: true,
+  sso_enabled: false,
+  setup_required: false,
+};
+
 
 test("answers a question, votes, accepts an answer, and joins the discussion", async ({ page }) => {
   const now = "2026-07-24T10:00:00+00:00";
@@ -73,6 +82,10 @@ test("answers a question, votes, accepts an answer, and joins the discussion", a
     const path = url.pathname;
     const method = request.method();
 
+    if (path === "/api/community/integration" && method === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(nativeIntegration) });
+      return;
+    }
     if (path === "/api/community/spaces" && method === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([space]) });
       return;
@@ -184,6 +197,10 @@ test("creates a topic-neutral community and post through the composer", async ({
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
+    if (path === "/api/community/integration" && method === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(nativeIntegration) });
+      return;
+    }
     if (path === "/api/community/spaces" && method === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(spaces) });
       return;
@@ -233,6 +250,11 @@ test("keeps community reading public and sends anonymous writers to login", asyn
     contentType: "application/json",
     body: JSON.stringify({ detail: "未登录" }),
   }));
+  await page.route("**/api/community/integration", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(nativeIntegration),
+  }));
   await page.route("**/api/community/spaces**", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -250,4 +272,38 @@ test("keeps community reading public and sends anonymous writers to login", asyn
   await expect(page.getByRole("button", { name: "最新", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "发布", exact: true }).click();
   await expect(page).toHaveURL(/\/login\?next=%2Fcommunity$/);
+});
+
+
+test("shows the Answer gateway when the external provider is ready", async ({ page }) => {
+  const now = "2026-07-25T10:00:00+00:00";
+  await page.context().addCookies([
+    { name: "openclass.auth.token", value: "community-test-token", domain: "127.0.0.1", path: "/" },
+  ]);
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ id: "user-author", email: "author@example.com", role: "user", display_name: "学习者甲", avatar_url: null, created_at: now, last_login_at: now, auth_identities: [] }),
+  }));
+  await page.route("**/api/community/integration", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      provider: "answer",
+      public_url: "https://community.example.com",
+      entry_url: "https://community.example.com/answer/api/v1/connector/login/basic",
+      available: true,
+      sso_enabled: true,
+      setup_required: false,
+    }),
+  }));
+  await page.route("**/api/community/spaces**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
+  await page.route("**/api/community/posts**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
+
+  await page.goto("/community");
+
+  await expect(page.getByRole("heading", { name: "进入知识问答社区" })).toBeVisible();
+  await expect(page.getByText("社区服务和单点登录已就绪")).toBeVisible();
+  await expect(page.getByRole("button", { name: "进入社区" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "继续使用内置社区" })).toBeVisible();
 });

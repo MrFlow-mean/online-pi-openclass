@@ -3,6 +3,15 @@ export type CommunityPostType = "question" | "discussion" | "resource" | "study_
 export type CommunityFeedSort = "recent" | "hot" | "unanswered";
 export type CommunitySpaceSort = "active" | "new" | "popular";
 
+export interface CommunityIntegration {
+  provider: "native" | "answer";
+  public_url?: string | null;
+  entry_url: string;
+  available: boolean;
+  sso_enabled: boolean;
+  setup_required: boolean;
+}
+
 export interface CommunitySpace {
   id: string;
   slug: string;

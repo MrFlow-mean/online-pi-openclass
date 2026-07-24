@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   CircleHelp,
   Clock3,
+  ExternalLink,
   Flame,
   Hash,
   MessageCircle,
@@ -29,6 +30,7 @@ import { communityApi } from "@/lib/community-api";
 import type {
   CommunityAnswer,
   CommunityFeedSort,
+  CommunityIntegration,
   CommunityPost,
   CommunityPostDetail,
   CommunityPostType,
@@ -429,9 +431,47 @@ function PostDetailView({
 }
 
 
+function AnswerCommunityGateway({
+  integration,
+  onEnter,
+  onUseNative,
+}: {
+  integration: CommunityIntegration;
+  onEnter: () => void;
+  onUseNative: () => void;
+}) {
+  const ready = integration.available && integration.sso_enabled && !integration.setup_required;
+  return (
+    <main className="min-h-screen bg-[#f5f3ee] text-stone-900">
+      <header className="border-b border-stone-200/80 bg-[#f5f3ee]/92">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
+          <Link href="/home" aria-label="返回学习主页" className="flex items-center gap-2"><BrandMark className="h-8 w-8" /><span className="text-sm font-bold tracking-tight">OpenClass</span></Link>
+          <AccountMenu compact />
+        </div>
+      </header>
+      <section className="mx-auto flex max-w-3xl flex-col items-center px-5 py-20 text-center sm:py-28">
+        <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-100 text-sky-700"><UsersRound className="h-8 w-8" /></span>
+        <p className="mt-6 text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">OpenClass Community</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950 sm:text-4xl">进入知识问答社区</h1>
+        <p className="mt-4 max-w-xl text-sm leading-7 text-stone-600">社区由独立 Apache Answer 服务承载问题、回答、投票、声望、审核、通知与搜索；OpenClass 只负责统一账号和课程入口。</p>
+        <div className={clsx("mt-7 rounded-xl border px-4 py-3 text-sm", ready ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800")}>
+          {ready ? "社区服务和单点登录已就绪" : integration.available ? "社区服务已运行，单点登录尚未完成配置" : "社区服务尚未运行或无法访问"}
+        </div>
+        <div className="mt-7 flex flex-wrap justify-center gap-3">
+          <button type="button" onClick={onEnter} disabled={!ready} className="inline-flex items-center gap-2 rounded-xl bg-stone-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"><ExternalLink className="h-4 w-4" />进入社区</button>
+          <button type="button" onClick={onUseNative} className="rounded-xl border border-stone-300 bg-white px-5 py-3 text-sm font-semibold text-stone-700">继续使用内置社区</button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+
 export function CommunityHome() {
   const router = useRouter();
   const [user, setUser] = useState<UserView | null>(null);
+  const [integration, setIntegration] = useState<CommunityIntegration | null>(null);
+  const [useNativeFallback, setUseNativeFallback] = useState(false);
   const [spaces, setSpaces] = useState<CommunitySpace[]>([]);
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [selectedSpaceSlug, setSelectedSpaceSlug] = useState("");
@@ -465,6 +505,13 @@ export function CommunityHome() {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
+      void communityApi.getIntegration().then(setIntegration).catch(() => setIntegration({
+        provider: "native",
+        entry_url: "/community",
+        available: true,
+        sso_enabled: false,
+        setup_required: false,
+      }));
       void loadSpaces().catch((requestError) => setError(requestError instanceof Error ? requestError.message : "社区列表加载失败"));
       void api.getCurrentUser().then(setUser).catch(() => setUser(null));
     }, 0);
@@ -584,6 +631,25 @@ export function CommunityHome() {
   async function handleCreated() {
     setComposer(null);
     await Promise.all([loadSpaces(), loadPosts()]);
+  }
+
+  function enterAnswerCommunity() {
+    if (!integration || integration.provider !== "answer") return;
+    if (user?.role !== "user" && user?.role !== "admin") {
+      router.push("/login?next=%2Fcommunity");
+      return;
+    }
+    window.location.assign(integration.entry_url);
+  }
+
+  if (integration?.provider === "answer" && !useNativeFallback) {
+    return (
+      <AnswerCommunityGateway
+        integration={integration}
+        onEnter={enterAnswerCommunity}
+        onUseNative={() => setUseNativeFallback(true)}
+      />
+    );
   }
 
   return (
