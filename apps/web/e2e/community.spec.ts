@@ -98,6 +98,15 @@ test("answers a question, votes, accepts an answer, and joins the discussion", a
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ post, answers, comments }) });
       return;
     }
+    if (path === `/api/community/posts/${post.id}` && method === "PUT") {
+      const payload = request.postDataJSON() as { title: string; body: string; tags: string[] };
+      post.title = payload.title;
+      post.body = payload.body;
+      post.tags = payload.tags;
+      post.updated_at = "2026-07-24T11:00:00+00:00";
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(post) });
+      return;
+    }
     if (path === `/api/community/posts/${post.id}/vote` && method === "PUT") {
       post.viewer_vote = 1;
       post.vote_score = 4;
@@ -153,6 +162,15 @@ test("answers a question, votes, accepts an answer, and joins the discussion", a
   await expect(page.getByRole("button", { name: "最新", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /如何验证自己的理解是否可靠/ }).click();
   await expect(page.getByRole("heading", { name: post.title })).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑", exact: true }).first().click();
+  await page.getByLabel("编辑帖子标题").fill("如何形成可验证、可复用的理解？");
+  const postEditor = page.getByLabel("编辑帖子正文").locator("..");
+  await page.getByLabel("编辑帖子正文").fill("先写出 **判断依据**，再让其他人复现。\n\n```text\n输入 → 推理 → 结论\n```");
+  await postEditor.getByRole("button", { name: "预览", exact: true }).click();
+  await expect(page.getByText("判断依据", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "如何形成可验证、可复用的理解？" })).toBeVisible();
 
   await page.getByRole("button", { name: "赞同帖子", exact: true }).click();
   await expect(page.getByText("4", { exact: true })).toBeVisible();

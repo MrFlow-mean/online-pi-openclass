@@ -47,10 +47,10 @@ function AnswerCard({ answer, viewerUserId, viewerIsAdmin, canAccept, onVote, on
     <article className={clsx("rounded-2xl border p-4 sm:p-5", answer.is_accepted ? "border-emerald-300 bg-emerald-50/40" : "border-stone-200 bg-white")}>
       <div className="flex gap-4">
         <div className="flex w-9 shrink-0 flex-col items-center gap-1">
-          <button type="button" aria-label="赞同回答" onClick={() => onVote(answer.id, answer.viewer_vote === 1 ? 0 : 1)} className={clsx("rounded-lg p-1.5", answer.viewer_vote === 1 ? "bg-[#ffe7ef] text-[#d74f7b]" : "text-stone-400")}><ArrowUp className="h-5 w-5" /></button>
+          <button type="button" aria-label={`赞同 ${answer.author_display_name} 的回答`} onClick={() => onVote(answer.id, answer.viewer_vote === 1 ? 0 : 1)} className={clsx("rounded-lg p-1.5", answer.viewer_vote === 1 ? "bg-[#ffe7ef] text-[#d74f7b]" : "text-stone-400")}><ArrowUp className="h-5 w-5" /></button>
           <span className="text-sm font-bold">{answer.vote_score}</span>
-          <button type="button" aria-label="不赞同回答" onClick={() => onVote(answer.id, answer.viewer_vote === -1 ? 0 : -1)} className={clsx("rounded-lg p-1.5", answer.viewer_vote === -1 ? "bg-sky-100 text-sky-700" : "text-stone-400")}><ArrowDown className="h-5 w-5" /></button>
-          {canAccept ? <button type="button" aria-label={answer.is_accepted ? "取消采纳" : "采纳回答"} onClick={() => onAccept(answer.is_accepted ? null : answer.id)} className={clsx("mt-2 rounded-full p-1.5", answer.is_accepted ? "bg-emerald-600 text-white" : "border border-stone-300 text-stone-400")}><CheckCircle2 className="h-5 w-5" /></button> : answer.is_accepted ? <CheckCircle2 aria-label="已采纳" className="mt-2 h-6 w-6 text-emerald-600" /> : null}
+          <button type="button" aria-label={`不赞同 ${answer.author_display_name} 的回答`} onClick={() => onVote(answer.id, answer.viewer_vote === -1 ? 0 : -1)} className={clsx("rounded-lg p-1.5", answer.viewer_vote === -1 ? "bg-sky-100 text-sky-700" : "text-stone-400")}><ArrowDown className="h-5 w-5" /></button>
+          {canAccept ? <button type="button" aria-label={answer.is_accepted ? `取消采纳 ${answer.author_display_name} 的回答` : `采纳 ${answer.author_display_name} 的回答`} onClick={() => onAccept(answer.is_accepted ? null : answer.id)} className={clsx("mt-2 rounded-full p-1.5", answer.is_accepted ? "bg-emerald-600 text-white" : "border border-stone-300 text-stone-400")}><CheckCircle2 className="h-5 w-5" /></button> : answer.is_accepted ? <CheckCircle2 aria-label="已采纳" className="mt-2 h-6 w-6 text-emerald-600" /> : null}
         </div>
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex items-start justify-between gap-3">

@@ -238,7 +238,7 @@ function ComposerPanel({
               </label>
               <div className="space-y-2">
                 <p className="text-sm font-semibold text-stone-800">正文</p>
-                <CommunityEditor label="帖子正文" value={body} onChange={setBody} draftKey="openclass:community:new-post" placeholder="写下背景、自己的理解、证据或希望得到的帮助" rows={8} />
+                <CommunityEditor label="正文" value={body} onChange={setBody} draftKey="openclass:community:new-post" placeholder="写下背景、自己的理解、证据或希望得到的帮助" rows={8} />
               </div>
               <label className="block text-sm font-semibold text-stone-800">
                 标签
