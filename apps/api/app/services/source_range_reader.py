@@ -43,6 +43,7 @@ class SourceRangeReadResult:
     catalog_version: int
     source_content_hash: str
     source_range: dict[str, Any]
+    source_path: Path
     warnings: list[str] = field(default_factory=list)
 
 
@@ -148,6 +149,7 @@ def read_verified_source_range(
         catalog_version=catalog_version,
         source_content_hash=source_hash,
         source_range=authoritative_range,
+        source_path=path,
         warnings=warnings,
     )
 

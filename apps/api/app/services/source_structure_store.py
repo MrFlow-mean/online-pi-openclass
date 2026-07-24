@@ -807,6 +807,141 @@ class SourceStructureStore:
             except (OSError, SourceVisualStorageError):
                 continue
 
+    def upsert_scoped_visual_assets(
+        self,
+        visuals: list[SourceVisualAsset],
+    ) -> None:
+        """Persist on-demand chapter visuals without replacing the catalog or text index."""
+
+        if not visuals:
+            return
+        identity = {
+            (visual.owner_user_id, visual.package_id, visual.source_ingestion_id)
+            for visual in visuals
+        }
+        if len(identity) != 1 or any(not value for values in identity for value in values):
+            raise ValueError("Scoped source visuals must share one complete source identity.")
+        self.coordinator.run_write(
+            self.path,
+            lambda: self._upsert_scoped_visual_assets(visuals),
+        )
+
+    def _upsert_scoped_visual_assets(
+        self,
+        visuals: list[SourceVisualAsset],
+    ) -> None:
+        old_storage_keys: list[str] = []
+        with self._lock:
+            with self._connect() as conn:
+                placeholders = ", ".join("?" for _ in visuals)
+                existing = conn.execute(
+                    f"""
+                    SELECT id, owner_user_id, package_id, source_ingestion_id, storage_key
+                    FROM source_visual_assets
+                    WHERE id IN ({placeholders})
+                    """,
+                    [visual.id for visual in visuals],
+                ).fetchall()
+                expected_identity = (
+                    visuals[0].owner_user_id,
+                    visuals[0].package_id,
+                    visuals[0].source_ingestion_id,
+                )
+                if any(
+                    (row["owner_user_id"], row["package_id"], row["source_ingestion_id"])
+                    != expected_identity
+                    for row in existing
+                ):
+                    raise ValueError("A scoped source visual ID belongs to a different source.")
+                replacement_keys = {visual.id: visual.storage_key for visual in visuals}
+                old_storage_keys = [
+                    str(row["storage_key"])
+                    for row in existing
+                    if row["storage_key"]
+                    and str(row["storage_key"]) != replacement_keys.get(str(row["id"]), "")
+                ]
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_visual_assets(
+                            id, owner_user_id, package_id, source_ingestion_id, structure_id,
+                            structure_version, chapter_id, kind, source_locator, page_start, page_end,
+                            paragraph_index, slide_no, sheet_name, bbox_json, before_chunk_id,
+                            after_chunk_id, caption, extracted_text, surrounding_text, anchor_status,
+                            mime_type, asset_path, storage_key, order_index, content_hash, position_hash,
+                            width, height, table_data_json, confidence, created_at, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            structure_id = excluded.structure_id,
+                            structure_version = excluded.structure_version,
+                            chapter_id = excluded.chapter_id,
+                            kind = excluded.kind,
+                            source_locator = excluded.source_locator,
+                            page_start = excluded.page_start,
+                            page_end = excluded.page_end,
+                            paragraph_index = excluded.paragraph_index,
+                            slide_no = excluded.slide_no,
+                            sheet_name = excluded.sheet_name,
+                            bbox_json = excluded.bbox_json,
+                            before_chunk_id = excluded.before_chunk_id,
+                            after_chunk_id = excluded.after_chunk_id,
+                            caption = excluded.caption,
+                            extracted_text = excluded.extracted_text,
+                            surrounding_text = excluded.surrounding_text,
+                            anchor_status = excluded.anchor_status,
+                            mime_type = excluded.mime_type,
+                            asset_path = excluded.asset_path,
+                            storage_key = excluded.storage_key,
+                            order_index = excluded.order_index,
+                            content_hash = excluded.content_hash,
+                            position_hash = excluded.position_hash,
+                            width = excluded.width,
+                            height = excluded.height,
+                            table_data_json = excluded.table_data_json,
+                            confidence = excluded.confidence,
+                            metadata_json = excluded.metadata_json
+                        """,
+                        [
+                            (
+                                visual.id,
+                                visual.owner_user_id,
+                                visual.package_id,
+                                visual.source_ingestion_id,
+                                visual.structure_id,
+                                visual.structure_version,
+                                visual.chapter_id,
+                                visual.kind,
+                                visual.source_locator,
+                                visual.page_start,
+                                visual.page_end,
+                                visual.paragraph_index,
+                                visual.slide_no,
+                                visual.sheet_name,
+                                _dumps(visual.bbox),
+                                visual.before_chunk_id,
+                                visual.after_chunk_id,
+                                visual.caption,
+                                visual.extracted_text,
+                                visual.surrounding_text,
+                                visual.anchor_status,
+                                visual.mime_type,
+                                visual.asset_path,
+                                visual.storage_key,
+                                visual.order_index,
+                                visual.content_hash,
+                                visual.position_hash,
+                                visual.width,
+                                visual.height,
+                                _dumps(visual.table_data),
+                                visual.confidence,
+                                visual.created_at,
+                                _dumps(visual.metadata),
+                            )
+                            for visual in visuals
+                        ],
+                    )
+        self.cleanup_unreferenced_visual_assets(old_storage_keys)
+
     def record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
         """Expose a failed reparse without replacing the last usable index."""
         return self.coordinator.run_write(

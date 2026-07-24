@@ -224,6 +224,7 @@ def _extract_docx(
                         kind="table",
                         source_locator=f"docx:table:{block_index}",
                         native_order=native_order,
+                        paragraph_index=paragraph_index,
                         text_offset=text_offset,
                         table_data=table_data,
                         caption=table_caption,
@@ -618,6 +619,7 @@ def _extract_xlsx(
                             metadata={
                                 "office_part": target,
                                 "sheet": sheet_no,
+                                "max_row": max_row,
                                 **display_metadata,
                             },
                         )
@@ -636,6 +638,8 @@ def _extract_xlsx(
                             caption=_shape_caption(anchor),
                             confidence=0.82,
                             metadata={
+                                "sheet": sheet_no,
+                                "max_row": max_row,
                                 "rendered_page_mapping": (
                                     "single_sheet_fit_to_one_page"
                                     if rendered_page_no is not None

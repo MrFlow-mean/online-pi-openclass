@@ -909,6 +909,9 @@ def process_blank_board_turn(
                 owner_user_id=user_id,
                 lesson_id=current_lesson.id,
                 visual_bytes_resolver=resolve_visual_bytes,
+                require_all=all(
+                    item.original_capture_required for item in insertion_plan.items
+                ),
             )
             next_document = visual_result.document
             visual_insertion_metadata = {
