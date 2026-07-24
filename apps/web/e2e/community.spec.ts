@@ -180,3 +180,29 @@ test("creates a topic-neutral community and post through the composer", async ({
 
   await expect(page.getByRole("button", { name: /一次知识结构图的迭代记录/ })).toBeVisible();
 });
+
+
+test("keeps community reading public and sends anonymous writers to login", async ({ page }) => {
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 401,
+    contentType: "application/json",
+    body: JSON.stringify({ detail: "未登录" }),
+  }));
+  await page.route("**/api/community/spaces**", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: "[]",
+  }));
+  await page.route("**/api/community/posts**", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: "[]",
+  }));
+
+  await page.goto("/community");
+
+  await expect(page).toHaveURL(/\/community$/);
+  await expect(page.getByRole("heading", { name: "和正在学习的人一起思考" })).toBeVisible();
+  await page.getByRole("button", { name: "发布", exact: true }).click();
+  await expect(page).toHaveURL(/\/login\?next=%2Fcommunity$/);
+});
