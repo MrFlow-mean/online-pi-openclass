@@ -13,6 +13,7 @@ from app.models import (
     CommunityCommentCreate,
     CommunityCommentView,
     CommunityFollowView,
+    CommunityIntegrationView,
     CommunityPostCreate,
     CommunityPostDetail,
     CommunityPostView,
@@ -29,6 +30,7 @@ from app.services.community_store import (
     CommunityStore,
     CommunityValidationError,
 )
+from app.services.community_adapter import community_adapter
 from app.services.workspace_state import DATABASE_PATH
 
 
@@ -50,6 +52,11 @@ def _raise_http_error(exc: ValueError) -> NoReturn:
     if isinstance(exc, CommunityValidationError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     raise exc
+
+
+@router.get("/integration", response_model=CommunityIntegrationView)
+def get_community_integration() -> CommunityIntegrationView:
+    return community_adapter.integration()
 
 
 @router.get("/spaces", response_model=list[CommunitySpaceView])

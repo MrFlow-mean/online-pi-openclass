@@ -1535,6 +1535,16 @@ class UserView(BaseModel):
 
 CommunityPostType = Literal["question", "discussion", "resource", "study_note"]
 CommunityFeedSort = Literal["recent", "hot", "unanswered"]
+CommunityProvider = Literal["native", "answer"]
+
+
+class CommunityIntegrationView(BaseModel):
+    provider: CommunityProvider
+    public_url: str | None = None
+    entry_url: str
+    available: bool
+    sso_enabled: bool
+    setup_required: bool
 
 
 class CommunitySpaceCreate(BaseModel):
