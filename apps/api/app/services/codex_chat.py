@@ -224,6 +224,17 @@ each visual manifest item exactly once using its marker contract. Keep the board
 HTML; code fences only for real code; display formulas in `$$` delimiters on their own lines.
 """.strip()
 
+EXISTING_BOARD_CHAT_INSTRUCTIONS = """
+You are the learner-facing Chatbot inside OpenClass. The supplied board Markdown is read-only
+context for this turn. Answer the learner naturally and obey the backend-provided board write
+policy exactly. For `answer_then_offer`, fully answer first and then naturally offer to write the
+new material into the board. For `chat_without_offer` or `decline_offered_write`, do not offer or
+claim a board change. Use verified source or attachment context when present and do not add source
+claims outside that evidence. Do not edit, rewrite, or return the board. Return only the
+learner-facing plain text, without JSON or Markdown fences. Generate the response for this exact
+conversation rather than using a fixed template.
+""".strip()
+
 
 class _SourceBatchSummary(BaseModel):
     summary: str = Field(min_length=1, max_length=MAX_SOURCE_BATCH_SUMMARY_CHARS)
@@ -1578,8 +1589,10 @@ def _process_structured_existing_board_turn(
     pending_write_offer: dict[str, str] | None,
     source_context: ExistingBoardSourceContext | None,
     attachment_context: str,
+    image_inputs: list[str],
     on_delta: Callable[[str], None] | None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None,
+    is_cancelled: Callable[[], bool] | None,
 ) -> ChatResponse:
     codex_board_text, preserved_visuals = _document_for_codex(
         initial_lesson.board_document
@@ -1593,51 +1606,77 @@ def _process_structured_existing_board_turn(
         )
         if part
     )
-    response = adapter.parse_structured(
-        system_prompt=STRUCTURED_EXISTING_BOARD_INSTRUCTIONS,
-        user_prompt=json.dumps(
-            {
-                "board_markdown": codex_board_text,
-                "board_write_policy": board_write_policy_prompt(
-                    board_write_decision,
-                    pending_write_offer,
-                ),
-                "conversation": [
-                    turn.model_dump(mode="json") for turn in request.conversation
-                ],
-                "selection": (
-                    request.selection.model_dump(mode="json")
-                    if request.selection is not None
-                    else None
-                ),
-                "formula_latex": (
-                    request.formula_ink.source_latex
-                    if request.formula_ink is not None
-                    else None
-                ),
-                "verified_context": verified_context,
-                "user_message": request.message,
-                "response_contract": _StructuredExistingBoardTurn.model_json_schema(),
-            },
-            ensure_ascii=False,
-        ),
-        schema=_StructuredExistingBoardTurn,
-        on_activity=on_agent_activity,
-    )
-    output = _StructuredExistingBoardTurn.model_validate(response.output_parsed)
-    execution_source = (
-        "pi" if model_selection.agent_backend == "pi" else model_selection.provider
-    )
-    chatbot_message = output.chatbot_message.strip()
-    if not chatbot_message:
-        raise RuntimeError(
-            f"{execution_source} completed without a learner-facing response"
-        )
     document_write_authorized = board_write_decision.action in {
         "edit_now",
         "confirm_offered_write",
     }
-    candidate_markdown = output.board_markdown
+    turn_payload = {
+        "board_markdown": codex_board_text,
+        "board_write_policy": board_write_policy_prompt(
+            board_write_decision,
+            pending_write_offer,
+        ),
+        "conversation": [
+            turn.model_dump(mode="json") for turn in request.conversation
+        ],
+        "selection": (
+            request.selection.model_dump(mode="json")
+            if request.selection is not None
+            else None
+        ),
+        "formula_latex": (
+            request.formula_ink.source_latex
+            if request.formula_ink is not None
+            else None
+        ),
+        "verified_context": verified_context,
+        "user_message": request.message,
+    }
+    chatbot_streamed = False
+    complete_text = getattr(adapter, "complete_text", None)
+    if not document_write_authorized and callable(complete_text):
+
+        def publish_chat_delta(delta: str) -> None:
+            nonlocal chatbot_streamed
+            if not delta or on_delta is None:
+                return
+            chatbot_streamed = True
+            on_delta(delta)
+
+        response = complete_text(
+            system_prompt=EXISTING_BOARD_CHAT_INSTRUCTIONS,
+            user_prompt=json.dumps(turn_payload, ensure_ascii=False),
+            image_inputs=image_inputs,
+            is_cancelled=is_cancelled,
+            on_activity=on_agent_activity,
+            on_text_delta=publish_chat_delta,
+        )
+        chatbot_message = response.output_text.strip()
+        candidate_markdown = codex_board_text
+    else:
+        response = adapter.parse_structured(
+            system_prompt=STRUCTURED_EXISTING_BOARD_INSTRUCTIONS,
+            user_prompt=json.dumps(
+                {
+                    **turn_payload,
+                    "response_contract": _StructuredExistingBoardTurn.model_json_schema(),
+                },
+                ensure_ascii=False,
+            ),
+            schema=_StructuredExistingBoardTurn,
+            image_inputs=image_inputs,
+            on_activity=on_agent_activity,
+        )
+        output = _StructuredExistingBoardTurn.model_validate(response.output_parsed)
+        chatbot_message = output.chatbot_message.strip()
+        candidate_markdown = output.board_markdown
+    execution_source = (
+        "pi" if model_selection.agent_backend == "pi" else model_selection.provider
+    )
+    if not chatbot_message:
+        raise RuntimeError(
+            f"{execution_source} completed without a learner-facing response"
+        )
     if document_write_authorized:
         if looks_like_html_content(candidate_markdown):
             raise CodexAppServerError(
@@ -1683,12 +1722,16 @@ def _process_structured_existing_board_turn(
             )
             next_document = visual_result.document
     changed = document_changed(current_document, next_document)
-    follow_up_suggestions = generate_follow_up_suggestions(
-        adapter=adapter,
-        user_message=request.message,
-        assistant_message=chatbot_message,
-        board_state="non_empty",
-        workflow_state="board_changed" if changed else "conversation",
+    follow_up_suggestions = (
+        generate_follow_up_suggestions(
+            adapter=adapter,
+            user_message=request.message,
+            assistant_message=chatbot_message,
+            board_state="non_empty",
+            workflow_state="board_changed" if changed else "conversation",
+        )
+        if document_write_authorized
+        else []
     )
     pending_write_offer_after = build_pending_board_write_offer_after(
         board_write_decision,
@@ -1766,7 +1809,7 @@ def _process_structured_existing_board_turn(
         raise CodexAppServerError(
             f"The lesson changed while {execution_source} was working"
         )
-    if on_delta is not None:
+    if on_delta is not None and not chatbot_streamed:
         on_delta(chatbot_message)
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
@@ -1921,6 +1964,9 @@ def process_codex_chat_on_lesson(
                     adapter=adapter,
                     target_heading=teaching_decision.decision.target_heading,
                     user_message=request.message,
+                    on_delta=on_delta,
+                    on_activity=on_agent_activity,
+                    is_cancelled=is_cancelled,
                 )
             else:
                 restart = (
@@ -1934,6 +1980,9 @@ def process_codex_chat_on_lesson(
                     adapter=adapter,
                     restart=restart,
                     user_message=request.message,
+                    on_delta=on_delta,
+                    on_activity=on_agent_activity,
+                    is_cancelled=is_cancelled,
                 )
             teaching_activity = [
                 *teaching_decision.activity,
@@ -1942,7 +1991,11 @@ def process_codex_chat_on_lesson(
             for event in teaching_activity:
                 if on_agent_activity is not None:
                     on_agent_activity(event)
-            if teaching_result.chatbot_message and on_delta is not None:
+            if (
+                teaching_result.chatbot_message
+                and on_delta is not None
+                and not teaching_result.chatbot_streamed
+            ):
                 on_delta(teaching_result.chatbot_message)
             workspace = workspace_state.load_workspace_for_user(user_id)
             package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
@@ -2012,19 +2065,6 @@ def process_codex_chat_on_lesson(
             model_selection.agent_backend == "pi"
             or model_selection.provider == "deepseek"
         ):
-            execution_label = (
-                "Pi"
-                if model_selection.agent_backend == "pi"
-                else "the selected text model"
-            )
-            if prepared_attachments.image_inputs:
-                raise CodexAppServerError(
-                    f"{execution_label} does not accept image attachments yet"
-                )
-            if request.formula_ink is not None and not request.formula_ink.source_latex:
-                raise CodexAppServerError(
-                    f"{execution_label} requires formula text instead of an image"
-                )
             return _process_structured_existing_board_turn(
                 lesson_id=lesson_id,
                 request=request,
@@ -2039,8 +2079,13 @@ def process_codex_chat_on_lesson(
                 pending_write_offer=pending_write_offer,
                 source_context=source_context,
                 attachment_context=prepared_attachments.prompt_context,
+                image_inputs=(
+                    prepared_attachments.image_inputs
+                    + _formula_image_urls(request)
+                ),
                 on_delta=on_delta,
                 on_agent_activity=on_agent_activity,
+                is_cancelled=is_cancelled,
             )
 
         codex_model = selected_model

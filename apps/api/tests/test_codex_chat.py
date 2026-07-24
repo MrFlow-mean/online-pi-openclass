@@ -13,6 +13,7 @@ import pytest
 
 from app.models import (
     AgentActivityEvent,
+    AIModelSelection,
     BoardExplanationDirective,
     ChatAttachmentRef,
     ChatRequest,
@@ -989,15 +990,11 @@ def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text=" \n")
     parse_calls: list[dict[str, object]] = []
+    text_calls: list[dict[str, object]] = []
+    deltas: list[str] = []
 
     def fake_parse(_self, **kwargs):
         parse_calls.append(kwargs)
-        if kwargs.get("allow_live_web_search"):
-            return SimpleNamespace(
-                output_parsed=OrdinaryChatTurnResponse(
-                    chatbot_message="A live, network-backed conversational reply."
-                )
-            )
         return SimpleNamespace(
             output_parsed=BlankBoardTurnDecision(
                 intent="ordinary_chat",
@@ -1013,6 +1010,15 @@ def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent
         def parse_structured(self, **kwargs):
             return fake_parse(self, **kwargs)
 
+        def complete_text(self, **kwargs):
+            text_calls.append(kwargs)
+            kwargs["on_text_delta"]("A live, ")
+            kwargs["on_text_delta"]("model-generated conversational reply.")
+            return SimpleNamespace(
+                output_text="A live, model-generated conversational reply.",
+                activity=[],
+            )
+
     monkeypatch.setattr(
         codex_chat,
         "build_ai_execution_adapter",
@@ -1024,26 +1030,28 @@ def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent
         lesson.id,
         ChatRequest(message="Just chatting.", conversation=[]),
         user_id=TEST_USER_ID,
+        on_delta=deltas.append,
     )
 
-    assert response.chatbot_message == "A live, network-backed conversational reply."
+    assert response.chatbot_message == "A live, model-generated conversational reply."
+    assert "".join(deltas) == response.chatbot_message
     assert response.active_requirement_sheet is None
     assert response.board_document_operation_status == "none"
     assert response.learning_clarification.reason == ""
     assert response.learning_clarification.summary == ""
-    assert len(parse_calls) == 2
+    assert len(parse_calls) == 1
+    assert len(text_calls) == 1
     assert parse_calls[0].get("allow_live_web_search") is not True
-    assert parse_calls[1]["allow_live_web_search"] is True
     assert "Current user message:\nJust chatting." in parse_calls[0]["user_prompt"]
-    assert "Current user message:\nJust chatting." in parse_calls[1]["user_prompt"]
-    assert "board summary" not in parse_calls[1]["user_prompt"].lower()
-    assert "active learning requirement" not in parse_calls[1]["user_prompt"].lower()
+    assert "Current user message:\nJust chatting." in text_calls[0]["user_prompt"]
+    assert "board summary" not in text_calls[0]["user_prompt"].lower()
+    assert "active learning requirement" not in text_calls[0]["user_prompt"].lower()
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     commit = current_head_commit(saved_lesson)
     assert saved_lesson.board_document.content_text.strip() == ""
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["requirement_changed"] is False
-    assert commit.metadata["chatbot_web_search_mode"] == "live"
+    assert commit.metadata["chatbot_web_search_mode"] == "disabled"
     assert commit.metadata["chatbot_raw_network_access"] is False
     assert "requirement_version_id" not in commit.metadata
     assert "active_requirement_sheet_after" not in commit.metadata
@@ -1075,6 +1083,9 @@ def test_empty_board_live_chat_failure_does_not_commit_or_change_requirements(
         def parse_structured(self, **kwargs):
             return fake_parse(self, **kwargs)
 
+        def complete_text(self, **_kwargs):
+            raise CodexAppServerError("live web search failed")
+
     monkeypatch.setattr(
         codex_chat,
         "build_ai_execution_adapter",
@@ -1088,7 +1099,7 @@ def test_empty_board_live_chat_failure_does_not_commit_or_change_requirements(
             user_id=TEST_USER_ID,
         )
 
-    assert parse_calls == 2
+    assert parse_calls == 1
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     assert current_head_commit(saved_lesson).id == before_head
     assert saved_lesson.board_document.content_text == ""
@@ -1415,6 +1426,102 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     assert frozen_commit.metadata["requirement_parent_version_id"] == (
         ready_commit.metadata["requirement_version_id"]
     )
+
+
+def test_pi_board_handoff_runs_only_after_the_document_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    observed_board_commit_id = ""
+
+    class FakePiAdapter:
+        def parse_structured(self, **kwargs):
+            assert kwargs["schema"] is BlankBoardTurnDecision
+            return SimpleNamespace(
+                output_parsed=BlankBoardTurnDecision(
+                    intent="learning_need",
+                    teaching_type="knowledge_point",
+                    learning_content="A bounded topic",
+                    content_is_specific=True,
+                    current_level="Known level",
+                    target_scenario="Known purpose",
+                    chatbot_message="The requirement is ready.",
+                    teaching_plan="Build a focused board.",
+                    reason="All core factors are complete.",
+                ),
+                activity=[],
+            )
+
+        def generate_board(self, _request, **_kwargs):
+            return (
+                ai_execution_adapter.StructuredBoardGenerationResult(
+                    thread_id="piturn_board",
+                    turn_id="piturn_board",
+                    final_response="",
+                    activity=[],
+                ),
+                "# Saved board\n\nGenerated learning content.",
+            )
+
+        def complete_text(self, **kwargs):
+            nonlocal observed_board_commit_id
+            saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+            board_commit = current_head_commit(saved_lesson)
+            observed_board_commit_id = board_commit.id
+            assert saved_lesson.board_document.content_text.startswith("# Saved board")
+            assert board_commit.metadata["kind"] == "board_document_generation"
+            assert board_commit.metadata["assistant_message"] == ""
+            assert kwargs["is_cancelled"] is not None
+            return SimpleNamespace(
+                output_text="The saved board is ready for us to work through.",
+                activity=[],
+            )
+
+    monkeypatch.setattr(
+        codex_chat,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakePiAdapter(),
+    )
+    monkeypatch.setattr(
+        codex_chat,
+        "_text_model_selection",
+        lambda *_args, **_kwargs: AIModelSelection(
+            agent_backend="pi",
+            provider="openai_codex",
+            model="gpt-5.5",
+        ),
+    )
+    monkeypatch.setattr(
+        blank_board_intake,
+        "generate_follow_up_suggestions",
+        lambda **_kwargs: [],
+    )
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Generate the learning board now.",
+            post_generation_action="stop_after_generation",
+        ),
+        user_id=TEST_USER_ID,
+        is_cancelled=lambda: False,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    handoff_commit = current_head_commit(saved_lesson)
+    board_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.id == observed_board_commit_id
+    )
+    assert response.chatbot_message == "The saved board is ready for us to work through."
+    assert response.board_document_operation_status == "succeeded"
+    assert saved_lesson.board_document.content_text.startswith("# Saved board")
+    assert handoff_commit.metadata["kind"] == "board_generation_handoff"
+    assert handoff_commit.metadata["user_message"] == ""
+    assert handoff_commit.metadata["document_changed"] is False
+    assert handoff_commit.parent_ids == [board_commit.id]
 
 
 def test_source_chapter_selection_generates_blank_board_without_requirement_questions(
@@ -3989,6 +4096,8 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="# Existing\n\nOriginal content.")
     observed_activity: list[AgentActivityEvent] = []
+    observed_deltas: list[str] = []
+    structured_schemas: list[object] = []
     monkeypatch.setattr(
         codex_chat,
         "_text_model_selection",
@@ -3998,23 +4107,27 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
     class FakePiAdapter:
         def parse_structured(self, **kwargs):
             schema = kwargs["schema"]
-            if schema is codex_chat._StructuredExistingBoardTurn:
-                activity = AgentActivityEvent(
-                    turn_id="piturn_live",
-                    stage="build_context",
-                    label="OpenClass 正在推理",
-                    status="running",
-                    role="OpenClass",
-                    metadata={"kind": "reasoning"},
-                )
-                kwargs["on_activity"](activity)
-                parsed = schema(
-                    chatbot_message="Here is the explanation.",
-                    board_markdown="# Existing\n\nOriginal content.",
-                )
-            else:
-                parsed = schema(suggestions=["Continue"])
+            structured_schemas.append(schema)
+            parsed = schema(suggestions=["Continue"])
             return SimpleNamespace(output_parsed=parsed, activity=[])
+
+        def complete_text(self, **kwargs):
+            activity = AgentActivityEvent(
+                turn_id="piturn_live",
+                stage="build_context",
+                label="OpenClass 正在推理",
+                status="running",
+                role="OpenClass",
+                metadata={"kind": "reasoning"},
+            )
+            kwargs["on_activity"](activity)
+            kwargs["on_text_delta"]("Here is ")
+            kwargs["on_text_delta"]("the explanation.")
+            assert kwargs["image_inputs"] == []
+            return SimpleNamespace(
+                output_text="Here is the explanation.",
+                activity=[],
+            )
 
     monkeypatch.setattr(
         codex_chat,
@@ -4034,13 +4147,16 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
         ),
         user_id=TEST_USER_ID,
         on_agent_activity=observed_activity.append,
+        on_delta=observed_deltas.append,
     )
 
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     metadata = current_head_commit(saved_lesson).metadata
     assert response.chatbot_message == "Here is the explanation."
+    assert "".join(observed_deltas) == response.chatbot_message
     assert response.board_document_operation_status == "none"
     assert metadata["agent_backend"] == "pi"
     assert metadata["assistant_message_source"] == "pi"
     assert metadata["ai_provider"] == "openai_codex"
+    assert codex_chat._StructuredExistingBoardTurn not in structured_schemas
     assert [event.label for event in observed_activity] == ["OpenClass 正在推理"]

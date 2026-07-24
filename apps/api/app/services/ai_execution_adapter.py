@@ -22,6 +22,12 @@ class StructuredExecutionResult:
 
 
 @dataclass(frozen=True)
+class TextExecutionResult:
+    output_text: str
+    activity: list[AgentActivityEvent] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class BoardGenerationExecutionRequest:
     requirement: LearningRequirementSheet
     teaching_plan: str
@@ -57,6 +63,17 @@ class AIExecutionAdapter(Protocol):
         is_cancelled: Callable[[], bool] | None,
         on_activity: Callable[[AgentActivityEvent], None] | None,
     ) -> tuple[BoardGenerationExecutionResult, str]: ...
+
+    def complete_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        image_inputs: list[str] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+    ) -> TextExecutionResult: ...
 
     def explain_from_directive(
         self,
@@ -220,6 +237,21 @@ You are the board-writing capability inside OpenClass. Generate a self-contained
 from only the supplied frozen learning requirement, teaching plan, and verified source evidence.
 Return the complete board as Markdown in `content_text` and a brief learner-facing completion in
 `chatbot_message`. Do not ask questions and do not use HTML. Use fenced code blocks only for real
+code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
+heading hierarchy and keep sibling sections at the same level.
+
+If `visual_manifest` is present, handle every item exactly once and preserve its order. For a
+verified editable table or single-direction linear flow whose essential content is available in
+the manifest, recreate it as editable Markdown and then place its `recreation_marker` once on a
+standalone line. Otherwise place its `marker` once on a standalone line after the paragraph that
+introduces it. Never write both markers for one item and never invent missing visual details.
+""".strip()
+
+PI_BOARD_GENERATION_INSTRUCTIONS = """
+You are the board-writing capability inside OpenClass. Generate one complete, self-contained
+learning board from only the supplied frozen learning requirement, teaching plan, and verified
+source evidence. Return only the board Markdown. Do not wrap the document in a JSON object, do not
+add a learner-facing completion message, and do not use HTML. Use fenced code blocks only for real
 code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
 heading hierarchy and keep sibling sections at the same level.
 
@@ -443,6 +475,29 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
             activity=[activity_by_id[event_id] for event_id in activity_order],
         )
 
+    def complete_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        image_inputs: list[str] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+    ) -> TextExecutionResult:
+        response = self._client.complete_text(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_inputs=image_inputs,
+            on_activity=on_activity,
+            on_text_delta=on_text_delta,
+            is_cancelled=is_cancelled,
+        )
+        return TextExecutionResult(
+            output_text=response.output_text,
+            activity=response.activity,
+        )
+
     def generate_board(
         self,
         request: BoardGenerationExecutionRequest,
@@ -452,8 +507,8 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
     ) -> tuple[BoardGenerationExecutionResult, str]:
         if is_cancelled is not None and is_cancelled():
             raise RuntimeError(f"{self.runtime_label} board generation was cancelled")
-        response = self._parse_with_visible_activity(
-            system_prompt=STRUCTURED_BOARD_GENERATION_INSTRUCTIONS,
+        response = self.complete_text(
+            system_prompt=PI_BOARD_GENERATION_INSTRUCTIONS,
             user_prompt=(
                 "Frozen board-generation payload:\n"
                 + json.dumps(
@@ -466,27 +521,27 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
                     separators=(",", ":"),
                 )
             ),
-            schema=_StructuredBoardResponse,
             image_inputs=request.image_inputs,
             on_activity=on_activity,
-            running_label="OpenClass 正在生成板书",
-            completed_label="OpenClass 已生成板书",
-            failed_label="OpenClass 板书生成未完成",
-            activity_kind="board_generation",
+            is_cancelled=is_cancelled,
         )
-        output = _StructuredBoardResponse.model_validate(response.output_parsed)
-        if not output.content_text.strip():
+        content = response.output_text.strip()
+        if not content:
             raise RuntimeError(
                 f"{self.runtime_label} board generation returned empty content"
             )
-        turn_id = response.activity[0].turn_id
+        turn_id = (
+            response.activity[0].turn_id
+            if response.activity
+            else new_id(self.turn_id_prefix)
+        )
         result = StructuredBoardGenerationResult(
             thread_id=turn_id,
             turn_id=turn_id,
-            final_response=output.chatbot_message.strip(),
+            final_response="",
             activity=response.activity,
         )
-        return result, output.content_text
+        return result, content
 
     def analyze_image_batch(
         self,

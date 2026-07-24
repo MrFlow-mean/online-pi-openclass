@@ -125,6 +125,7 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
 ) -> None:
     lesson = _seed_workspace(teaching_store)
     codex_turn_calls: list[str] = []
+    streamed_deltas: list[str] = []
 
     def fake_parse(_self, **kwargs):
         schema = kwargs["schema"]
@@ -168,9 +169,21 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
             final_response="Handled by the ordinary Codex route.",
         )
 
+    def fake_complete_text(_self, **kwargs):
+        payload = json.loads(kwargs["user_prompt"])
+        message = f"讲解：{payload['board_explanation_directive']['target_summary']}"
+        if kwargs["on_text_delta"] is not None:
+            kwargs["on_text_delta"](message[:3])
+            kwargs["on_text_delta"](message[3:])
+        return SimpleNamespace(output_text=message, activity=[])
+
     monkeypatch.setattr(
         "app.services.pi_agent_runtime.PiTextClient.parse",
         fake_parse,
+    )
+    monkeypatch.setattr(
+        "app.services.pi_agent_runtime.PiTextClient.complete_text",
+        fake_complete_text,
     )
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_codex_turn)
 
@@ -178,8 +191,10 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
         lesson.id,
         ChatRequest(message="讲解第三部分"),
         user_id=TEST_USER_ID,
+        on_delta=streamed_deltas.append,
     )
     assert started.chatbot_message == "讲解：（一）会计人员职业道德的内容"
+    assert "".join(streamed_deltas) == started.chatbot_message
     assert started.teaching_progress is not None
     assert started.teaching_progress.section_index == 0
     assert started.teaching_progress.current_heading_path[-1] == "（一）会计人员职业道德的内容"
