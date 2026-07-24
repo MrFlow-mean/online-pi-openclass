@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
-  ArrowLeft,
   ArrowUp,
   BookOpen,
   CheckCircle2,
@@ -25,10 +24,11 @@ import {
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
+import { clearCommunityDraft, CommunityEditor } from "@/components/community/community-editor";
+import { CommunityPostDetailView } from "@/components/community/community-post-detail";
 import { api } from "@/lib/api";
 import { communityApi } from "@/lib/community-api";
 import type {
-  CommunityAnswer,
   CommunityFeedSort,
   CommunityIntegration,
   CommunityPost,
@@ -176,6 +176,7 @@ function ComposerPanel({
           body,
           tags: tags.split(/[，,]/).map((tag) => tag.trim().replace(/^#/, "")).filter(Boolean),
         });
+        clearCommunityDraft("openclass:community:new-post");
       }
       onCreated();
     } catch (requestError) {
@@ -235,10 +236,10 @@ function ComposerPanel({
                 标题
                 <input required minLength={4} maxLength={180} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="让读者一眼理解你想讨论的内容" className="mt-2 w-full rounded-xl border border-stone-200 bg-white px-4 py-3 font-normal outline-none focus:border-stone-500" />
               </label>
-              <label className="block text-sm font-semibold text-stone-800">
-                正文
-                <textarea required maxLength={40000} value={body} onChange={(event) => setBody(event.target.value)} placeholder="写下背景、自己的理解、证据或希望得到的帮助" rows={8} className="mt-2 w-full resize-y rounded-xl border border-stone-200 bg-white px-4 py-3 font-normal leading-7 outline-none focus:border-stone-500" />
-              </label>
+              <div className="space-y-2">
+                <p className="text-sm font-semibold text-stone-800">正文</p>
+                <CommunityEditor label="帖子正文" value={body} onChange={setBody} draftKey="openclass:community:new-post" placeholder="写下背景、自己的理解、证据或希望得到的帮助" rows={8} />
+              </div>
               <label className="block text-sm font-semibold text-stone-800">
                 标签
                 <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="用逗号分隔，最多 8 个" className="mt-2 w-full rounded-xl border border-stone-200 bg-white px-4 py-3 font-normal outline-none focus:border-stone-500" />
@@ -256,177 +257,6 @@ function ComposerPanel({
         </form>
       </section>
     </div>
-  );
-}
-
-
-function AnswerCard({
-  answer,
-  canAccept,
-  onVote,
-  onAccept,
-}: {
-  answer: CommunityAnswer;
-  canAccept: boolean;
-  onVote: (answerId: string, value: -1 | 0 | 1) => void;
-  onAccept: (answerId: string | null) => void;
-}) {
-  return (
-    <article className={clsx("rounded-2xl border p-4 sm:p-5", answer.is_accepted ? "border-emerald-300 bg-emerald-50/40" : "border-stone-200 bg-white")}>
-      <div className="flex gap-4">
-        <div className="flex w-9 shrink-0 flex-col items-center gap-1">
-          <button type="button" aria-label={`赞同 ${answer.author_display_name} 的回答`} onClick={() => onVote(answer.id, answer.viewer_vote === 1 ? 0 : 1)} className={clsx("rounded-lg p-1.5 transition", answer.viewer_vote === 1 ? "bg-[#ffe7ef] text-[#d74f7b]" : "text-stone-400 hover:bg-stone-100 hover:text-stone-800")}><ArrowUp className="h-5 w-5" /></button>
-          <span className="text-sm font-bold text-stone-900">{answer.vote_score}</span>
-          <button type="button" aria-label={`不赞同 ${answer.author_display_name} 的回答`} onClick={() => onVote(answer.id, answer.viewer_vote === -1 ? 0 : -1)} className={clsx("rounded-lg p-1.5 transition", answer.viewer_vote === -1 ? "bg-sky-100 text-sky-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-800")}><ArrowDown className="h-5 w-5" /></button>
-          {canAccept ? (
-            <button type="button" aria-label={answer.is_accepted ? `取消采纳 ${answer.author_display_name} 的回答` : `采纳 ${answer.author_display_name} 的回答`} onClick={() => onAccept(answer.is_accepted ? null : answer.id)} className={clsx("mt-2 rounded-full p-1.5 transition", answer.is_accepted ? "bg-emerald-600 text-white" : "border border-stone-300 text-stone-400 hover:border-emerald-500 hover:text-emerald-600")}><CheckCircle2 className="h-5 w-5" /></button>
-          ) : answer.is_accepted ? <CheckCircle2 aria-label="已采纳" className="mt-2 h-6 w-6 text-emerald-600" /> : null}
-        </div>
-        <div className="min-w-0 flex-1">
-          {answer.is_accepted ? <p className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800"><CheckCircle2 className="h-3.5 w-3.5" />提问者已采纳</p> : null}
-          <p className="whitespace-pre-wrap text-[15px] leading-7 text-stone-700">{answer.body}</p>
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500">
-            <span className="font-semibold text-stone-800">{answer.author_display_name}</span>
-            <span>贡献 {answer.author_reputation}</span>
-            <span>·</span>
-            <span>{formatRelativeTime(answer.created_at)}</span>
-          </div>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-
-function PostDetailView({
-  detail,
-  viewerUserId,
-  onBack,
-  onVote,
-  onAnswer,
-  onAnswerVote,
-  onAcceptAnswer,
-  onComment,
-}: {
-  detail: CommunityPostDetail;
-  viewerUserId?: string;
-  onBack: () => void;
-  onVote: (value: -1 | 0 | 1) => void;
-  onAnswer: (body: string) => Promise<void>;
-  onAnswerVote: (answerId: string, value: -1 | 0 | 1) => void;
-  onAcceptAnswer: (answerId: string | null) => void;
-  onComment: (body: string, parentCommentId?: string | null) => Promise<void>;
-}) {
-  const [answerBody, setAnswerBody] = useState("");
-  const [commentBody, setCommentBody] = useState("");
-  const [replyTo, setReplyTo] = useState<{ id: string; name: string } | null>(null);
-  const [answerSubmitting, setAnswerSubmitting] = useState(false);
-  const [answerError, setAnswerError] = useState("");
-  const [commentSubmitting, setCommentSubmitting] = useState(false);
-  const [commentError, setCommentError] = useState("");
-  const post = detail.post;
-
-  async function handleAnswer(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!answerBody.trim()) return;
-    setAnswerSubmitting(true);
-    setAnswerError("");
-    try {
-      await onAnswer(answerBody.trim());
-      setAnswerBody("");
-    } catch (requestError) {
-      setAnswerError(requestError instanceof Error ? requestError.message : "回答发布失败");
-    } finally {
-      setAnswerSubmitting(false);
-    }
-  }
-
-  async function handleComment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!commentBody.trim()) return;
-    setCommentSubmitting(true);
-    setCommentError("");
-    try {
-      await onComment(commentBody.trim(), replyTo?.id);
-      setCommentBody("");
-      setReplyTo(null);
-    } catch (requestError) {
-      setCommentError(requestError instanceof Error ? requestError.message : "评论发布失败");
-    } finally {
-      setCommentSubmitting(false);
-    }
-  }
-
-  return (
-    <section aria-label="帖子详情" className="rounded-2xl border border-stone-200 bg-white p-5 shadow-[0_12px_34px_rgba(28,25,23,0.06)] sm:p-7">
-      <button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-sm font-semibold text-stone-500 transition hover:text-stone-950">
-        <ArrowLeft className="h-4 w-4" /> 返回帖子列表
-      </button>
-      <div className="mt-6 flex gap-4">
-        <div className="flex w-10 shrink-0 flex-col items-center gap-1 rounded-xl bg-stone-50 py-2">
-          <button type="button" aria-label="赞同帖子" onClick={() => onVote(post.viewer_vote === 1 ? 0 : 1)} className={clsx("rounded-lg p-1.5 transition", post.viewer_vote === 1 ? "bg-[#ffe7ef] text-[#d74f7b]" : "text-stone-400 hover:bg-stone-200 hover:text-stone-800")}><ArrowUp className="h-5 w-5" /></button>
-          <span className="text-sm font-bold text-stone-900">{post.vote_score}</span>
-          <button type="button" aria-label="不赞同帖子" onClick={() => onVote(post.viewer_vote === -1 ? 0 : -1)} className={clsx("rounded-lg p-1.5 transition", post.viewer_vote === -1 ? "bg-sky-100 text-sky-700" : "text-stone-400 hover:bg-stone-200 hover:text-stone-800")}><ArrowDown className="h-5 w-5" /></button>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-            <span className={clsx("rounded-full border px-2 py-0.5 font-semibold", postTypeStyles[post.post_type])}>{postTypeLabels[post.post_type]}</span>
-            <span className="font-semibold text-stone-700">c/{post.community_name}</span>
-            <span>· {post.author_display_name}</span>
-            <span>· {formatRelativeTime(post.created_at)}</span>
-          </div>
-          <h1 className="mt-3 text-2xl font-semibold leading-tight text-stone-950 sm:text-3xl">{post.title}</h1>
-          <p className="mt-5 whitespace-pre-wrap text-[15px] leading-7 text-stone-700">{post.body}</p>
-          <div className="mt-5 flex flex-wrap gap-2">
-            {post.tags.map((tag) => <span key={tag} className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">#{tag}</span>)}
-          </div>
-        </div>
-      </div>
-
-      {post.post_type === "question" ? (
-        <div className="mt-8 border-t border-stone-200 pt-6">
-          <h2 className="flex items-center gap-2 text-lg font-semibold text-stone-950"><CircleHelp className="h-5 w-5" />{detail.answers.length} 条回答</h2>
-          <div className="mt-5 space-y-4">
-            {detail.answers.map((answer) => (
-              <AnswerCard
-                key={answer.id}
-                answer={answer}
-                canAccept={viewerUserId === post.author_user_id}
-                onVote={onAnswerVote}
-                onAccept={onAcceptAnswer}
-              />
-            ))}
-            {!detail.answers.length ? <p className="rounded-xl border border-dashed border-stone-300 px-4 py-8 text-center text-sm text-stone-500">还没有正式回答。你可以给出步骤、依据或可验证的方法。</p> : null}
-          </div>
-          <form onSubmit={handleAnswer} className="mt-5 rounded-2xl border border-stone-200 bg-[#faf9f6] p-4">
-            <label htmlFor="community-answer" className="text-sm font-semibold text-stone-800">写下你的回答</label>
-            <textarea id="community-answer" aria-label="写回答" value={answerBody} onChange={(event) => setAnswerBody(event.target.value)} placeholder="给出清晰、可验证并能直接解决问题的回答" rows={5} className="mt-3 w-full resize-y bg-transparent text-sm leading-7 outline-none placeholder:text-stone-400" />
-            {answerError ? <p role="alert" className="mt-2 text-sm text-rose-700">{answerError}</p> : null}
-            <div className="mt-3 flex justify-end"><button type="submit" disabled={answerSubmitting || !answerBody.trim()} className="inline-flex items-center gap-2 rounded-lg bg-stone-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40"><Send className="h-3.5 w-3.5" />{answerSubmitting ? "提交中…" : "提交回答"}</button></div>
-          </form>
-        </div>
-      ) : null}
-
-      <div className="mt-8 border-t border-stone-200 pt-6">
-        <h2 className="flex items-center gap-2 text-lg font-semibold text-stone-950"><MessageCircle className="h-5 w-5" />{detail.comments.length} 条讨论</h2>
-        <form onSubmit={handleComment} className="mt-4 rounded-2xl border border-stone-200 bg-[#faf9f6] p-4">
-          {replyTo ? <div className="mb-3 flex items-center justify-between rounded-lg bg-white px-3 py-2 text-xs text-stone-600"><span>回复 {replyTo.name}</span><button type="button" onClick={() => setReplyTo(null)} aria-label="取消回复"><X className="h-3.5 w-3.5" /></button></div> : null}
-          <textarea aria-label="写评论" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="补充信息、提出追问或继续讨论" rows={3} className="w-full resize-y bg-transparent text-sm leading-6 outline-none placeholder:text-stone-400" />
-          {commentError ? <p role="alert" className="mt-2 text-sm text-rose-700">{commentError}</p> : null}
-          <div className="mt-3 flex justify-end"><button type="submit" disabled={commentSubmitting || !commentBody.trim()} className="inline-flex items-center gap-2 rounded-lg bg-stone-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40"><Send className="h-3.5 w-3.5" />{commentSubmitting ? "发送中…" : "参与讨论"}</button></div>
-        </form>
-        <div className="mt-5 space-y-3">
-          {detail.comments.map((comment) => (
-            <article key={comment.id} className={clsx("rounded-xl border border-stone-200 bg-white p-4", comment.parent_comment_id && "ml-6 border-l-4 border-l-stone-300")}>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500"><span className="font-semibold text-stone-800">{comment.author_display_name}</span><span>·</span><span>{formatRelativeTime(comment.created_at)}</span></div>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-stone-700">{comment.body}</p>
-              <button type="button" onClick={() => setReplyTo({ id: comment.id, name: comment.author_display_name })} className="mt-3 text-xs font-semibold text-stone-500 hover:text-stone-950">回复</button>
-            </article>
-          ))}
-          {!detail.comments.length ? <p className="rounded-xl border border-dashed border-stone-300 px-4 py-8 text-center text-sm text-stone-500">还没有讨论，成为第一个回应的人。</p> : null}
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -617,6 +447,78 @@ export function CommunityHome() {
     }
   }
 
+  async function handleEditPost(payload: { title: string; body: string; tags: string[] }) {
+    if (!selectedPost || !canWrite()) return;
+    try {
+      const updated = await communityApi.updatePost(selectedPost.post.id, payload);
+      setSelectedPost((current) => current ? { ...current, post: updated } : current);
+      setPosts((current) => current.map((post) => post.id === updated.id ? updated : post));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "帖子修改失败");
+      throw requestError;
+    }
+  }
+
+  async function handleDeletePost() {
+    if (!selectedPost || !canWrite()) return;
+    try {
+      await communityApi.deletePost(selectedPost.post.id);
+      setSelectedPost(null);
+      await Promise.all([loadSpaces(), loadPosts()]);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "帖子删除失败");
+      throw requestError;
+    }
+  }
+
+  async function handleEditAnswer(answerId: string, body: string) {
+    if (!canWrite()) return;
+    try {
+      const updated = await communityApi.updateAnswer(answerId, body);
+      setSelectedPost((current) => current ? { ...current, answers: current.answers.map((answer) => answer.id === answerId ? updated : answer) } : current);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "回答修改失败");
+      throw requestError;
+    }
+  }
+
+  async function handleDeleteAnswer(answerId: string) {
+    if (!selectedPost || !canWrite()) return;
+    try {
+      await communityApi.deleteAnswer(answerId);
+      const detail = await communityApi.getPost(selectedPost.post.id);
+      setSelectedPost(detail);
+      setPosts((current) => current.map((post) => post.id === detail.post.id ? detail.post : post));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "回答删除失败");
+      throw requestError;
+    }
+  }
+
+  async function handleEditComment(commentId: string, body: string) {
+    if (!canWrite()) return;
+    try {
+      const updated = await communityApi.updateComment(commentId, body);
+      setSelectedPost((current) => current ? { ...current, comments: current.comments.map((comment) => comment.id === commentId ? updated : comment) } : current);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "评论修改失败");
+      throw requestError;
+    }
+  }
+
+  async function handleDeleteComment(commentId: string) {
+    if (!selectedPost || !canWrite()) return;
+    try {
+      await communityApi.deleteComment(commentId);
+      const detail = await communityApi.getPost(selectedPost.post.id);
+      setSelectedPost(detail);
+      setPosts((current) => current.map((post) => post.id === detail.post.id ? detail.post : post));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "评论删除失败");
+      throw requestError;
+    }
+  }
+
   async function handleFollow(space: CommunitySpace) {
     if (!canWrite()) return;
     try {
@@ -685,15 +587,22 @@ export function CommunityHome() {
 
         <section className="min-w-0">
           {selectedPost ? (
-            <PostDetailView
+            <CommunityPostDetailView
               detail={selectedPost}
               viewerUserId={user?.id}
+              viewerIsAdmin={user?.role === "admin"}
               onBack={() => setSelectedPost(null)}
               onVote={(value) => void handleVote(value)}
               onAnswer={handleAnswer}
               onAnswerVote={(answerId, value) => void handleAnswerVote(answerId, value)}
               onAcceptAnswer={(answerId) => void handleAcceptAnswer(answerId)}
               onComment={handleComment}
+              onEditPost={handleEditPost}
+              onDeletePost={handleDeletePost}
+              onEditAnswer={handleEditAnswer}
+              onDeleteAnswer={handleDeleteAnswer}
+              onEditComment={handleEditComment}
+              onDeleteComment={handleDeleteComment}
             />
           ) : (
             <>
