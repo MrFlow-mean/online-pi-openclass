@@ -29,6 +29,7 @@ import type {
   LearningRequirementSheet,
   Lesson,
   SelectionRef,
+  SourceQueryScope,
 } from "@/types";
 
 type UseLessonChatAgentOptions = {
@@ -36,6 +37,7 @@ type UseLessonChatAgentOptions = {
   activeMessages: ChatMessage[];
   activeComposerState: LessonComposerState;
   composerSelections: SelectionRef[];
+  sourceQueryScope: SourceQueryScope | null;
   currentBoardDocument: BoardDocument | null;
   selectedTextModel: AIModelSelection;
   textModelReady: boolean;
@@ -88,6 +90,7 @@ export function useLessonChatAgent({
   activeMessages,
   activeComposerState,
   composerSelections,
+  sourceQueryScope,
   currentBoardDocument,
   selectedTextModel,
   textModelReady,
@@ -303,7 +306,7 @@ export function useLessonChatAgent({
     const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
     const pendingAssistantMessage: ChatMessage = {
       ...createChatMessage("assistant", "", "pending"),
-      statusLabel: submittedSelection?.kind === "source" ? "正在解析资料范围" : "正在保存当前文档",
+      statusLabel: payloadWithConversation.source_query_scope ? "正在检索资料原文" : "正在保存当前文档",
     };
     let requestStarted = false;
     let streamedChatContent = "";
@@ -569,6 +572,7 @@ export function useLessonChatAgent({
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                   followUpSuggestions: response.follow_up_suggestions ?? [],
+                  sourceCitations: response.source_citations ?? [],
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
@@ -576,6 +580,7 @@ export function useLessonChatAgent({
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                   followUpSuggestions: response.follow_up_suggestions ?? [],
+                  sourceCitations: response.source_citations ?? [],
                 }
           )
         );
@@ -593,6 +598,7 @@ export function useLessonChatAgent({
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                   followUpSuggestions: response.follow_up_suggestions ?? [],
+                  sourceCitations: response.source_citations ?? [],
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
@@ -600,6 +606,7 @@ export function useLessonChatAgent({
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                   followUpSuggestions: response.follow_up_suggestions ?? [],
+                  sourceCitations: response.source_citations ?? [],
                 }
           )
         );
@@ -721,7 +728,7 @@ export function useLessonChatAgent({
     const submittedInput = chatInput;
     const submittedAttachments = composerAttachments;
     const includedSelections = includeSelectionInPrompt ? composerSelections : [];
-    const payload =
+    const basePayload =
       payloadOverride ??
       ({
         message:
@@ -736,6 +743,13 @@ export function useLessonChatAgent({
         attachments: composerAttachments,
         interaction_mode: composerMode,
       } satisfies ChatRequestPayload);
+    const payload: ChatRequestPayload =
+      sourceQueryScope &&
+      basePayload.source_query_scope === undefined &&
+      basePayload.interaction_mode !== "direct_edit" &&
+      !basePayload.board_generation_action
+        ? { ...basePayload, source_query_scope: sourceQueryScope }
+        : basePayload;
     const submittedSelection = payload.selection ?? payload.selections?.at(-1) ?? null;
     const payloadMessage = payload.message.trim();
     if (!payloadMessage) {

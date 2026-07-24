@@ -468,7 +468,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   let delaySingleCatalogResponseAt = 0;
   let delayedSingleCatalogRequests = 0;
   let releaseDelayedSingleCatalog = () => {};
-  let submittedSelection: Record<string, unknown> | null = null;
+  let submittedSourceScope: Record<string, unknown> | null = null;
   let uploadPostData = "";
   let rebuildPostData = "";
 
@@ -563,8 +563,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     await route.continue();
   });
   await page.route("**/api/lessons/*/chat/stream", async (route) => {
-    const payload = route.request().postDataJSON() as { selection?: Record<string, unknown> | null };
-    submittedSelection = payload.selection ?? null;
+    const payload = route.request().postDataJSON() as { source_query_scope?: Record<string, unknown> | null };
+    submittedSourceScope = payload.source_query_scope ?? null;
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -671,22 +671,16 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(singleCatalogRequests).toBe(0);
 
   await page.getByRole("button", { name: `引用章节到输入框 1 ${chapterTitle}` }).click();
-  await page.getByPlaceholder("基于引用章节继续提问").fill("请基于这个章节生成板书");
+  await page.getByPlaceholder("询问选中资料中的内容").fill("请基于这个章节生成板书");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect.poll(() => submittedSelection).not.toBeNull();
-  expect(submittedSelection).toMatchObject({
-    source_ingestion_id: sourceId,
-    source_chapter_id: verifiedChapter.id,
-    catalog_version: 3,
-    source_content_hash: initialContentHash,
-    source_page_start: 12,
-    source_page_end: 18,
-    source_range: {
-      kind: "pdf_pages",
-      start: 12,
-      end: 18,
-      end_inclusive: true,
-    },
+  await expect.poll(() => submittedSourceScope).not.toBeNull();
+  expect(submittedSourceScope).toMatchObject({
+    mode: "chapter",
+    refs: [{
+      source_ingestion_id: sourceId,
+      source_chapter_id: verifiedChapter.id,
+      source_content_hash: initialContentHash,
+    }],
   });
 
   const replacementContentHash = `replacement-hash-${unique}`;

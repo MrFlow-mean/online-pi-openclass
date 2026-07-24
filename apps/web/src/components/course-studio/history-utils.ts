@@ -13,6 +13,7 @@ import type {
   Lesson,
   SelectionRef,
   SectionTeachingProgress,
+  SourceCitation,
   SourceRange,
 } from "@/types";
 
@@ -25,6 +26,8 @@ export type LessonComposerState = {
   includeSelectionInPrompt: boolean;
   composerSelection: SelectionRef | null;
   composerSelections: SelectionRef[];
+  sourceQuerySelections: SelectionRef[];
+  sourceQueryAllReady: boolean;
   composerAttachments: ChatAttachmentRef[];
 };
 export type LessonComposerStateMap = Record<string, LessonComposerState>;
@@ -35,6 +38,8 @@ export const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   includeSelectionInPrompt: true,
   composerSelection: null,
   composerSelections: [],
+  sourceQuerySelections: [],
+  sourceQueryAllReady: false,
   composerAttachments: [],
 };
 
@@ -70,6 +75,7 @@ export function createChatMessage(
       | "agentActivity"
       | "guidedRequirementDiscovery"
       | "followUpSuggestions"
+      | "sourceCitations"
     >
   >
 ): ChatMessage {
@@ -85,7 +91,12 @@ export function createChatMessage(
 }
 
 export function createLessonComposerState(): LessonComposerState {
-  return { ...DEFAULT_LESSON_COMPOSER_STATE, composerSelections: [], composerAttachments: [] };
+  return {
+    ...DEFAULT_LESSON_COMPOSER_STATE,
+    composerSelections: [],
+    sourceQuerySelections: [],
+    composerAttachments: [],
+  };
 }
 
 export function formatDate(value: string) {
@@ -109,6 +120,47 @@ function metadataStringList(commit: CommitRecord, key: string): string[] {
     return [];
   }
   return value.flatMap((item) => typeof item === "string" && item.trim() ? [item.trim()] : []).slice(0, 4);
+}
+
+function sourceCitationsFromMetadata(value: unknown): SourceCitation[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const citation = item as Partial<SourceCitation>;
+    if (
+      typeof citation.evidence_id !== "string" ||
+      typeof citation.source_id !== "string" ||
+      typeof citation.source_title !== "string" ||
+      typeof citation.excerpt !== "string" ||
+      typeof citation.source_content_hash !== "string" ||
+      typeof citation.parser_run_id !== "string"
+    ) {
+      return [];
+    }
+    return [{
+      evidence_id: citation.evidence_id,
+      source_id: citation.source_id,
+      source_title: citation.source_title,
+      section_path: Array.isArray(citation.section_path)
+        ? citation.section_path.filter((part): part is string => typeof part === "string")
+        : [],
+      page_start: typeof citation.page_start === "number" ? citation.page_start : null,
+      page_end: typeof citation.page_end === "number" ? citation.page_end : null,
+      excerpt: citation.excerpt,
+      chunk_ids: Array.isArray(citation.chunk_ids)
+        ? citation.chunk_ids.filter((chunk): chunk is string => typeof chunk === "string")
+        : [],
+      bbox: Array.isArray(citation.bbox)
+        ? citation.bbox.filter((coordinate): coordinate is number => typeof coordinate === "number")
+        : [],
+      source_content_hash: citation.source_content_hash,
+      parser_run_id: citation.parser_run_id,
+    }];
+  });
 }
 
 export function metadataBool(commit: CommitRecord, key: string): boolean {
@@ -519,6 +571,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
               commit.metadata?.guided_requirement_discovery
             ),
             followUpSuggestions: metadataStringList(commit, "follow_up_suggestions"),
+            sourceCitations: sourceCitationsFromMetadata(commit.metadata?.source_citations),
             commitId: commit.id,
             parentCommitIds: commit.parent_ids,
           }
