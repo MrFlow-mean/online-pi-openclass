@@ -19,6 +19,7 @@ from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.services.board_asset_store import BoardAssetError, BoardAssetRecord, BoardAssetStore
 from app.services.board_visual_insertion import (
+    BoardVisualInsertionError,
     apply_board_insertion_plan,
     build_board_insertion_plan,
     derive_board_visual_placements,
@@ -101,6 +102,31 @@ def test_plan_orders_frozen_visual_evidence_by_source_order_index() -> None:
 
     assert [item.visual_id for item in plan.items] == ["visual_z", "visual_a"]
     assert [item.order_index for item in plan.items] == [1, 2]
+
+
+def test_required_visual_plan_rejects_a_missing_source_crop(tmp_path) -> None:
+    visuals = [_visual("visual_1"), _visual("visual_2", order_index=2)]
+    for visual in visuals:
+        visual["metadata"] = {"board_render_policy": "original_capture_required"}
+    plan = build_board_insertion_plan(visuals, nonce="fixed")
+    assert all(item.original_capture_required for item in plan.items)
+    assert all(not item.recreation_marker for item in plan.items)
+    document = build_document(
+        title="Board",
+        content_text=f"Only one visual is introduced.\n\n{plan.items[0].marker}",
+    )
+
+    with pytest.raises(BoardVisualInsertionError):
+        apply_board_insertion_plan(
+            document,
+            plan=plan,
+            placements=[],
+            owner_user_id="owner_a",
+            lesson_id="lesson_a",
+            visual_bytes_resolver=lambda _visual_id: _PNG,
+            asset_store=_store(tmp_path),
+            require_all=True,
+        )
 
 
 def _placement(item, target: str) -> dict[str, str]:

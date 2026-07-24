@@ -103,6 +103,25 @@ def test_pdf_extractor_rejects_full_page_scan_layer_but_keeps_real_figure(
     assert image_visuals[0].metadata["embedded_component_count"] == 1
 
 
+def test_pdf_extractor_limits_visuals_to_authenticated_page_range(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "chapter-range.pdf"
+    figure = ImageReader(io.BytesIO(_png(220, 140, label="chapter figure")))
+    pdf = canvas.Canvas(str(path), pagesize=(600, 800))
+    for page_no in range(1, 4):
+        pdf.drawImage(figure, 170, 330, width=220, height=140)
+        pdf.drawString(170, 310, f"Figure {page_no}: page-specific visual")
+        pdf.showPage()
+    pdf.save()
+
+    result = extract_pdf_visuals(path, page_start=2, page_end=2)
+
+    assert result.status == "ready"
+    assert result.visuals
+    assert {visual.page_no for visual in result.visuals} == {2}
+
+
 def test_pdf_extractor_crops_caption_anchored_visual_baked_into_page_scan(
     tmp_path: Path,
 ) -> None:

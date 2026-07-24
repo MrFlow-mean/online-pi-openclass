@@ -7,7 +7,7 @@ import tempfile
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from app.models import (
     SourceChapter,
@@ -32,6 +32,7 @@ from app.services.source_visual_extraction_office import extract_office_visuals
 from app.services.source_visual_extraction_pdf import extract_pdf_visuals
 from app.services.source_visual_extraction_types import RawSourceVisual, SourceVisualAdapterResult
 from app.services.source_visual_libreoffice import LibreOfficeRenderError, LibreOfficeRenderer, libreoffice_renderer
+from app.services.source_visual_range_scope import scope_visual_adapter_result
 from app.services.source_visual_storage import (
     SourceVisualStorageError,
     persist_source_visual_asset,
@@ -65,6 +66,8 @@ class SourceVisualExtractor:
         structure: SourceStructure,
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
+        source_range: dict[str, Any] | None = None,
+        source_range_chapter: SourceChapter | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> SourceVisualExtractionResult:
         if _is_audio_or_video(record):
@@ -79,6 +82,7 @@ class SourceVisualExtractor:
             adapter_result = self._adapter_result(
                 path=path,
                 record=record,
+                source_range=source_range,
                 progress_callback=progress_callback,
             )
         except Exception as exc:
@@ -103,6 +107,12 @@ class SourceVisualExtractor:
                 visuals=[],
                 warnings=failure_warnings,
                 status="failed",
+            )
+        if source_range is not None:
+            adapter_result = scope_visual_adapter_result(
+                adapter_result,
+                source_range=source_range,
+                path=path,
             )
         if adapter_result.native_chart_count:
             rendered = self._render_native_office_visuals(
@@ -136,6 +146,26 @@ class SourceVisualExtractor:
                 warnings=[warning],
                 status="failed",
             )
+        if source_range is not None and source_range_chapter is not None:
+            visuals = [
+                visual.model_copy(
+                    update={
+                        "chapter_id": source_range_chapter.id,
+                        "anchor_status": (
+                            "unverified"
+                            if visual.metadata.get("force_unverified")
+                            else "verified"
+                        ),
+                        "metadata": {
+                            **visual.metadata,
+                            "source_range": source_range,
+                            "source_range_anchor_verified": True,
+                            "board_render_policy": "original_capture_required",
+                        },
+                    }
+                )
+                for visual in visuals
+            ]
         warnings = list(dict.fromkeys([*adapter_result.warnings, *materialization_warnings]))
         status: SourceVisualIndexStatus = adapter_result.status
         if materialization_warnings and status == "ready":
@@ -166,11 +196,22 @@ class SourceVisualExtractor:
         *,
         path: Path,
         record: SourceIngestionRecord,
+        source_range: dict[str, Any] | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> SourceVisualAdapterResult:
         suffix = path.suffix.lower()
         if suffix == ".pdf" or record.mime_type == "application/pdf":
-            return extract_pdf_visuals(path, progress_callback=progress_callback)
+            page_start = None
+            page_end = None
+            if source_range and source_range.get("kind") == "pdf_pages":
+                page_start = _range_int(source_range.get("start"))
+                page_end = _range_int(source_range.get("end"))
+            return extract_pdf_visuals(
+                path,
+                page_start=page_start,
+                page_end=page_end,
+                progress_callback=progress_callback,
+            )
         office_format = _office_format(suffix=suffix, mime_type=record.mime_type)
         if office_format:
             return extract_office_visuals(path, office_format=office_format)
@@ -814,6 +855,15 @@ def _office_format(*, suffix: str, mime_type: str) -> str:
     if "spreadsheetml.sheet" in normalized_mime:
         return "xlsx"
     return ""
+
+
+def _range_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    raw = str(value or "").strip()
+    return int(raw) if raw.isdigit() else None
 
 
 source_visual_extractor = SourceVisualExtractor()

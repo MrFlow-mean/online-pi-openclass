@@ -97,6 +97,8 @@ class _VectorLayoutRegion:
 def extract_pdf_visuals(
     path: Path,
     *,
+    page_start: int | None = None,
+    page_end: int | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> SourceVisualAdapterResult:
     try:
@@ -118,17 +120,31 @@ def extract_pdf_visuals(
     render_budget = _PdfRenderBudget()
     native_image_identities: dict[int, str] = {}
     try:
-        if document.page_count > MAX_PDF_SOURCE_PAGES:
+        selected_page_start = page_start or 1
+        selected_page_end = page_end or document.page_count
+        if (
+            selected_page_start < 1
+            or selected_page_end < selected_page_start
+            or selected_page_end > document.page_count
+        ):
+            return SourceVisualAdapterResult(
+                status="failed",
+                warnings=["The selected PDF visual range is outside the document."],
+            )
+        selected_page_count = selected_page_end - selected_page_start + 1
+        if selected_page_count > MAX_PDF_SOURCE_PAGES:
             return SourceVisualAdapterResult(
                 status="failed",
                 warnings=[
-                    f"PDF has {document.page_count} pages; the visual indexing limit is "
+                    f"The selected PDF range has {selected_page_count} pages; the visual indexing limit is "
                     f"{MAX_PDF_SOURCE_PAGES}."
                 ],
             )
-        for page_index in range(document.page_count):
+        for completed, page_index in enumerate(
+            range(selected_page_start - 1, selected_page_end)
+        ):
             if progress_callback is not None:
-                progress_callback(page_index, document.page_count)
+                progress_callback(completed, selected_page_count)
             page = document.load_page(page_index)
             page_rect = page.rect
             occupied: list[tuple[float, float, float, float]] = []
@@ -395,7 +411,7 @@ def extract_pdf_visuals(
 
     finally:
         if progress_callback is not None and not render_budget.exhausted:
-            progress_callback(document.page_count, document.page_count)
+            progress_callback(selected_page_count, selected_page_count)
         document.close()
     if render_budget.exhausted:
         warnings.append("PDF visual indexing stopped at the configured render resource budget.")

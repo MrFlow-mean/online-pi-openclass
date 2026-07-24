@@ -170,6 +170,9 @@ For a manifest item without `recreation_marker`, write its `marker` exactly once
 ordinary paragraph immediately after the paragraph that introduces it. OpenClass will materialize
 the backend-owned editable table or original asset.
 
+When `original_capture_required` is true, the marker represents the required original crop. Do not
+replace it with a rewritten table, description, approximation, or recreated diagram.
+
 For a manifest item with `recreation_marker`, inspect its corresponding image input when
 `image_input_index` is present, otherwise use only its supplied extracted visual description. Choose
 exactly one of these two paths:
@@ -936,7 +939,12 @@ def _image_data_url(stored: tuple[SourceVisualAsset, bytes] | None) -> str:
 
 
 def _is_structured_table_evidence(evidence: SourceVisualEvidence) -> bool:
-    return evidence.kind == "table" and bool(evidence.table_data)
+    return (
+        evidence.kind == "table"
+        and bool(evidence.table_data)
+        and evidence.metadata.get("board_render_policy")
+        != "original_capture_required"
+    )
 
 
 def _prepare_source_generation_inputs(
@@ -1398,6 +1406,7 @@ def _visual_manifest_payload(
                     if item.recreation_marker
                     else ["backend_materialization"]
                 ),
+                "original_capture_required": item.original_capture_required,
                 "image_input_index": image_input_indexes.get(item.visual_id),
                 "order_index": item.order_index,
                 "kind": item.kind,
@@ -1719,6 +1728,10 @@ def _process_structured_existing_board_turn(
                 lesson_id=initial_lesson.id,
                 visual_bytes_resolver=resolve_visual_bytes,
                 preserved_document=current_document,
+                require_all=all(
+                    item.original_capture_required
+                    for item in source_context.insertion_plan.items
+                ),
             )
             next_document = visual_result.document
     changed = document_changed(current_document, next_document)
@@ -2245,6 +2258,10 @@ def process_codex_chat_on_lesson(
                             lesson_id=lesson.id,
                             visual_bytes_resolver=resolve_visual_bytes,
                             preserved_document=current_document,
+                            require_all=all(
+                                item.original_capture_required
+                                for item in source_context.insertion_plan.items
+                            ),
                         )
                         next_document = visual_result.document
                 changed = document_changed(current_document, next_document)

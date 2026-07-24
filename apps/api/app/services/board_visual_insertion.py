@@ -45,6 +45,7 @@ class PlannedBoardVisual:
     content_hash: str = ""
     position_hash: str = ""
     table_data: Any = None
+    original_capture_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,10 @@ class BoardVisualInsertionResult:
     original_visual_ids: list[str] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     asset_ids: list[str] = field(default_factory=list)
+
+
+class BoardVisualInsertionError(RuntimeError):
+    """Raised when a required source visual cannot be inserted exactly once."""
 
 
 def build_board_insertion_plan(
@@ -105,9 +110,17 @@ def build_board_insertion_plan(
             )
         kind = _string_value(visual, "kind") or "image"
         table_data = _value(visual, "table_data")
+        metadata = _value(visual, "metadata")
+        original_capture_required = bool(
+            isinstance(metadata, dict)
+            and metadata.get("board_render_policy") == "original_capture_required"
+        )
         supports_editable_recreation = not (
-            kind in {"table", "structured_table", "native_table"}
-            and table_data is not None
+            original_capture_required
+            or (
+                kind in {"table", "structured_table", "native_table"}
+                and table_data is not None
+            )
         )
         items.append(
             PlannedBoardVisual(
@@ -138,6 +151,7 @@ def build_board_insertion_plan(
                 content_hash=_string_value(visual, "asset_hash", "content_hash", "image_hash"),
                 position_hash=_string_value(visual, "position_hash"),
                 table_data=table_data,
+                original_capture_required=original_capture_required,
             )
         )
     return BoardInsertionPlan(nonce=plan_nonce, items=tuple(items))
@@ -197,6 +211,7 @@ def apply_board_insertion_plan(
     visual_bytes_resolver: VisualBytesResolver,
     asset_store: BoardAssetStore | None = None,
     preserved_document: BoardDocument | None = None,
+    require_all: bool = False,
 ) -> BoardVisualInsertionResult:
     store = asset_store or get_board_asset_store()
     content_json = _canonical_content_json(document)
@@ -234,6 +249,15 @@ def apply_board_insertion_plan(
                 item.visual_id,
                 item.marker,
                 "placement_missing",
+                lesson_id=lesson_id,
+            )
+            continue
+        if require_all and len(located) != 1:
+            _record_skip(
+                result,
+                item.visual_id,
+                item.marker,
+                "placement_duplicate",
                 lesson_id=lesson_id,
             )
             continue
@@ -377,6 +401,13 @@ def apply_board_insertion_plan(
         if cleaned is not None:
             next_nodes.append(cleaned)
 
+    if require_all and (
+        result.skipped
+        or set(result.applied_visual_ids) != {item.visual_id for item in plan.items}
+    ):
+        raise BoardVisualInsertionError(
+            "The board omitted or failed to preserve one or more required source visuals."
+        )
     normalized_nodes = next_nodes or [{"type": "paragraph"}]
     next_json = {**content_json, "type": "doc", "content": normalized_nodes}
     result.document = rebuild_document_from_content_json(document, next_json)
@@ -588,7 +619,11 @@ def _resource_visual_node(item: PlannedBoardVisual, asset_id: str) -> dict[str, 
 
 
 def _is_table_visual(item: PlannedBoardVisual) -> bool:
-    return item.kind in {"table", "structured_table", "native_table"} and item.table_data is not None
+    return (
+        not item.original_capture_required
+        and item.kind in {"table", "structured_table", "native_table"}
+        and item.table_data is not None
+    )
 
 
 def _table_node(item: PlannedBoardVisual) -> dict[str, Any] | None:

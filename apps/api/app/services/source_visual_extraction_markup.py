@@ -531,6 +531,7 @@ def _extract_epub(path: Path) -> SourceVisualAdapterResult:
                             confidence=0.92,
                             metadata={
                                 "epub_spine_index": spine_index,
+                                "epub_spine_item": item_name,
                                 "epub_asset": target,
                                 "text_offset_anchor_safe": document_included,
                             },
@@ -553,6 +554,7 @@ def _extract_epub(path: Path) -> SourceVisualAdapterResult:
                             confidence=0.9,
                             metadata={
                                 "epub_spine_index": spine_index,
+                                "epub_spine_item": item_name,
                                 "text_offset_anchor_safe": document_included,
                                 **_unrepresented_markup_table_merge_metadata(table),
                             },
@@ -584,6 +586,7 @@ def _extract_epub(path: Path) -> SourceVisualAdapterResult:
                             confidence=0.9,
                             metadata={
                                 "epub_spine_index": spine_index,
+                                "epub_spine_item": item_name,
                                 "original_mime_type": "image/svg+xml",
                                 "text_offset_anchor_safe": document_included,
                             },

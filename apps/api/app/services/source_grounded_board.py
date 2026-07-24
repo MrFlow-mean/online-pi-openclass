@@ -26,6 +26,10 @@ from app.services.source_range_reader import (
     is_codex_directory_catalog,
     read_verified_source_range,
 )
+from app.services.source_range_visuals import (
+    SourceRangeVisualError,
+    extract_verified_range_visuals,
+)
 from app.services.source_structure_indexer import (
     source_structure_needs_upgrade,
 )
@@ -278,10 +282,22 @@ def resolve_source_grounded_board_plan(
     ):
         raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")
 
-    visual_evidence = (
-        []
-        if uses_on_demand_range
-        else source_structure_store.visual_evidence_for_scope(
+    if uses_on_demand_range:
+        assert range_read is not None
+        assert chapter is not None
+        try:
+            visual_evidence = extract_verified_range_visuals(
+                source=source,
+                structure=view.structure,
+                chapter=chapter,
+                source_path=range_read.source_path,
+                source_range=range_read.source_range,
+                text_evidence=evidence,
+            )
+        except SourceRangeVisualError as exc:
+            raise SourceGroundedBoardError(str(exc)) from exc
+    else:
+        visual_evidence = source_structure_store.visual_evidence_for_scope(
             owner_user_id=owner_user_id,
             package_id=package.id,
             source_ingestion_id=source.id,
@@ -297,7 +313,6 @@ def resolve_source_grounded_board_plan(
                 else chapter.page_end if chapter else None
             ),
         )
-    )
 
     bundle = EvidenceBundle(
         owner_user_id=owner_user_id,
@@ -324,6 +339,8 @@ def resolve_source_grounded_board_plan(
             "catalog_version": range_read.catalog_version if range_read else None,
             "source_content_hash": range_read.source_content_hash if range_read else "",
             "source_range": range_read.source_range if range_read else None,
+            "visual_coverage_required": uses_on_demand_range,
+            "visual_coverage_count": len(visual_evidence),
         },
     )
     source_evidence_store.save_bundle(bundle)
