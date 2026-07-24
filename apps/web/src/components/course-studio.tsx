@@ -22,6 +22,10 @@ import {
 } from "@/components/course-studio/selection-utils";
 import { LessonTabs } from "@/components/course-studio/lesson-tabs";
 import { SelectionPopover } from "@/components/course-studio/selection-popover";
+import {
+  appendSourceQuerySelection,
+  sourceQueryScopeFromComposer,
+} from "@/components/course-studio/source-query-scope";
 import { CourseStudioSidePanel, type CourseStudioSidebarTab } from "@/components/course-studio/studio-side-panel";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { useBoardDraft } from "@/hooks/course-studio/use-board-draft";
@@ -223,6 +227,9 @@ export function CourseStudio() {
       : [];
   const composerSelection = composerSelections[composerSelections.length - 1] ?? null;
   const composerAttachments = activeComposerState.composerAttachments;
+  const sourceQuerySelections = activeComposerState.sourceQuerySelections ?? [];
+  const sourceQueryAllReady = activeComposerState.sourceQueryAllReady ?? false;
+  const sourceQueryScope = sourceQueryScopeFromComposer(sourceQuerySelections, sourceQueryAllReady);
   function exitAnyPreviewMode() {
     if (lessonPackage.isPlaybackActive) {
       lessonPackage.exitPlayback();
@@ -249,7 +256,8 @@ export function CourseStudio() {
     updateCoursePackage,
     updateLessonMessages,
     updateLessonComposerState,
-    clearSelection,
+    sourceQueryScope,
+    clearSelection: clearTurnSelection,
     setStreamingDocumentPreview: boardDraft.setStreamingDocumentPreview,
     setError,
     setBusyAction,
@@ -390,6 +398,7 @@ export function CourseStudio() {
       selection: includeSelectionInPrompt ? composerSelection : null,
       selections: includeSelectionInPrompt ? composerSelections : [],
       attachments: composerAttachments,
+      source_query_scope: sourceQueryScope ?? undefined,
     };
     const canUseRealtimeText =
       voiceActive &&
@@ -398,7 +407,8 @@ export function CourseStudio() {
       !realtimePayload.formula_ink &&
       !realtimePayload.board_generation_action &&
       !realtimePayload.teaching_action;
-    if (canUseRealtimeText && sendRealtimeText(realtimePayload.message)) {
+    const canUseRealtimeSourceFreeText = canUseRealtimeText && !realtimePayload.source_query_scope;
+    if (canUseRealtimeSourceFreeText && sendRealtimeText(realtimePayload.message)) {
       updateActiveLessonComposerState((current) => ({
         ...current,
         chatInput: "",
@@ -458,6 +468,19 @@ export function CourseStudio() {
       includeSelectionInPrompt: true,
       composerSelection: null,
       composerSelections: [],
+      sourceQuerySelections: [],
+      sourceQueryAllReady: false,
+    }));
+  }
+
+  function clearTurnSelection() {
+    clearTransientSelection();
+    updateActiveLessonComposerState((current) => ({
+      ...current,
+      composerMode: "ask",
+      includeSelectionInPrompt: true,
+      composerSelection: null,
+      composerSelections: [],
     }));
   }
 
@@ -507,7 +530,11 @@ export function CourseStudio() {
   }
 
   function applySourceReference(sourceReference: SelectionRef) {
-    if (sourceReference.kind !== "source" || !sourceReference.source_chapter_id) {
+    if (
+      sourceReference.kind !== "source" ||
+      !sourceReference.source_ingestion_id ||
+      !sourceReference.source_content_hash
+    ) {
       return;
     }
     setSelection(sourceReference);
@@ -516,12 +543,27 @@ export function CourseStudio() {
       ...current,
       composerMode: "ask",
       includeSelectionInPrompt: true,
-      composerSelection: sourceReference,
-      composerSelections: [sourceReference],
+      sourceQuerySelections: appendSourceQuerySelection(
+        current.sourceQueryAllReady ? [] : current.sourceQuerySelections,
+        sourceReference
+      ),
+      sourceQueryAllReady: false,
     }));
     window.requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
+  }
+
+  function applyAllReadySourcesReference() {
+    setSelection(null);
+    setSelectionPopover(null);
+    updateActiveLessonComposerState((current) => ({
+      ...current,
+      composerMode: "ask",
+      sourceQuerySelections: [],
+      sourceQueryAllReady: true,
+    }));
+    window.requestAnimationFrame(() => chatInputRef.current?.focus());
   }
 
   function handleFormulaInkSubmit(payload: FormulaInkEditorSubmitPayload) {
@@ -804,6 +846,8 @@ export function CourseStudio() {
           composerMode={composerMode}
           composerSelection={composerSelection}
           composerSelections={composerSelections}
+          sourceQuerySelections={sourceQuerySelections}
+          sourceQueryAllReady={sourceQueryAllReady}
           includeSelectionInPrompt={includeSelectionInPrompt}
           onApplySelection={applySelection}
           onContinueTeaching={() => void handleContinueTeaching()}
@@ -902,6 +946,7 @@ export function CourseStudio() {
           onSubmitMerge={lessonMerge.submit}
           onError={setError}
           onSourceReference={applySourceReference}
+          onAllReadySourcesReference={applyAllReadySourcesReference}
           geometryReference={geometryReference}
           onGeometryReferenceClear={() => setGeometryReference(null)}
           textModel={selectedTextModel}

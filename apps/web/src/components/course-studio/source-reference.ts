@@ -15,8 +15,11 @@ export function createOpenNotebookSourceSelection(source: SourceIngestionRecord)
     source_title: source.title,
     source_uri: source.source_uri,
     source_scope_kind: "source",
+    source_content_hash: metadataContentHash(source),
   };
 }
+
+export const createWholeSourceSelection = createOpenNotebookSourceSelection;
 
 export function createSourceChapterSelection(
   source: SourceIngestionRecord,
@@ -107,4 +110,9 @@ function sourceChapterPageRange(chapter: SourceChapter) {
     return `p. ${chapter.page_start}`;
   }
   return `pp. ${chapter.page_start}-${displayEnd}`;
+}
+
+function metadataContentHash(source: SourceIngestionRecord) {
+  const value = source.metadata?.content_hash ?? source.metadata?.source_content_hash;
+  return typeof value === "string" ? value.trim() : "";
 }

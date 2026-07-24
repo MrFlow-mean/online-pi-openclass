@@ -18,7 +18,7 @@ import {
   selectionForModelOption,
 } from "@/components/course-studio/model-catalog";
 import {
-  createOpenNotebookSourceSelection,
+  createWholeSourceSelection,
 } from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
@@ -52,6 +52,7 @@ type SourceImportPanelProps = {
   disabled?: boolean;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onAllReadySourcesReference?: () => void;
 };
 
 const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
@@ -94,6 +95,7 @@ export function SourceImportPanel({
   disabled = false,
   onError,
   onSourceReference,
+  onAllReadySourcesReference,
 }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
@@ -132,6 +134,7 @@ export function SourceImportPanel({
     ? selectionForModelOption(selectedCatalogModelOption, catalogModel)
     : null;
   const sortedSources = sortSources(sources, sortOption);
+  const readyForQaCount = sources.filter(sourceIsReadyForQa).length;
 
   useEffect(() => {
     if (
@@ -472,6 +475,16 @@ export function SourceImportPanel({
               onClear={batchManagement.clear}
               onRemove={() => void batchManagement.removeSelected()}
             />
+            {readyForQaCount && onAllReadySourcesReference ? (
+              <button
+                type="button"
+                onClick={onAllReadySourcesReference}
+                className="flex w-full items-center justify-between rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 text-left text-xs text-blue-800 transition hover:border-blue-200 hover:bg-blue-50"
+              >
+                <span className="font-semibold">检索全部可问答资料</span>
+                <span>{readyForQaCount} 份</span>
+              </button>
+            ) : null}
             {sortedSources.map((source) => (
               <SourceRow
                 key={source.id}
@@ -635,6 +648,7 @@ function SourceRow({
     structureQualityLevel
   );
   const processingState = getSourceProcessingState(source);
+  const qaReady = sourceIsReadyForQa(source);
 
   function toggleStructure() {
     if (!isReady) {
@@ -845,7 +859,7 @@ function SourceRow({
                   ? "建目录"
                   : STATUS_LABELS[source.status]}
               </span>
-              {isReady ? (
+              {isReady && source.qa_status ? (
                 <span
                   className={clsx(
                     "rounded-full px-2 py-0.5 text-[11px] font-semibold",
@@ -857,6 +871,11 @@ function SourceRow({
                   )}
                 >
                   {isOpenNotebookManaged ? "OpenNotebook" : structureLabel}
+                </span>
+              ) : null}
+              {isReady ? (
+                <span className={clsx("rounded-full px-2 py-0.5 text-[11px] font-semibold", sourceQaBadgeClass(source.qa_status))}>
+                  {sourceQaStatusLabel(source.qa_status)}
                 </span>
               ) : null}
               {isReady && !isOpenNotebookManaged && !isDirectoryOnlyCatalog ? (
@@ -871,13 +890,13 @@ function SourceRow({
                   {isLoadingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
                 </button>
               ) : null}
-              {isReady && isOpenNotebookManaged && onSourceReference ? (
+              {qaReady && onSourceReference ? (
                 <button
                   type="button"
-                  onClick={() => onSourceReference(createOpenNotebookSourceSelection(source))}
+                  onClick={() => onSourceReference(createWholeSourceSelection(source))}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-blue-600 transition hover:bg-blue-50"
-                  title="引用整份 OpenNotebook 资料"
-                  aria-label={`引用整份资料 ${source.title}`}
+                  title="在整份资料中问答"
+                  aria-label={`选择整份资料问答 ${source.title}`}
                 >
                   <TextQuote className="h-3.5 w-3.5" />
                 </button>
@@ -1047,7 +1066,7 @@ function SourceRow({
                   catalog={catalog}
                   expandedIds={expandedChapterIds}
                   onToggle={toggleChapter}
-                  onSourceReference={onSourceReference}
+                  onSourceReference={qaReady ? onSourceReference : undefined}
                 />
               ) : (
                 <SourceStructureEmptyState source={source} catalog={catalog} />
@@ -1098,7 +1117,51 @@ function sourceNeedsRefresh(source: SourceIngestionRecord) {
   if (ACTIVE_SOURCE_STATUSES.has(source.status)) {
     return true;
   }
+  if (source.qa_status === "pending" || source.qa_status === "indexing" || source.qa_status === "enhancing") {
+    return true;
+  }
   return source.status === "ready" && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status);
+}
+
+function sourceIsReadyForQa(source: SourceIngestionRecord) {
+  const qaStatus = source.qa_status as SourceIngestionRecord["qa_status"] | undefined;
+  return (
+    source.status === "ready" &&
+    (!qaStatus || qaStatus === "ready" || qaStatus === "enhancing" || qaStatus === "complete") &&
+    Boolean(metadataString(source, "content_hash") || metadataString(source, "source_content_hash"))
+  );
+}
+
+function sourceQaStatusLabel(status: SourceIngestionRecord["qa_status"]) {
+  if (status === "ready") {
+    return "可问答";
+  }
+  if (status === "enhancing") {
+    return "正在增强";
+  }
+  if (status === "complete") {
+    return "增强完成";
+  }
+  if (status === "failed") {
+    return "问答索引失败";
+  }
+  return "正在建立问答索引";
+}
+
+function sourceQaBadgeClass(status: SourceIngestionRecord["qa_status"]) {
+  if (status === "complete") {
+    return "bg-emerald-50 text-emerald-700";
+  }
+  if (status === "ready") {
+    return "bg-blue-50 text-blue-700";
+  }
+  if (status === "enhancing") {
+    return "bg-violet-50 text-violet-700";
+  }
+  if (status === "failed") {
+    return "bg-rose-50 text-rose-700";
+  }
+  return "bg-gray-100 text-gray-600";
 }
 
 function metadataString(source: SourceIngestionRecord, key: string) {

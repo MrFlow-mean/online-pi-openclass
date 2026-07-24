@@ -60,6 +60,7 @@ type CourseStudioSidePanelProps = {
   onSubmitMerge: () => void | Promise<void>;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onAllReadySourcesReference?: () => void;
   geometryReference: SelectionRef | null;
   onGeometryReferenceClear: () => void;
   textModel: AIModelSelection | null;
@@ -128,6 +129,7 @@ export function CourseStudioSidePanel({
   onSubmitMerge,
   onError,
   onSourceReference,
+  onAllReadySourcesReference,
   geometryReference,
   onGeometryReferenceClear,
   textModel,
@@ -261,6 +263,7 @@ export function CourseStudioSidePanel({
             defaultCatalogModel={defaultCatalogModel}
             onError={onError}
             onSourceReference={onSourceReference}
+            onAllReadySourcesReference={onAllReadySourcesReference}
           />
         ) : sidebarTab === "history" && mergeSession ? (
           <LessonMergePanel
