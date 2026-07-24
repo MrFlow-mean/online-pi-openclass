@@ -14,6 +14,7 @@ import type {
   CommunityVoteResult,
   CreateCommunityPostPayload,
   CreateCommunitySpacePayload,
+  UpdateCommunityPostPayload,
 } from "@/types";
 
 
@@ -43,6 +44,9 @@ async function communityRequest<T>(path: string, init?: RequestInit): Promise<T>
       // Keep the response body when the server did not return JSON.
     }
     throw new Error(message);
+  }
+  if (response.status === 204) {
+    return undefined as T;
   }
   return response.json() as Promise<T>;
 }
@@ -107,6 +111,19 @@ export const communityApi = {
     });
   },
 
+  updatePost(postId: string, payload: UpdateCommunityPostPayload) {
+    return communityRequest<CommunityPost>(`/api/community/posts/${encodeURIComponent(postId)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deletePost(postId: string) {
+    return communityRequest<void>(`/api/community/posts/${encodeURIComponent(postId)}`, {
+      method: "DELETE",
+    });
+  },
+
   getPost(postId: string) {
     return communityRequest<CommunityPostDetail>(`/api/community/posts/${encodeURIComponent(postId)}`);
   },
@@ -121,6 +138,19 @@ export const communityApi = {
     );
   },
 
+  updateComment(commentId: string, body: string) {
+    return communityRequest<CommunityComment>(`/api/community/comments/${encodeURIComponent(commentId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ body }),
+    });
+  },
+
+  deleteComment(commentId: string) {
+    return communityRequest<void>(`/api/community/comments/${encodeURIComponent(commentId)}`, {
+      method: "DELETE",
+    });
+  },
+
   addAnswer(postId: string, body: string) {
     return communityRequest<CommunityAnswer>(
       `/api/community/posts/${encodeURIComponent(postId)}/answers`,
@@ -129,6 +159,19 @@ export const communityApi = {
         body: JSON.stringify({ body }),
       }
     );
+  },
+
+  updateAnswer(answerId: string, body: string) {
+    return communityRequest<CommunityAnswer>(`/api/community/answers/${encodeURIComponent(answerId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ body }),
+    });
+  },
+
+  deleteAnswer(answerId: string) {
+    return communityRequest<void>(`/api/community/answers/${encodeURIComponent(answerId)}`, {
+      method: "DELETE",
+    });
   },
 
   vote(postId: string, value: -1 | 0 | 1) {

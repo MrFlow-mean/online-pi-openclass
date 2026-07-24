@@ -89,6 +89,12 @@ export interface CreateCommunityPostPayload {
   tags: string[];
 }
 
+export interface UpdateCommunityPostPayload {
+  title: string;
+  body: string;
+  tags: string[];
+}
+
 export interface CommunityVoteResult {
   post_id: string;
   viewer_vote: number;
