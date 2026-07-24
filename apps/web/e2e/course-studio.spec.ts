@@ -293,6 +293,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   const solModel = {
     provider: "openai_codex",
     model: "gpt-5.6-sol",
+    access_method: "chatgpt_subscription",
     label: "OpenAI Codex GPT-5.6-Sol",
     capability: "text",
     enabled: true,
@@ -325,6 +326,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   const deepSeekModel = {
     provider: "deepseek",
     model: "deepseek-chat",
+    access_method: "platform_credits",
     label: "DeepSeek V4 Flash",
     capability: "text",
     enabled: true,
@@ -347,10 +349,15 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
           text: {
             provider: solModel.provider,
             model: solModel.model,
+            access_method: solModel.access_method,
             reasoning_effort: solModel.default_reasoning_effort,
             service_tier: null,
           },
-          realtime: { provider: "openai_codex", model: "realtime-unavailable" },
+          realtime: {
+            provider: "openai",
+            model: "realtime-unavailable",
+            access_method: "platform_credits",
+          },
         },
       }),
     });
@@ -589,6 +596,19 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await chatModelButton.click();
   const chatModelMenu = page.getByTestId("codex-model-settings-menu");
   await expect(chatModelMenu).toBeVisible();
+  await page.getByTestId("codex-model-access-row").click();
+  const chatAccessMenu = page.getByTestId("codex-model-access-menu");
+  await expect(chatAccessMenu).toBeVisible();
+  await expect(
+    chatAccessMenu.getByRole("button", { name: "选择调用途径 ChatGPT 订阅额度" })
+  ).toBeEnabled();
+  await expect(
+    chatAccessMenu.getByRole("button", { name: "选择调用途径 自有模型 API" })
+  ).toBeDisabled();
+  await expect(
+    chatAccessMenu.getByRole("button", { name: "选择调用途径 OpenClass 平台 API" })
+  ).toBeEnabled();
+  await page.getByTestId("codex-model-access-row").click();
   await page.getByTestId("codex-model-model-row").click();
   const chatModelSubmenu = page.getByTestId("codex-model-model-menu");
   await expect(chatModelSubmenu).toBeVisible();
@@ -705,6 +725,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(rebuildPostData).toContain('name="catalog_model"');
   expect(rebuildPostData).toContain('"provider":"openai_codex"');
   expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
+  expect(rebuildPostData).toContain('"access_method":"chatgpt_subscription"');
   expect(rebuildPostData).toContain('"reasoning_effort":"high"');
   expect(rebuildPostData).toContain('"service_tier":"priority"');
   releaseDelayedSingleCatalog();
@@ -733,14 +754,15 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
   expect(uploadPostData).toContain('"provider":"openai_codex"');
   expect(uploadPostData).toContain('"model":"gpt-5.6-luna"');
+  expect(uploadPostData).toContain('"access_method":"chatgpt_subscription"');
   expect(uploadPostData).toContain('"reasoning_effort":"medium"');
   expect(uploadPostData).toContain('"service_tier":null');
 
   await catalogModelButton.click();
-  await page.getByTestId("source-catalog-model-model-row").click();
+  await page.getByTestId("source-catalog-model-access-row").click();
   await page
-    .getByTestId("source-catalog-model-model-menu")
-    .getByRole("button", { name: "选择模型 DeepSeek V4 Flash" })
+    .getByTestId("source-catalog-model-access-menu")
+    .getByRole("button", { name: "选择调用途径 OpenClass 平台 API" })
     .click();
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 DeepSeek V4 Flash，推理强度 默认，速度 标准/
@@ -754,8 +776,14 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
   expect(uploadPostData).toContain('"provider":"deepseek"');
   expect(uploadPostData).toContain('"model":"deepseek-chat"');
+  expect(uploadPostData).toContain('"access_method":"platform_credits"');
 
   await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-access-row").click();
+  await page
+    .getByTestId("source-catalog-model-access-menu")
+    .getByRole("button", { name: "选择调用途径 ChatGPT 订阅额度" })
+    .click();
   await page.getByTestId("source-catalog-model-model-row").click();
   await page
     .getByTestId("source-catalog-model-model-menu")

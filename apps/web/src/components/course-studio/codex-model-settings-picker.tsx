@@ -4,18 +4,21 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
+  MODEL_ACCESS_METHODS,
+  modelAccessMethod,
   modelOptionKey,
   modelSelectionKey,
   selectionForModelOption,
 } from "@/components/course-studio/model-catalog";
 import type {
+  AIModelAccessMethod,
   AIModelOption,
   AIModelSelection,
   AIReasoningEffortOption,
   AIServiceTierOption,
 } from "@/types";
 
-type SettingsMenu = "model" | "reasoning" | "speed" | null;
+type SettingsMenu = "access" | "model" | "reasoning" | "speed" | null;
 type MenuPlacement = "above" | "below";
 type SubmenuSide = "left" | "right";
 type MenuPosition = { left: number; top: number };
@@ -174,6 +177,24 @@ export function CodexModelSettingsPicker({
   const modelLabel = shortModelLabel(selectedOption, normalizedSelection);
   const effortLabel = reasoningEffortLabel(normalizedSelection.reasoning_effort);
   const speedLabel = selectedServiceTier ? serviceTierLabel(selectedServiceTier) : "标准";
+  const selectedAccessMethod = modelAccessMethod(normalizedSelection);
+  const accessMethodLabel =
+    MODEL_ACCESS_METHODS.find((method) => method.id === selectedAccessMethod)?.shortLabel ??
+    selectedAccessMethod;
+  const visibleModelOptions = options.filter(
+    (option) => modelAccessMethod(option) === selectedAccessMethod,
+  );
+
+  function selectionForAccessMethod(accessMethod: AIModelAccessMethod) {
+    const routeOptions = options.filter(
+      (option) => modelAccessMethod(option) === accessMethod && option.enabled,
+    );
+    const nextOption =
+      routeOptions.find((option) => option.model === normalizedSelection.model) ??
+      routeOptions.find((option) => option.default) ??
+      routeOptions[0];
+    return nextOption ? selectionForModelOption(nextOption, normalizedSelection) : null;
+  }
 
   function applySelection(selection: AIModelSelection) {
     setActiveMenu(null);
@@ -331,6 +352,13 @@ export function CodexModelSettingsPicker({
               className="fixed z-[100] w-56 rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
             >
               <SettingsRow
+                label="调用途径"
+                value={accessMethodLabel}
+                active={activeMenu === "access"}
+                testId={`${testIdPrefix}-access-row`}
+                onClick={() => setActiveMenu((current) => (current === "access" ? null : "access"))}
+              />
+              <SettingsRow
                 label="模型"
                 value={modelLabel}
                 active={activeMenu === "model"}
@@ -379,11 +407,34 @@ export function CodexModelSettingsPicker({
                 className="fixed z-[110] max-h-[420px] w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
               >
                 <p className="px-2.5 pb-1 pt-1.5 text-sm text-gray-400">
-                  {activeMenu === "model" ? "模型" : activeMenu === "reasoning" ? "推理强度" : "速度"}
+                  {activeMenu === "access"
+                    ? "调用途径"
+                    : activeMenu === "model"
+                      ? "模型"
+                      : activeMenu === "reasoning"
+                        ? "推理强度"
+                        : "速度"}
                 </p>
 
+                {activeMenu === "access"
+                  ? MODEL_ACCESS_METHODS.map((method) => {
+                      const nextSelection = selectionForAccessMethod(method.id);
+                      return (
+                        <OptionButton
+                          key={method.id}
+                          label={method.label}
+                          description={method.description}
+                          selected={method.id === selectedAccessMethod}
+                          ariaLabel={`选择调用途径 ${method.label}`}
+                          disabled={!nextSelection}
+                          onClick={() => nextSelection && applySelection(nextSelection)}
+                        />
+                      );
+                    })
+                  : null}
+
                 {activeMenu === "model"
-                  ? options.map((option) => (
+                  ? visibleModelOptions.map((option) => (
                       <OptionButton
                         key={modelOptionKey(option)}
                         label={shortModelLabel(option, normalizedSelection)}
@@ -448,7 +499,7 @@ export function CodexModelSettingsPicker({
         type="button"
         data-testid={`${testIdPrefix}-settings-button`}
         aria-expanded={open}
-        aria-label={`${contextLabel}，当前 ${modelLabel}，推理强度 ${effortLabel}，速度 ${speedLabel}`}
+        aria-label={`${contextLabel}，当前 ${modelLabel}，推理强度 ${effortLabel}，速度 ${speedLabel}，调用途径 ${accessMethodLabel}`}
         disabled={disabled}
         onClick={togglePicker}
         className="flex h-10 w-full items-center justify-center gap-1.5 rounded-full bg-gray-100 px-3 text-sm text-gray-900 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-gray-100"

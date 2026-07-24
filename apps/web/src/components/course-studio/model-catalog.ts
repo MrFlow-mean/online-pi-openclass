@@ -1,4 +1,9 @@
-import type { AIModelCatalog, AIModelOption, AIModelSelection } from "@/types";
+import type {
+  AIModelAccessMethod,
+  AIModelCatalog,
+  AIModelOption,
+  AIModelSelection,
+} from "@/types";
 
 export type GoogleRealtimeAudioMessage = {
   setupComplete?: Record<string, unknown>;
@@ -33,6 +38,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     {
       provider: "openai_codex",
       model: "gpt-5.6-sol",
+      access_method: "chatgpt_subscription",
       label: "OpenAI Codex GPT-5.6-Sol",
       capability: "text",
       enabled: false,
@@ -44,6 +50,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     {
       provider: "openai",
       model: "gpt-realtime-2.1",
+      access_method: "platform_credits",
       label: "OpenAI GPT Realtime 2.1",
       capability: "realtime",
       enabled: false,
@@ -53,10 +60,63 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
   ],
   defaults: {
-    text: { provider: "openai_codex", model: "gpt-5.6-sol" },
-    realtime: { provider: "openai", model: "gpt-realtime-2.1" },
+    text: {
+      provider: "openai_codex",
+      model: "gpt-5.6-sol",
+      access_method: "chatgpt_subscription",
+    },
+    realtime: {
+      provider: "openai",
+      model: "gpt-realtime-2.1",
+      access_method: "platform_credits",
+    },
   },
 };
+
+export const MODEL_ACCESS_METHODS: ReadonlyArray<{
+  id: AIModelAccessMethod;
+  label: string;
+  shortLabel: string;
+  description: string;
+}> = [
+  {
+    id: "chatgpt_subscription",
+    label: "ChatGPT 订阅额度",
+    shortLabel: "ChatGPT 订阅",
+    description: "通过已连接的 ChatGPT 账号调用 Codex 订阅模型。",
+  },
+  {
+    id: "personal_api",
+    label: "自有模型 API",
+    shortLabel: "自有 API",
+    description: "使用你自己的模型 API Key，由对应服务商直接计费。",
+  },
+  {
+    id: "platform_credits",
+    label: "OpenClass 平台 API",
+    shortLabel: "平台 API",
+    description: "通过 OpenClass 托管的模型 API 调用；接入账户服务后使用平台充值额度结算。",
+  },
+];
+
+const DEFAULT_ACCESS_METHOD_BY_PROVIDER: Partial<
+  Record<AIModelSelection["provider"], AIModelAccessMethod>
+> = {
+  openai_codex: "chatgpt_subscription",
+  openai: "platform_credits",
+  deepseek: "platform_credits",
+};
+
+export function modelAccessMethod(
+  selection: Pick<AIModelSelection, "provider" | "access_method">
+): AIModelAccessMethod {
+  return selection.access_method ?? DEFAULT_ACCESS_METHOD_BY_PROVIDER[selection.provider] ?? "personal_api";
+}
+
+export function modelAccessMethodLabel(selection: AIModelSelection | AIModelOption): string {
+  const method = modelAccessMethod(selection);
+  return MODEL_ACCESS_METHODS.find((item) => item.id === method)?.label ?? method;
+}
 
 export const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
   openai: "OpenAI",
@@ -77,11 +137,11 @@ const DISABLED_TEXT_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
 const DISABLED_REALTIME_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
 
 export function modelSelectionKey(selection: AIModelSelection): string {
-  return `${selection.provider}:${selection.model}`;
+  return `${modelAccessMethod(selection)}:${selection.provider}:${selection.model}`;
 }
 
 export function modelOptionKey(option: AIModelOption): string {
-  return `${option.provider}:${option.model}`;
+  return `${modelAccessMethod(option)}:${option.provider}:${option.model}`;
 }
 
 export function findModelOption(options: AIModelOption[], selection: AIModelSelection | null): AIModelOption | null {
@@ -162,6 +222,7 @@ export function selectionForModelOption(
   return {
     provider: option.provider,
     model: option.model,
+    access_method: option.access_method,
     reasoning_effort: reasoningEffort,
     service_tier: serviceTier,
   };
@@ -177,6 +238,8 @@ function isModelSelection(value: unknown): value is AIModelSelection {
     candidate.provider in PROVIDER_LABELS &&
     typeof candidate.model === "string" &&
     candidate.model.trim().length > 0 &&
+    (candidate.access_method == null ||
+      MODEL_ACCESS_METHODS.some((item) => item.id === candidate.access_method)) &&
     (candidate.reasoning_effort == null || typeof candidate.reasoning_effort === "string") &&
     (candidate.service_tier == null || typeof candidate.service_tier === "string")
   );

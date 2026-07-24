@@ -537,11 +537,13 @@ def _text_model_selection(request: ChatRequest, *, user_id: str) -> AIModelSelec
         return AIModelSelection(
             provider=getattr(default_selection, "provider", "openai_codex"),
             model=str(getattr(default_selection, "model", DEFAULT_CODEX_MODEL)),
+            access_method=getattr(default_selection, "access_method", None),
         )
     except Exception:
         return AIModelSelection(
             provider="openai_codex",
             model=_codex_model(request, user_id=user_id),
+            access_method="chatgpt_subscription",
         )
 
 

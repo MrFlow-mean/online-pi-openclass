@@ -86,6 +86,10 @@ export type AIProvider =
   | "minimax"
   | "openai_compatible"
   | "anthropic_compatible";
+export type AIModelAccessMethod =
+  | "chatgpt_subscription"
+  | "personal_api"
+  | "platform_credits";
 export type AIModelCapability = "text" | "realtime";
 export type AIRealtimeTransport = "openai_webrtc" | "gemini_live_websocket";
 export type DocumentMarginPreset = "narrow" | "normal" | "wide";
@@ -884,6 +888,7 @@ export interface AdminOverview {
 export interface AIModelSelection {
   provider: AIProvider;
   model: string;
+  access_method?: AIModelAccessMethod | null;
   reasoning_effort?: string | null;
   service_tier?: string | null;
 }
@@ -902,6 +907,7 @@ export interface AIServiceTierOption {
 export interface AIModelOption {
   provider: AIProvider;
   model: string;
+  access_method: AIModelAccessMethod;
   label: string;
   capability: AIModelCapability;
   enabled: boolean;

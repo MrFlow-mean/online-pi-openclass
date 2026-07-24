@@ -109,6 +109,11 @@ AIProvider = Literal[
     "openai_compatible",
     "anthropic_compatible",
 ]
+AIModelAccessMethod = Literal[
+    "chatgpt_subscription",
+    "personal_api",
+    "platform_credits",
+]
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
@@ -1325,13 +1330,31 @@ class AIServiceTierOption(BaseModel):
 class AIModelSelection(BaseModel):
     provider: AIProvider
     model: str
+    access_method: AIModelAccessMethod | None = None
     reasoning_effort: str | None = None
     service_tier: str | None = None
+
+    @model_validator(mode="after")
+    def validate_access_method(self) -> AIModelSelection:
+        if self.access_method is None:
+            return self
+        supported_access_methods: dict[AIProvider, set[AIModelAccessMethod]] = {
+            "openai_codex": {"chatgpt_subscription"},
+            "openai": {"platform_credits"},
+            "deepseek": {"platform_credits"},
+        }
+        allowed = supported_access_methods.get(self.provider)
+        if allowed is not None and self.access_method not in allowed:
+            raise ValueError(
+                f"Access method {self.access_method!r} is not available for provider {self.provider!r}"
+            )
+        return self
 
 
 class AIModelOption(BaseModel):
     provider: AIProvider
     model: str
+    access_method: AIModelAccessMethod
     label: str
     capability: AIModelCapability
     enabled: bool = False

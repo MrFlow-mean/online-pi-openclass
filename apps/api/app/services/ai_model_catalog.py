@@ -35,6 +35,7 @@ def default_text_selection(
     return AIModelSelection(
         provider="openai_codex",
         model=model,
+        access_method="chatgpt_subscription",
         reasoning_effort=reasoning_effort,
         service_tier=service_tier,
     )
@@ -44,6 +45,7 @@ def default_realtime_selection() -> AIModelSelection:
     return AIModelSelection(
         provider="openai",
         model=(os.getenv("OPENAI_REALTIME_MODEL") or OPENAI_DEFAULT_REALTIME_MODEL).strip(),
+        access_method="platform_credits",
     )
 
 
@@ -175,6 +177,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="openai_codex",
             model=str(item["model"]),
+            access_method="chatgpt_subscription",
             label=f"OpenAI Codex {item['displayName']}",
             capability="text",
             enabled=status.configured,
@@ -201,6 +204,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="deepseek",
             model=model,
+            access_method="platform_credits",
             label=label,
             capability="text",
             enabled=shared_deepseek.configured,
@@ -215,6 +219,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         text_default = AIModelSelection(
             provider="deepseek",
             model=shared_deepseek.model,
+            access_method="platform_credits",
         )
     else:
         text_default = default_text_selection(
@@ -228,6 +233,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             AIModelOption(
                 provider="openai",
                 model=model,
+                access_method="platform_credits",
                 label=label,
                 capability="realtime",
                 enabled=realtime_enabled,

@@ -1,4 +1,7 @@
-from app.models import CodexProviderStatus
+import pytest
+from pydantic import ValidationError
+
+from app.models import AIModelSelection, CodexProviderStatus
 from app.services import ai_model_catalog
 
 TEST_USER_ID = "user_model_catalog"
@@ -10,6 +13,15 @@ def _status(*, configured: bool) -> CodexProviderStatus:
         available=True,
         configured=configured,
     )
+
+
+def test_model_selection_rejects_an_access_method_from_another_execution_route() -> None:
+    with pytest.raises(ValidationError, match="Access method"):
+        AIModelSelection(
+            provider="openai_codex",
+            model="gpt-5.6-sol",
+            access_method="platform_credits",
+        )
 
 
 def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> None:
@@ -75,8 +87,10 @@ def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> N
     ]
     assert catalog.defaults["text"].provider == "openai_codex"
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
+    assert catalog.defaults["text"].access_method == "chatgpt_subscription"
     assert catalog.defaults["realtime"].provider == "openai"
     assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
+    assert catalog.defaults["realtime"].access_method == "platform_credits"
     assert len(catalog.realtime) == 2
     assert catalog.realtime[0].model == "gpt-realtime-2.1"
     assert catalog.realtime[0].default is True
@@ -88,11 +102,21 @@ def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> N
         for option in catalog.text
         if option.provider == "openai_codex"
     )
+    assert {
+        option.access_method
+        for option in catalog.text
+        if option.provider == "openai_codex"
+    } == {"chatgpt_subscription"}
     assert all(
         not option.enabled and not option.configured
         for option in catalog.text
         if option.provider == "deepseek"
     )
+    assert {
+        option.access_method
+        for option in catalog.text
+        if option.provider == "deepseek"
+    } == {"platform_credits"}
     assert catalog.defaults["text"].reasoning_effort == "high"
     assert catalog.defaults["text"].service_tier is None
     assert [
@@ -228,3 +252,4 @@ def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypa
         assert all(option.enabled and option.configured for option in deepseek_options)
         assert catalog.defaults["text"].provider == "deepseek"
         assert catalog.defaults["text"].model == "deepseek-v4-flash"
+        assert catalog.defaults["text"].access_method == "platform_credits"
