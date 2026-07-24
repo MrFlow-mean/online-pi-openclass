@@ -678,6 +678,7 @@ export function CourseStudioChatSidebar({
                 attachments={composerAttachments}
                 disabled={isChatBusy || isPreviewMode || interactionLocked}
                 menuAboveRef={modelControlsRef}
+                showInkBoard
                 onChange={(attachments) =>
                   onUpdateComposerState((current) => ({
                     ...current,
