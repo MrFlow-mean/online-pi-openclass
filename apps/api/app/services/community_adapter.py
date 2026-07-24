@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -38,7 +39,7 @@ class CommunityAdapterConfig:
 class CommunityAdapter:
     def __init__(self) -> None:
         self._health_lock = threading.RLock()
-        self._health_cache: tuple[str, float, bool] | None = None
+        self._health_cache: tuple[str, float, bool, bool] | None = None
 
     def config(self) -> CommunityAdapterConfig:
         provider = os.getenv("OPENCLASS_COMMUNITY_PROVIDER", "native").strip().casefold()
@@ -63,8 +64,10 @@ class CommunityAdapter:
                 setup_required=False,
             )
         oauth_config = community_oauth_service.config()
-        sso_enabled = oauth_config.configured
-        available = self._answer_available(config.internal_url or config.public_url)
+        available, connector_available = self._answer_status(
+            config.internal_url or config.public_url
+        )
+        sso_enabled = oauth_config.configured and connector_available
         entry_url = config.public_url
         if entry_url and sso_enabled:
             entry_url = f"{entry_url}/answer/api/v1/connector/login/basic"
@@ -77,27 +80,46 @@ class CommunityAdapter:
             setup_required=not (config.public_url and sso_enabled and available),
         )
 
-    def _answer_available(self, base_url: str) -> bool:
+    def _answer_status(self, base_url: str) -> tuple[bool, bool]:
         if not base_url:
-            return False
+            return False, False
         now = time.monotonic()
         with self._health_lock:
             if self._health_cache and self._health_cache[0] == base_url:
-                _, checked_at, available = self._health_cache
+                _, checked_at, available, connector_available = self._health_cache
                 if now - checked_at < HEALTH_CACHE_SECONDS:
-                    return available
+                    return available, connector_available
         try:
-            request = urlrequest.Request(
+            site_request = urlrequest.Request(
                 f"{base_url}/answer/api/v1/siteinfo",
                 headers={"Accept": "application/json"},
             )
-            with urlrequest.urlopen(request, timeout=HEALTH_TIMEOUT_SECONDS) as response:
+            with urlrequest.urlopen(site_request, timeout=HEALTH_TIMEOUT_SECONDS) as response:
                 available = 200 <= response.status < 500
+            connector_request = urlrequest.Request(
+                f"{base_url}/answer/api/v1/connector/info",
+                headers={"Accept": "application/json"},
+            )
+            with urlrequest.urlopen(
+                connector_request, timeout=HEALTH_TIMEOUT_SECONDS
+            ) as response:
+                payload = json.load(response)
+            connectors = payload.get("data", []) if isinstance(payload, dict) else []
+            connector_available = any(
+                isinstance(connector, dict)
+                and str(connector.get("link", "")).rstrip("/").endswith(
+                    "/answer/api/v1/connector/login/basic"
+                )
+                for connector in connectors
+            )
         except OSError:
             available = False
+            connector_available = False
+        except (TypeError, ValueError):
+            connector_available = False
         with self._health_lock:
-            self._health_cache = (base_url, now, available)
-        return available
+            self._health_cache = (base_url, now, available, connector_available)
+        return available, connector_available
 
 
 community_adapter = CommunityAdapter()
