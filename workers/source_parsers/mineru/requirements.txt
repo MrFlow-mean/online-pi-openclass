@@ -1,0 +1,2 @@
+mineru[all]==3.4.4
+pypdf==6.10.2
