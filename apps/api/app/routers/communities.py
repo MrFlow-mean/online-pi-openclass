@@ -5,6 +5,11 @@ from typing import Literal, NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models import (
+    CommunityAcceptedAnswerRequest,
+    CommunityAcceptedAnswerView,
+    CommunityAnswerCreate,
+    CommunityAnswerView,
+    CommunityAnswerVoteView,
     CommunityCommentCreate,
     CommunityCommentView,
     CommunityFollowView,
@@ -145,6 +150,66 @@ def create_community_post(
 def get_community_post(post_id: str) -> CommunityPostDetail:
     try:
         return community_store.get_post(post_id)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.post(
+    "/posts/{post_id}/answers",
+    response_model=CommunityAnswerView,
+    status_code=201,
+)
+def create_community_answer(
+    post_id: str,
+    payload: CommunityAnswerCreate,
+    user: UserView = Depends(_registered_user),
+) -> CommunityAnswerView:
+    try:
+        return community_store.add_answer(post_id, body=payload.body, user=user)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.put("/answers/{answer_id}/vote", response_model=CommunityAnswerVoteView)
+def vote_on_community_answer(
+    answer_id: str,
+    payload: CommunityVoteRequest,
+    user: UserView = Depends(_registered_user),
+) -> CommunityAnswerVoteView:
+    try:
+        viewer_vote, vote_score = community_store.set_answer_vote(
+            answer_id,
+            user_id=user.id,
+            value=payload.value,
+        )
+        return CommunityAnswerVoteView(
+            answer_id=answer_id,
+            viewer_vote=viewer_vote,
+            vote_score=vote_score,
+        )
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.put(
+    "/posts/{post_id}/accepted-answer",
+    response_model=CommunityAcceptedAnswerView,
+)
+def accept_community_answer(
+    post_id: str,
+    payload: CommunityAcceptedAnswerRequest,
+    user: UserView = Depends(_registered_user),
+) -> CommunityAcceptedAnswerView:
+    try:
+        accepted_answer_id = community_store.set_accepted_answer(
+            post_id,
+            answer_id=payload.answer_id,
+            user_id=user.id,
+        )
+        return CommunityAcceptedAnswerView(
+            post_id=post_id,
+            accepted_answer_id=accepted_answer_id,
+        )
     except ValueError as exc:
         _raise_http_error(exc)
 

@@ -132,6 +132,81 @@ def test_votes_and_follows_are_idempotent(tmp_path) -> None:
     assert store.set_follow(space.slug, user_id="user_voter", following=False)[1] == 0
 
 
+def test_question_answers_support_votes_acceptance_and_reputation(tmp_path) -> None:
+    store = _store(tmp_path)
+    space = _space(store)
+    question = _post(store, community_slug=space.slug)
+    answer = store.add_answer(
+        question.id,
+        body="先独立复述，再用新例子和反例检查理解边界。",
+        user=_user("user_answerer"),
+    )
+
+    assert store.get_post(question.id).post.answer_count == 1
+    assert store.set_answer_vote(answer.id, user_id="user_voter", value=1) == (1, 1)
+    assert store.set_accepted_answer(
+        question.id,
+        answer_id=answer.id,
+        user_id="user_author",
+    ) == answer.id
+
+    detail = store.get_post(question.id, viewer_user_id="user_voter")
+    assert detail.post.accepted_answer_id == answer.id
+    assert detail.answers[0].is_accepted is True
+    assert detail.answers[0].viewer_vote == 1
+    assert detail.answers[0].author_reputation == 20
+
+    assert store.set_accepted_answer(
+        question.id,
+        answer_id=None,
+        user_id="user_author",
+    ) is None
+    assert store.get_post(question.id).post.accepted_answer_id is None
+
+
+def test_answer_permissions_and_question_boundaries_are_enforced(tmp_path) -> None:
+    store = _store(tmp_path)
+    space = _space(store)
+    question = _post(store, community_slug=space.slug)
+    other_question = _post(
+        store,
+        community_slug=space.slug,
+        title="怎样判断一个解释是否足够清楚？",
+    )
+    discussion = _post(
+        store,
+        community_slug=space.slug,
+        title="分享一次共同整理资料的过程",
+        post_type="discussion",
+    )
+    answer = store.add_answer(
+        question.id,
+        body="把解释交给不了解背景的人复述，并记录他们卡住的位置。",
+        user=_user("user_answerer"),
+    )
+
+    with pytest.raises(CommunityValidationError, match="问题帖子"):
+        store.add_answer(
+            discussion.id,
+            body="讨论帖不能添加正式答案。",
+            user=_user("user_reply"),
+        )
+    with pytest.raises(CommunityValidationError, match="自己的答案"):
+        store.set_answer_vote(answer.id, user_id="user_answerer", value=1)
+    with pytest.raises(CommunityValidationError, match="提问者"):
+        store.set_accepted_answer(
+            question.id,
+            answer_id=answer.id,
+            user_id="user_reader",
+        )
+    with pytest.raises(CommunityValidationError, match="不属于当前问题"):
+        store.set_accepted_answer(
+            other_question.id,
+            answer_id=answer.id,
+            user_id="user_author",
+        )
+
+
 def test_feed_supports_hot_and_unanswered_views(tmp_path) -> None:
     store = _store(tmp_path)
     space = _space(store)
@@ -147,10 +222,9 @@ def test_feed_supports_hot_and_unanswered_views(tmp_path) -> None:
         title="分享一次协作学习的过程",
         post_type="study_note",
     )
-    store.add_comment(
+    store.add_answer(
         answered.id,
         body="先说明自己的目标和验证方式。",
-        parent_comment_id=None,
         user=_user("user_reply"),
     )
     store.set_vote(discussion.id, user_id="user_voter", value=1)

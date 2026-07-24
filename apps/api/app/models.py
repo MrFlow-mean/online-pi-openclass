@@ -1603,6 +1603,8 @@ class CommunityPostView(BaseModel):
     tags: list[str] = Field(default_factory=list)
     vote_score: int = 0
     comment_count: int = 0
+    answer_count: int = 0
+    accepted_answer_id: str | None = None
     viewer_vote: int = 0
     created_at: str
     updated_at: str
@@ -1629,8 +1631,32 @@ class CommunityCommentView(BaseModel):
     updated_at: str
 
 
+class CommunityAnswerCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=40_000)
+
+    @field_validator("body")
+    @classmethod
+    def strip_answer_body(cls, value: str) -> str:
+        return value.strip()
+
+
+class CommunityAnswerView(BaseModel):
+    id: str
+    post_id: str
+    author_user_id: str
+    author_display_name: str
+    body: str
+    vote_score: int = 0
+    viewer_vote: int = 0
+    is_accepted: bool = False
+    author_reputation: int = 0
+    created_at: str
+    updated_at: str
+
+
 class CommunityPostDetail(BaseModel):
     post: CommunityPostView
+    answers: list[CommunityAnswerView] = Field(default_factory=list)
     comments: list[CommunityCommentView] = Field(default_factory=list)
 
 
@@ -1642,6 +1668,21 @@ class CommunityVoteView(BaseModel):
     post_id: str
     viewer_vote: int
     vote_score: int
+
+
+class CommunityAnswerVoteView(BaseModel):
+    answer_id: str
+    viewer_vote: int
+    vote_score: int
+
+
+class CommunityAcceptedAnswerRequest(BaseModel):
+    answer_id: str | None = None
+
+
+class CommunityAcceptedAnswerView(BaseModel):
+    post_id: str
+    accepted_answer_id: str | None = None
 
 
 class CommunityFollowView(BaseModel):
