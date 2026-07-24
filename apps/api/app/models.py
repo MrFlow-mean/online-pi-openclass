@@ -937,6 +937,13 @@ SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsu
 SourceVisualAnchorStatus = Literal["verified", "unverified"]
 SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
 SourceScopeKind = Literal["source", "chapter", "page_range"]
+SourceQueryScopeMode = Literal[
+    "chapter",
+    "page_range",
+    "source",
+    "sources",
+    "all_ready_sources",
+]
 PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
 AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
 
@@ -1141,6 +1148,20 @@ class RetrievalEvidence(BaseModel):
     reason: str = ""
     token_count: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceCitation(BaseModel):
+    evidence_id: str
+    source_id: str
+    source_title: str = ""
+    section_path: list[str] = Field(default_factory=list)
+    page_start: int | None = None
+    page_end: int | None = None
+    excerpt: str = ""
+    chunk_ids: list[str] = Field(default_factory=list)
+    bbox: list[float] = Field(default_factory=list)
+    source_content_hash: str = ""
+    parser_run_id: str = ""
 
 
 class SourceStructure(BaseModel):
@@ -1450,6 +1471,51 @@ class SelectionRef(BaseModel):
     source_scope_kind: SourceScopeKind = "chapter"
 
 
+class SourceQueryRef(BaseModel):
+    source_ingestion_id: str = Field(min_length=1, max_length=128)
+    source_content_hash: str = Field(min_length=1, max_length=128)
+    source_chapter_id: str | None = Field(default=None, max_length=128)
+    page_start: int | None = Field(default=None, ge=1)
+    page_end: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "SourceQueryRef":
+        if (self.page_start is None) != (self.page_end is None):
+            raise ValueError("Source query page ranges require both start and end pages.")
+        if (
+            self.page_start is not None
+            and self.page_end is not None
+            and self.page_end < self.page_start
+        ):
+            raise ValueError("Source query page_end must not precede page_start.")
+        return self
+
+
+class SourceQueryScope(BaseModel):
+    mode: SourceQueryScopeMode
+    refs: list[SourceQueryRef] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "SourceQueryScope":
+        if self.mode == "all_ready_sources":
+            if self.refs:
+                raise ValueError("all_ready_sources does not accept explicit refs.")
+            return self
+        if not self.refs:
+            raise ValueError(f"{self.mode} requires at least one source ref.")
+        if self.mode in {"chapter", "page_range", "source"} and len(self.refs) != 1:
+            raise ValueError(f"{self.mode} requires exactly one source ref.")
+        if self.mode == "chapter" and not self.refs[0].source_chapter_id:
+            raise ValueError("chapter scope requires source_chapter_id.")
+        if self.mode == "page_range" and self.refs[0].page_start is None:
+            raise ValueError("page_range scope requires page_start and page_end.")
+        if self.mode in {"source", "sources"} and any(
+            ref.source_chapter_id or ref.page_start is not None for ref in self.refs
+        ):
+            raise ValueError(f"{self.mode} accepts whole-source refs only.")
+        return self
+
+
 class FormulaInkPayload(BaseModel):
     image_data_url: str
     source_latex: str | None = None
@@ -1676,6 +1742,7 @@ class ChatRequest(BaseModel):
     selections: list[SelectionRef] = Field(default_factory=list, max_length=8)
     formula_ink: FormulaInkPayload | None = None
     attachments: list[ChatAttachmentRef] = Field(default_factory=list, max_length=10)
+    source_query_scope: SourceQueryScope | None = None
     interaction_mode: ChatInteractionMode = "ask"
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
@@ -2025,6 +2092,7 @@ class AdminOverview(BaseModel):
 
 class ChatResponse(BaseModel):
     chatbot_message: str
+    source_citations: list[SourceCitation] = Field(default_factory=list)
     follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
     agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
     learning_requirement_sheet: LearningRequirementSheet

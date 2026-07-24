@@ -1509,6 +1509,8 @@ class SourceStructureStore:
         token_budget: int,
         source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
         search_mode: NativeSearchMode = "hybrid",
+        chapter_ids: list[str] | tuple[str, ...] | None = None,
+        page_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> list[RetrievalEvidence]:
         if not query.strip() or limit <= 0:
             return []
@@ -1548,6 +1550,8 @@ class SourceStructureStore:
                     source_ingestion_ids=active_source_ids,
                     limit=max(limit * 8, 32),
                     search_mode=search_mode,
+                    chapter_ids=chapter_ids or (),
+                    page_ranges=page_ranges,
                 )
                 if not matches:
                     return []
@@ -1601,6 +1605,7 @@ class SourceStructureStore:
                     open_notebook_source_id=str(row["open_notebook_source_id"] or ""),
                     source_title=str(row["source_title"] or ""),
                     source_uri=row["source_uri"],
+                    chapter_id=chunk.chapter_id or "",
                     section_path=chapter_path,
                     page_range=_chunk_page_range(chunk),
                     chunk_ids=[chunk.id],
@@ -1617,6 +1622,10 @@ class SourceStructureStore:
                         "hybrid_score": match.hybrid_score,
                         "match_modes": list(match.match_modes),
                         "source_locator": chunk.source_locator,
+                        "page_start": chunk.page_start,
+                        "page_end": chunk.page_end,
+                        "bbox": chunk.metadata.get("bbox") or chunk.metadata.get("bbox_union") or [],
+                        "parser_run_id": str(chunk.metadata.get("parser_run_id") or ""),
                     },
                 )
             )

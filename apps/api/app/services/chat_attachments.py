@@ -9,11 +9,7 @@ from app.models import ChatAttachmentRef, SourceIngestionRecord
 from app.services.codex_app_server import CodexAppServerError
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_download_path
-from app.services.source_structure_store import source_structure_store
-
-
 MAX_CHAT_ATTACHMENT_IMAGE_DATA_URL_CHARS = 20 * 1024 * 1024
-MAX_CHAT_ATTACHMENT_TEXT_CHARS = 120_000
 SUPPORTED_CHAT_IMAGE_MIME_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/webp", "image/gif"}
 )
@@ -96,20 +92,11 @@ def prepare_chat_attachments(
             raise CodexAppServerError(
                 f"附件“{item.source.file_name or item.source.title}”仍在解析，请稍后再发送。"
             )
-        view = source_structure_store.get_structure_view(source=item.source, chunk_limit=64)
-        content = "\n\n".join(chunk.text.strip() for chunk in view.chunks if chunk.text.strip())
-        if not content:
-            raise CodexAppServerError(
-                f"附件“{item.source.file_name or item.source.title}”没有可供本轮读取的文本内容。"
-            )
-        rows.extend(
-            [
-                f"<attachment_content source_id=\"{item.source.id}\">",
-                content[:MAX_CHAT_ATTACHMENT_TEXT_CHARS],
-                "</attachment_content>",
-            ]
+        rows.append(
+            "  The attachment is a verified source scope. Its content must be obtained from "
+            "the backend source retrieval context for this turn."
         )
-    rows.append("Use only this backend-verified attachment content for the current request.")
+    rows.append("Do not infer attachment content from its name or metadata.")
     return PreparedChatAttachments(
         prompt_context="\n".join(rows),
         image_inputs=image_inputs,
