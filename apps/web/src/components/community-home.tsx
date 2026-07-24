@@ -17,7 +17,6 @@ import {
   Plus,
   Search,
   Send,
-  Sparkles,
   UsersRound,
   X,
 } from "lucide-react";
@@ -481,18 +480,14 @@ export function CommunityHome() {
             <PostDetailView detail={selectedPost} onBack={() => setSelectedPost(null)} onVote={(value) => void handleVote(value)} onComment={handleComment} />
           ) : (
             <>
-              <div className="rounded-2xl border border-stone-200 bg-[linear-gradient(135deg,#fff_0%,#fff8ea_62%,#ffe9f1_100%)] p-6 shadow-[0_10px_34px_rgba(28,25,23,0.05)] sm:p-8">
-                <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-                  <div><p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#d74f7b]"><Sparkles className="h-3.5 w-3.5" />Community knowledge</p><h1 className="mt-3 text-3xl font-semibold tracking-tight text-stone-950">{activeSpace?.name ?? "和正在学习的人一起思考"}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-stone-600">{activeSpace?.description || "提出问题、分享资料和学习过程，让一次交流成为可以继续使用的公共知识。"}</p></div>
-                  {activeSpace ? <button type="button" disabled={followedSpaceIds.has(activeSpace.id)} onClick={() => void handleFollow(activeSpace)} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-semibold text-stone-800 disabled:border-emerald-200 disabled:bg-emerald-50 disabled:text-emerald-700"><UsersRound className="h-4 w-4" />{followedSpaceIds.has(activeSpace.id) ? "已关注" : "关注社区"}</button> : null}
-                </div>
-              </div>
-
-              <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex gap-1 overflow-x-auto">
                   {feedSorts.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setFeedSort(id)} className={clsx("inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-semibold transition", feedSort === id ? "bg-stone-950 text-white" : "text-stone-500 hover:bg-stone-100 hover:text-stone-900")}><Icon className="h-4 w-4" />{label}</button>)}
                 </div>
-                {tagFilter || query ? <button type="button" onClick={() => { setTagFilter(""); setQuery(""); setSearchInput(""); }} className="inline-flex items-center gap-1.5 self-start rounded-lg bg-stone-100 px-3 py-2 text-xs font-semibold text-stone-600"><X className="h-3.5 w-3.5" />清除筛选{tagFilter ? `：#${tagFilter}` : ""}</button> : null}
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                  {activeSpace ? <button type="button" disabled={followedSpaceIds.has(activeSpace.id)} onClick={() => void handleFollow(activeSpace)} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-semibold text-stone-700 disabled:border-emerald-200 disabled:bg-emerald-50 disabled:text-emerald-700"><UsersRound className="h-3.5 w-3.5" />{followedSpaceIds.has(activeSpace.id) ? "已关注" : "关注社区"}</button> : null}
+                  {tagFilter || query ? <button type="button" onClick={() => { setTagFilter(""); setQuery(""); setSearchInput(""); }} className="inline-flex items-center gap-1.5 rounded-lg bg-stone-100 px-3 py-2 text-xs font-semibold text-stone-600"><X className="h-3.5 w-3.5" />清除筛选{tagFilter ? `：#${tagFilter}` : ""}</button> : null}
+                </div>
               </div>
 
               {error ? <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p> : null}

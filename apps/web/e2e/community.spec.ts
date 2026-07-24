@@ -101,7 +101,7 @@ test("browses a community post, votes, follows, and joins the discussion", async
   });
 
   await page.goto("/community");
-  await expect(page.getByRole("heading", { name: "和正在学习的人一起思考" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最新", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /如何验证自己的理解是否可靠/ }).click();
   await expect(page.getByRole("heading", { name: post.title })).toBeVisible();
 
@@ -202,7 +202,7 @@ test("keeps community reading public and sends anonymous writers to login", asyn
   await page.goto("/community");
 
   await expect(page).toHaveURL(/\/community$/);
-  await expect(page.getByRole("heading", { name: "和正在学习的人一起思考" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最新", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "发布", exact: true }).click();
   await expect(page).toHaveURL(/\/login\?next=%2Fcommunity$/);
 });
