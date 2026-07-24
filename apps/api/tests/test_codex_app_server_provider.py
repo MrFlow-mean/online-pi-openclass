@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from app.models import CodexAccountView
-from app.services import codex_app_server
+from app.services import codex_app_server, pi_agent_runtime
 from app.services.ai_call_budget import AICallBudget, bind_ai_call_budget
 
 
@@ -915,15 +916,64 @@ def test_copy_codex_auth_preserves_existing_target_runtime(monkeypatch, tmp_path
 
 def test_remove_codex_auth_preserves_source_runtime(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("OPENCLASS_CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("OPENCLASS_PI_RUNTIME_ROOT", str(tmp_path / "pi"))
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
     source_home = codex_app_server.codex_home_path("guest_a")
     source_home.mkdir(parents=True)
     (source_home / "auth.json").write_text('{"refresh": "credential"}', encoding="utf-8")
     (source_home / "state_5.sqlite").write_text("guest runtime", encoding="utf-8")
+    pi_home = pi_agent_runtime.pi_agent_directory(
+        owner_user_id="guest_a",
+        runtime_root=tmp_path / "pi",
+    )
+    (pi_home / "auth.json").write_text(
+        '{"openai-codex": {"type": "oauth"}, "other": {"type": "api_key"}}',
+        encoding="utf-8",
+    )
+    (pi_home / pi_agent_runtime.PI_CODEX_AUTH_FINGERPRINT_FILE).write_text(
+        "fingerprint",
+        encoding="utf-8",
+    )
 
     codex_app_server.remove_codex_auth("guest_a")
 
     assert (source_home / "auth.json").exists() is False
     assert (source_home / "state_5.sqlite").read_text(encoding="utf-8") == "guest runtime"
+    pi_auth = json.loads((pi_home / "auth.json").read_text(encoding="utf-8"))
+    assert "openai-codex" not in pi_auth
+    assert "other" in pi_auth
+    assert not (pi_home / pi_agent_runtime.PI_CODEX_AUTH_FINGERPRINT_FILE).exists()
+
+
+def test_codex_logout_removes_the_matching_pi_credential(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENCLASS_PI_RUNTIME_ROOT", str(tmp_path / "pi"))
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
+    monkeypatch.setattr(codex_app_server, "codex_app_server_available", lambda: True)
+    requests: list[tuple[str, dict, int]] = []
+
+    class Session:
+        def request(self, method, params, *, timeout_seconds):
+            requests.append((method, params, timeout_seconds))
+
+    @contextmanager
+    def managed_session(**_kwargs):
+        yield Session()
+
+    monkeypatch.setattr(codex_app_server, "_managed_session", managed_session)
+    pi_home = pi_agent_runtime.pi_agent_directory(
+        owner_user_id="user_a",
+        runtime_root=tmp_path / "pi",
+    )
+    (pi_home / "auth.json").write_text(
+        '{"openai-codex": {"type": "oauth"}}',
+        encoding="utf-8",
+    )
+
+    codex_app_server.logout_codex("user_a")
+
+    assert requests == [("account/logout", {}, 30)]
+    assert json.loads((pi_home / "auth.json").read_text(encoding="utf-8")) == {}
 
 
 def test_codex_status_cache_is_isolated_per_openclass_user(monkeypatch) -> None:

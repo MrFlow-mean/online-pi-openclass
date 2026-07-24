@@ -201,6 +201,9 @@ def remove_codex_auth(user_id: str) -> None:
         auth_path.unlink(missing_ok=True)
     except OSError:
         return
+    from app.services.pi_agent_runtime import remove_pi_openai_codex_auth
+
+    remove_pi_openai_codex_auth(user_id)
     _invalidate_status(user_id)
 
 
@@ -1220,6 +1223,9 @@ def logout_codex(user_id: str) -> None:
         return
     with _managed_session(user_id=user_id, timeout_seconds=30) as session:
         session.request("account/logout", {}, timeout_seconds=30)
+    from app.services.pi_agent_runtime import remove_pi_openai_codex_auth
+
+    remove_pi_openai_codex_auth(user_id)
     _invalidate_status(user_id)
 
 

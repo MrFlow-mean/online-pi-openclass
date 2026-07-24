@@ -47,6 +47,8 @@ PI_MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
 PI_MAX_TOTAL_IMAGE_INPUT_BYTES = 40 * 1024 * 1024
 PI_PROCESS_POLL_SECONDS = 0.1
 PI_PROCESS_TERMINATE_GRACE_SECONDS = 1.0
+PI_OPENAI_CODEX_PROVIDER = "openai-codex"
+PI_CODEX_AUTH_FINGERPRINT_FILE = ".openclass-codex-auth.sha256"
 
 
 _DATA_IMAGE_PATTERN = re.compile(
@@ -62,6 +64,8 @@ _IMAGE_SUFFIXES = {
 
 
 logger = logging.getLogger(__name__)
+_pi_auth_locks_guard = threading.Lock()
+_pi_auth_locks: dict[str, threading.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -421,25 +425,190 @@ def _run_streaming_pi_process(
     )
 
 
+def pi_runtime_root() -> Path:
+    configured = (os.getenv("OPENCLASS_PI_RUNTIME_ROOT") or "").strip()
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else (DATA_DIR / "pi-runtime").resolve()
+    )
+
+
+def pi_binary_path() -> str | None:
+    configured = (os.getenv("OPENCLASS_PI_BINARY") or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser().resolve()
+        return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+    return shutil.which("pi")
+
+
 def pi_runtime_available() -> bool:
-    return shutil.which("pi") is not None
+    return pi_binary_path() is not None
+
+
+def _pi_auth_lock(agent_dir: Path) -> threading.Lock:
+    key = str(agent_dir)
+    with _pi_auth_locks_guard:
+        return _pi_auth_locks.setdefault(key, threading.Lock())
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_private_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}-",
+            suffix=".tmp",
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+        temporary_path.chmod(0o600)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _jwt_expiry_milliseconds(access_token: str) -> int | None:
+    parts = access_token.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except (UnicodeEncodeError, ValueError, binascii.Error, json.JSONDecodeError):
+        return None
+    expires = claims.get("exp") if isinstance(claims, dict) else None
+    if not isinstance(expires, (int, float)) or isinstance(expires, bool):
+        return None
+    return int(expires * 1000)
+
+
+def _pi_credential_from_codex_auth(auth: dict[str, Any]) -> dict[str, Any] | None:
+    tokens = auth.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    access = tokens.get("access_token")
+    refresh = tokens.get("refresh_token")
+    account_id = tokens.get("account_id")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (access, refresh, account_id)
+    ):
+        return None
+    expires = _jwt_expiry_milliseconds(access)
+    if expires is None:
+        return None
+    return {
+        "type": "oauth",
+        "access": access,
+        "refresh": refresh,
+        "expires": expires,
+        "accountId": account_id,
+    }
+
+
+def _remove_pi_provider_auth(agent_dir: Path) -> None:
+    auth_path = agent_dir / "auth.json"
+    fingerprint_path = agent_dir / PI_CODEX_AUTH_FINGERPRINT_FILE
+    with _pi_auth_lock(agent_dir):
+        auth = _read_json_object(auth_path)
+        if PI_OPENAI_CODEX_PROVIDER in auth:
+            del auth[PI_OPENAI_CODEX_PROVIDER]
+            _write_private_text(auth_path, json.dumps(auth, indent=2) + "\n")
+        try:
+            fingerprint_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def remove_pi_openai_codex_auth(
+    owner_user_id: str,
+    *,
+    runtime_root: Path | None = None,
+) -> None:
+    if (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip():
+        return
+    root = runtime_root or pi_runtime_root()
+    owner_key = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:24]
+    _remove_pi_provider_auth(root / "agents" / owner_key)
+
+
+def ensure_pi_openai_codex_auth(
+    *, owner_user_id: str, runtime_root: Path | None = None
+) -> bool:
+    """Bridge one OpenClass user's Codex OAuth credential into their Pi directory."""
+    configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
+    if configured_agent_dir:
+        auth = _read_json_object(Path(configured_agent_dir).expanduser().resolve() / "auth.json")
+        return isinstance(auth.get(PI_OPENAI_CODEX_PROVIDER), dict)
+
+    from app.services.codex_app_server import codex_home_path
+
+    root = runtime_root or pi_runtime_root()
+    agent_dir = pi_agent_directory(owner_user_id=owner_user_id, runtime_root=root)
+    source_path = codex_home_path(owner_user_id) / "auth.json"
+    try:
+        source_bytes = source_path.read_bytes()
+        source_auth = json.loads(source_bytes)
+    except (OSError, json.JSONDecodeError):
+        _remove_pi_provider_auth(agent_dir)
+        return False
+    if not isinstance(source_auth, dict):
+        _remove_pi_provider_auth(agent_dir)
+        return False
+    credential = _pi_credential_from_codex_auth(source_auth)
+    if credential is None:
+        _remove_pi_provider_auth(agent_dir)
+        return False
+
+    fingerprint = hashlib.sha256(source_bytes).hexdigest()
+    auth_path = agent_dir / "auth.json"
+    fingerprint_path = agent_dir / PI_CODEX_AUTH_FINGERPRINT_FILE
+    with _pi_auth_lock(agent_dir):
+        try:
+            current_fingerprint = fingerprint_path.read_text(encoding="ascii").strip()
+        except OSError:
+            current_fingerprint = ""
+        auth = _read_json_object(auth_path)
+        if (
+            current_fingerprint == fingerprint
+            and isinstance(auth.get(PI_OPENAI_CODEX_PROVIDER), dict)
+        ):
+            return True
+        auth[PI_OPENAI_CODEX_PROVIDER] = credential
+        _write_private_text(auth_path, json.dumps(auth, indent=2) + "\n")
+        _write_private_text(fingerprint_path, fingerprint + "\n")
+    return True
 
 
 def pi_credentials_available(
     *, owner_user_id: str, runtime_root: Path | None = None
 ) -> bool:
     """Report whether the selected Pi account directory has usable auth state."""
-    configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
-    if configured_agent_dir:
-        agent_dir = Path(configured_agent_dir).expanduser().resolve()
-    else:
-        root = runtime_root or DATA_DIR / "pi-runtime"
-        owner_key = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:24]
-        agent_dir = root / "agents" / owner_key
-    auth_path = agent_dir / "auth.json"
     try:
-        return auth_path.is_file() and auth_path.stat().st_size > 2
-    except OSError:
+        return ensure_pi_openai_codex_auth(
+            owner_user_id=owner_user_id,
+            runtime_root=runtime_root,
+        )
+    except (OSError, RuntimeError):
         return False
 
 
@@ -453,6 +622,10 @@ def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
         return agent_dir
     agent_dir = runtime_root / "agents" / owner_key
     agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        agent_dir.chmod(0o700)
+    except OSError:
+        pass
     return agent_dir
 
 
@@ -546,7 +719,7 @@ class PiTextClient:
         runtime_root: Path | None = None,
         process_runner: PiProcessRunner | None = None,
     ) -> None:
-        resolved_binary = binary or shutil.which("pi")
+        resolved_binary = binary or pi_binary_path()
         if not resolved_binary:
             raise RuntimeError("Pi is not installed on this server")
         self.owner_user_id = owner_user_id
@@ -555,7 +728,7 @@ class PiTextClient:
         self.reasoning_effort = reasoning_effort
         self.service_tier = _validated_service_tier(provider, service_tier)
         self.binary = resolved_binary
-        self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
+        self.runtime_root = runtime_root or pi_runtime_root()
         self._process_runner = process_runner
 
     def _command(self, *, system_prompt: str, image_paths: list[Path] | None = None) -> list[str]:
@@ -602,6 +775,12 @@ class PiTextClient:
             owner_user_id=self.owner_user_id,
             runtime_root=self.runtime_root,
         )
+        if _pi_provider(self.provider) == PI_OPENAI_CODEX_PROVIDER:
+            if not ensure_pi_openai_codex_auth(
+                owner_user_id=self.owner_user_id,
+                runtime_root=self.runtime_root,
+            ):
+                raise RuntimeError("The OpenClass user has not connected a ChatGPT account")
         workspace_root = self.runtime_root / "workspaces"
         workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = os.environ.copy()
