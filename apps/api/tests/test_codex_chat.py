@@ -13,6 +13,7 @@ import pytest
 
 from app.models import (
     AgentActivityEvent,
+    AIModelSelection,
     BoardExplanationDirective,
     ChatAttachmentRef,
     ChatRequest,
@@ -1415,6 +1416,102 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     assert frozen_commit.metadata["requirement_parent_version_id"] == (
         ready_commit.metadata["requirement_version_id"]
     )
+
+
+def test_pi_board_handoff_runs_only_after_the_document_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    observed_board_commit_id = ""
+
+    class FakePiAdapter:
+        def parse_structured(self, **kwargs):
+            assert kwargs["schema"] is BlankBoardTurnDecision
+            return SimpleNamespace(
+                output_parsed=BlankBoardTurnDecision(
+                    intent="learning_need",
+                    teaching_type="knowledge_point",
+                    learning_content="A bounded topic",
+                    content_is_specific=True,
+                    current_level="Known level",
+                    target_scenario="Known purpose",
+                    chatbot_message="The requirement is ready.",
+                    teaching_plan="Build a focused board.",
+                    reason="All core factors are complete.",
+                ),
+                activity=[],
+            )
+
+        def generate_board(self, _request, **_kwargs):
+            return (
+                ai_execution_adapter.StructuredBoardGenerationResult(
+                    thread_id="piturn_board",
+                    turn_id="piturn_board",
+                    final_response="",
+                    activity=[],
+                ),
+                "# Saved board\n\nGenerated learning content.",
+            )
+
+        def complete_text(self, **kwargs):
+            nonlocal observed_board_commit_id
+            saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+            board_commit = current_head_commit(saved_lesson)
+            observed_board_commit_id = board_commit.id
+            assert saved_lesson.board_document.content_text.startswith("# Saved board")
+            assert board_commit.metadata["kind"] == "board_document_generation"
+            assert board_commit.metadata["assistant_message"] == ""
+            assert kwargs["is_cancelled"] is not None
+            return SimpleNamespace(
+                output_text="The saved board is ready for us to work through.",
+                activity=[],
+            )
+
+    monkeypatch.setattr(
+        codex_chat,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakePiAdapter(),
+    )
+    monkeypatch.setattr(
+        codex_chat,
+        "_text_model_selection",
+        lambda *_args, **_kwargs: AIModelSelection(
+            agent_backend="pi",
+            provider="openai_codex",
+            model="gpt-5.5",
+        ),
+    )
+    monkeypatch.setattr(
+        blank_board_intake,
+        "generate_follow_up_suggestions",
+        lambda **_kwargs: [],
+    )
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Generate the learning board now.",
+            post_generation_action="stop_after_generation",
+        ),
+        user_id=TEST_USER_ID,
+        is_cancelled=lambda: False,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    handoff_commit = current_head_commit(saved_lesson)
+    board_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.id == observed_board_commit_id
+    )
+    assert response.chatbot_message == "The saved board is ready for us to work through."
+    assert response.board_document_operation_status == "succeeded"
+    assert saved_lesson.board_document.content_text.startswith("# Saved board")
+    assert handoff_commit.metadata["kind"] == "board_generation_handoff"
+    assert handoff_commit.metadata["user_message"] == ""
+    assert handoff_commit.metadata["document_changed"] is False
+    assert handoff_commit.parent_ids == [board_commit.id]
 
 
 def test_source_chapter_selection_generates_blank_board_without_requirement_questions(

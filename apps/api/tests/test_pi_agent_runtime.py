@@ -15,6 +15,7 @@ from app.services.pi_agent_runtime import PiTextClient
 from app.models import AIModelSelection
 from app.services import ai_execution_adapter, pi_agent_runtime
 from app.services.codex_app_server import CodexTurnCancelledError
+from app.services.lesson_factory import build_requirements
 
 
 class _Answer(BaseModel):
@@ -301,6 +302,39 @@ print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
     assert response.output_text == "第一段第二段"
     assert [delta for _, delta in observed] == ["第一段", "第二段"]
     assert observed[0][0] < finished_at - 0.15
+
+
+def test_pi_adapter_generates_board_as_direct_markdown(monkeypatch) -> None:
+    monkeypatch.setattr(pi_agent_runtime.shutil, "which", lambda _binary: "/test/pi")
+    adapter = ai_execution_adapter.PiAIExecutionAdapter(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+    )
+    captured: dict[str, object] = {}
+
+    def complete_text(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            output_text="# Generated board\n\nA direct Markdown document.",
+            activity=[],
+        )
+
+    monkeypatch.setattr(adapter._client, "complete_text", complete_text)
+    result, content = adapter.generate_board(
+        ai_execution_adapter.BoardGenerationExecutionRequest(
+            requirement=build_requirements("A general learning topic"),
+            teaching_plan="Build a concept-first explanation.",
+        ),
+        is_cancelled=lambda: False,
+        on_activity=None,
+    )
+
+    assert content == "# Generated board\n\nA direct Markdown document."
+    assert result.final_response == ""
+    assert "Return only the board Markdown" in captured["system_prompt"]
+    assert "JSON object" in captured["system_prompt"]
+    assert captured["is_cancelled"]() is False
 
 
 def test_pi_client_stages_validated_image_inputs_for_the_cli(tmp_path) -> None:

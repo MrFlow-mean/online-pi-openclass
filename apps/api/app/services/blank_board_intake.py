@@ -195,6 +195,15 @@ than copied from a canned script. Also return 2 to 4 concise, context-specific
 `follow_up_suggestions` that the learner could send next; do not use a fixed generic menu.
 """.strip()
 
+BOARD_GENERATION_HANDOFF_INSTRUCTIONS = """
+You are the learner-facing Chatbot in OpenClass. The board-writing role has already completed and
+OpenClass has safely saved the new board. Produce one brief, natural message that acknowledges
+completion in the learner's current context and offers a useful next conversational step. Use only
+the supplied frozen requirement and teaching plan. Do not reproduce the board, invent unsupported
+details, claim an edit that was not made, or use a fixed completion template. Return plain text
+only, without JSON or Markdown fences.
+""".strip()
+
 SOURCE_RESOLUTION_INSTRUCTIONS = """
 The learner submitted a structured source reference, but the backend could not safely resolve one
 verified source range. Act as the learner-facing Chatbot. Use the supplied resolution state and
@@ -791,10 +800,11 @@ def process_blank_board_turn(
             generated_character_count=len(generated_content),
         )
         merge_unreported_activity(getattr(generation_result, "activity", []))
-        final_chatbot_message = (
-            generation_result.final_response.strip() or outcome.chatbot_message
-        )
-        if request.post_generation_action != "auto_explain":
+        final_chatbot_message = generation_result.final_response.strip()
+        if (
+            request.post_generation_action != "auto_explain"
+            and final_chatbot_message
+        ):
             generation_follow_up_suggestions = generate_follow_up_suggestions(
                 adapter=adapter,
                 user_message=request.message,
@@ -978,6 +988,119 @@ def process_blank_board_turn(
                 f"{failure_record_error}"
             )
         raise
+    if (
+        request.post_generation_action != "auto_explain"
+        and not final_chatbot_message
+    ):
+        try:
+            handoff_response = adapter.complete_text(
+                system_prompt=BOARD_GENERATION_HANDOFF_INSTRUCTIONS,
+                user_prompt=(
+                    "Saved board context:\n"
+                    + json.dumps(
+                        {
+                            "learning_requirement": requirement_payload,
+                            "teaching_plan": outcome.teaching_plan,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                ),
+                is_cancelled=is_cancelled,
+                on_activity=record_activity,
+            )
+            merge_unreported_activity(getattr(handoff_response, "activity", []))
+            final_chatbot_message = handoff_response.output_text.strip()
+            if not final_chatbot_message:
+                raise RuntimeError("Board-generation handoff returned empty text")
+        except Exception as handoff_error:
+            final_chatbot_message = outcome.chatbot_message.strip()
+            ai_usage_logger.log_event(
+                "blank_board_generation_handoff_failed",
+                provider=provider,
+                model=model,
+                lesson_id=lesson.id,
+                requirement_run_id=run_id,
+                requirement_version_id=frozen_version_id,
+                error=str(handoff_error)[:500],
+            )
+        if final_chatbot_message:
+            try:
+                generation_follow_up_suggestions = generate_follow_up_suggestions(
+                    adapter=adapter,
+                    user_message=request.message,
+                    assistant_message=final_chatbot_message,
+                    board_state="non_empty",
+                    workflow_state="board_generated",
+                )
+            except Exception as suggestion_error:
+                ai_usage_logger.log_event(
+                    "blank_board_generation_follow_up_suggestions_failed",
+                    provider=provider,
+                    model=model,
+                    lesson_id=lesson.id,
+                    requirement_run_id=run_id,
+                    requirement_version_id=frozen_version_id,
+                    error=str(suggestion_error)[:500],
+                )
+            try:
+                workspace = workspace_state.load_workspace_for_user(user_id)
+                _package, handoff_lesson = workspace_state.find_lesson_package(
+                    workspace,
+                    lesson.id,
+                )
+                handoff_base_commit_id = current_head_commit(handoff_lesson).id
+                commit_operations(
+                    handoff_lesson,
+                    operations=[],
+                    label="Board generation handoff",
+                    message="The Chatbot acknowledged the saved board generation.",
+                    new_document=handoff_lesson.board_document,
+                    metadata={
+                        "kind": "board_generation_handoff",
+                        "user_message": "",
+                        "assistant_message": final_chatbot_message,
+                        "assistant_message_source": _activity_backend(current_activity()),
+                        "agent_backend": _activity_backend(current_activity()),
+                        "follow_up_suggestions": generation_follow_up_suggestions,
+                        "document_changed": False,
+                        "board_state_before": "non_empty",
+                        "board_state_after": "non_empty",
+                        "requirement_run_id": run_id,
+                        "requirement_version_id": frozen_version_id,
+                        "requirement_phase": "consumed",
+                        "active_requirement_sheet_after": None,
+                        "requirement_cleared": True,
+                        "decision_trace": {
+                            "selected_action": "generate_board_handoff",
+                            "role_executed": "chatbot",
+                            "document_changed": False,
+                        },
+                        "agent_activity": [
+                            event.model_dump(mode="json")
+                            for event in current_activity()
+                        ],
+                    },
+                )
+                if not workspace_state.save_lesson_for_user_if_head(
+                    user_id,
+                    handoff_lesson,
+                    expected_branch_name=branch_name,
+                    expected_head_commit_id=handoff_base_commit_id,
+                ):
+                    raise RuntimeError(
+                        "The lesson changed before the board-generation handoff was saved"
+                    )
+            except Exception as persistence_error:
+                ai_usage_logger.log_event(
+                    "blank_board_generation_handoff_persistence_failed",
+                    provider=provider,
+                    model=model,
+                    lesson_id=lesson.id,
+                    requirement_run_id=run_id,
+                    requirement_version_id=frozen_version_id,
+                    error=str(persistence_error)[:500],
+                )
     auto_teaching_result = None
     if request.post_generation_action == "auto_explain":
         from app.services.auto_board_teaching import start_auto_board_teaching
