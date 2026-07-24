@@ -18,7 +18,17 @@ log() {
 }
 
 source_revision() {
+  local revision_file="${OPENCLASS_SOURCE_REVISION_FILE:-$HOME/.config/openclass/source-revision}"
   local revision_reader="$PROJECT_DIR/scripts/read-source-revision.sh"
+  local revision=""
+
+  if [[ -f "$revision_file" ]]; then
+    IFS= read -r revision < "$revision_file" || true
+    if [[ -n "$revision" && ${#revision} -ge 7 && "$revision" != *[^0-9a-fA-F]* ]]; then
+      printf "%s" "$revision"
+      return
+    fi
+  fi
 
   if [[ -x "$revision_reader" ]]; then
     "$revision_reader" "$PROJECT_DIR" 2>/dev/null || printf "nogit"
