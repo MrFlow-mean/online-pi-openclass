@@ -225,6 +225,29 @@ def test_source_codex_runs_once_and_materializes_unmapped_hierarchy(tmp_path: Pa
     assert result.audit_metadata["body_text_extracted_by_host"] is False
 
 
+def test_source_codex_prompt_requires_bounded_anchor_investigation(
+    tmp_path: Path,
+) -> None:
+    _result, client, _path, _content_hash = _generate(
+        tmp_path,
+        _catalog(_node("chapter-1")),
+    )
+
+    prompt = " ".join(str(client.calls[0]["system_prompt"]).split())
+    assert "bounded evidence-expansion protocol" in prompt
+    assert "separate holdout anchors agree" in prompt
+    assert "Never inspect, render, or OCR every page by default" in prompt
+    assert "never create an unbounded 1..page_count page loop" in prompt
+    assert (
+        "complete=true means the genuine directory inventory is complete"
+        in prompt
+    )
+    assert "Prefer an honest unmapped node over an exhaustive scan" in prompt
+    assert "total is the current bounded inspection plan" in prompt
+    assert '"completed":3,"total":9' in prompt
+    assert '"total":280' not in prompt
+
+
 def test_source_codex_materializes_exact_authored_pdf_ranges(tmp_path: Path) -> None:
     import fitz
 

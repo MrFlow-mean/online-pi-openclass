@@ -839,16 +839,40 @@ tool loop. Inspect metadata and native navigation first, then extract bounded
 page text or render selected pages into scratch when evidence is missing. Keep
 investigating when an initial page-number hypothesis is uncertain. Do not stop
 only because the first inspected page, first offset, native outline, or text
-layer is incomplete. Before and after each bounded investigation stage, emit one
-concise commentary line in exactly this form:
-OPENCLASS_PROGRESS {"phase":"scan_pages","completed":12,"total":280,"unit":"pages","detail":"checking the printed contents against physical PDF pages"}
+layer is incomplete.
+
+Follow a bounded evidence-expansion protocol for paginated documents:
+1. Inventory cheap authoritative structure first: metadata, native outline,
+   page labels, embedded contents pages, and available text-layer headings.
+2. Choose a small set of widely separated anchor candidates across the known
+   navigation, including numbering boundaries or restarts when present. State
+   the bounded page set you will inspect before rendering or OCR.
+3. Use those anchors to test a global or piecewise printed-to-physical mapping.
+   Treat the mapping only as a hypothesis until separate holdout anchors agree.
+4. Expand locally around failed or ambiguous anchors. Reuse evidence already
+   gathered; do not rescan known pages for each directory node.
+5. Never inspect, render, or OCR every page by default, and never create an
+   unbounded 1..page_count page loop. If bounded anchors and targeted expansion
+   cannot verify a node, keep the genuine node but mark it unmapped with the
+   exact unresolved evidence layer. Exhausting the bounded investigation plan
+   does not mean exhaustively inspecting the whole document.
+
+complete=true means the genuine directory inventory is complete; it does not
+mean every node must have a verified body range. Prefer an honest unmapped node
+over an exhaustive scan or a guessed range.
+
+Before and after each bounded investigation stage, emit one concise commentary
+line in exactly this form:
+OPENCLASS_PROGRESS {"phase":"scan_pages","completed":3,"total":9,"unit":"pages","detail":"checking selected contents anchors against physical PDF pages"}
 Send this as assistant commentary; do not print it by running a shell command.
 Allowed phase values are scan_pages, map_nodes, verify_ranges, and write_catalog.
 Report only counts you have actually observed; never invent a total or advance a
-count for planned work. Once the directory is known, map_nodes and verify_ranges
-must use the real directory-node total. For non-paginated sources, use nodes,
-ranges, spine_items, sections, checks, or artifacts as the unit. These commentary
-lines are progress telemetry and are not part of the final catalog artifact.
+count for planned work. For scan_pages, total is the current bounded inspection
+plan, never the document page count. Once the directory is known, map_nodes and
+verify_ranges must use the real directory-node total. For non-paginated sources,
+use nodes, ranges, spine_items, sections, checks, or artifacts as the unit. These
+commentary lines are progress telemetry and are not part of the final catalog
+artifact.
 
 For PDF sources, source_range.kind must be pdf_pages and start/end are inclusive,
 1-based physical PDF file pages. A relation such as physical PDF page minus
@@ -867,10 +891,10 @@ must contain all verified descendants; the host will not derive them.
 Set mapping_status=verified only when source_range and at least one concrete
 evidence item are present. Evidence must name the inspection method and the
 bounded source position that supports the range. Set mapping_status=unmapped and
-source_range=null only after available tools and evidence have been exhausted;
-mapping_reason must then state the exact unresolved layer rather than a generic
-failure. Do not guess a range. A few unresolved nodes must not remove the valid
-directory or other verified ranges.
+source_range=null after the bounded investigation plan and targeted expansions
+cannot establish the range; mapping_reason must then state the exact unresolved
+layer rather than a generic failure. Do not guess a range. A few unresolved nodes
+must not remove the valid directory or other verified ranges.
 
 Do not create chunks, embeddings, vectors, visual indexes, teaching content, or
 body summaries. Write the complete catalog artifact, run your own bounded checks,
