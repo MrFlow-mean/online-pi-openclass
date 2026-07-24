@@ -407,6 +407,11 @@ export interface SourceIngestionRecord {
   size_bytes: number;
   status: SourceIngestionStatus;
   error: string;
+  qa_status: "pending" | "indexing" | "ready" | "enhancing" | "complete" | "failed";
+  indexed_page_count: number;
+  page_count: number;
+  qa_index_version: number;
+  enhancement_failed_page_count: number;
   structure_status: SourceStructureStatus;
   structure_strategy?: SourceStructureStrategy | null;
   structure_has_verified_toc: boolean;
