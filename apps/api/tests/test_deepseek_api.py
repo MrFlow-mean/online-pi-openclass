@@ -3,13 +3,23 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, Field
 
 from app.services.deepseek_api import DeepSeekConfig, DeepSeekTextClient
 
 
 class _Reply(BaseModel):
     answer: str
+
+
+class _Guidance(BaseModel):
+    options: list[str] = Field(default_factory=list)
+
+
+class _ReplyWithGuidance(BaseModel):
+    answer: str
+    guidance: _Guidance = Field(default_factory=_Guidance)
 
 
 class _FakeCompletions:
@@ -77,6 +87,66 @@ def test_deepseek_client_repairs_one_invalid_structured_response() -> None:
 
     assert parsed.answer == "repaired"
     assert len(completions.calls) == 2
+
+
+def test_deepseek_client_tells_repair_turn_which_field_failed_validation() -> None:
+    completions = _FakeCompletions(
+        [
+            json.dumps({"answer": "ok", "guidance": None}),
+            json.dumps({"answer": "ok"}),
+        ]
+    )
+    client = DeepSeekTextClient(
+        config=_config(),
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+
+    parsed, _activity = client.parse(
+        system_prompt="Return structured data.",
+        user_prompt="Question",
+        schema=_ReplyWithGuidance,
+    )
+
+    repair_message = completions.calls[1]["messages"][-1]["content"]
+    assert parsed.guidance == _Guidance()
+    assert "guidance" in repair_message
+    assert "valid dictionary" in repair_message
+    assert "Do not return null for a non-nullable field" in repair_message
+
+
+def test_deepseek_client_logs_safe_field_issues_when_repair_still_fails(
+    monkeypatch,
+) -> None:
+    completions = _FakeCompletions(
+        [
+            json.dumps({"answer": "first", "guidance": None}),
+            json.dumps({"answer": "second", "guidance": None}),
+        ]
+    )
+    client = DeepSeekTextClient(
+        config=_config(),
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+    logged_events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "app.services.deepseek_api.ai_usage_logger.log_event",
+        lambda event_type, **payload: logged_events.append((event_type, payload)),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid structured response"):
+        client.parse(
+            system_prompt="Return structured data.",
+            user_prompt="Question",
+            schema=_ReplyWithGuidance,
+        )
+
+    event_type, payload = logged_events[-1]
+    serialized_payload = json.dumps(payload)
+    assert event_type == "deepseek_structured_response_failed"
+    assert payload["initial_validation_issues"][0]["path"] == "guidance"
+    assert payload["repair_validation_issues"][0]["path"] == "guidance"
+    assert "first" not in serialized_payload
+    assert "second" not in serialized_payload
 
 
 def test_deepseek_text_model_rejects_image_inputs() -> None:
