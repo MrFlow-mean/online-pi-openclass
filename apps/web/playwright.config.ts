@@ -8,6 +8,7 @@ const webPort = Number(process.env.OPENCLASS_E2E_WEB_PORT ?? 3110);
 const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
 const webBaseUrl = `http://127.0.0.1:${webPort}`;
 const e2eDataDir = path.join(os.tmpdir(), "openclass-e2e");
+const pythonExecutable = process.env.OPENCLASS_E2E_PYTHON ?? ".venv/bin/python";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -30,7 +31,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `.venv/bin/python -m uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port ${apiPort}`,
+      command: `${pythonExecutable} -m uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port ${apiPort}`,
       cwd: rootDir,
       url: `${apiBaseUrl}/health`,
       reuseExistingServer: !process.env.CI,

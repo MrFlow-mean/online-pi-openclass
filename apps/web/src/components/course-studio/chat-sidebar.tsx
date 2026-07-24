@@ -26,7 +26,9 @@ import {
 } from "@/components/course-studio/model-catalog";
 import { latestExecutedNeedSnapshot } from "@/components/course-studio/current-need-snapshot";
 import { popoverPositionFromDomSelection } from "@/components/course-studio/selection-utils";
+import { sourceQuerySelectionLabel } from "@/components/course-studio/source-query-scope";
 import { LearningClarityCard } from "@/components/learning-clarity-card";
+import { api } from "@/lib/api";
 import { boardWorkflowLabel } from "@/lib/learning-requirement-display";
 import type {
   AIModelCatalog,
@@ -42,6 +44,7 @@ import type {
   LearningRequirementSheet,
   Lesson,
   SelectionRef,
+  SourceCitation,
 } from "@/types";
 import type { ChatMessage, LessonComposerState } from "@/components/course-studio/history-utils";
 
@@ -284,6 +287,8 @@ type CourseStudioChatSidebarProps = {
   composerMode: ChatInteractionMode;
   composerSelection: SelectionRef | null;
   composerSelections: SelectionRef[];
+  sourceQuerySelections: SelectionRef[];
+  sourceQueryAllReady: boolean;
   includeSelectionInPrompt: boolean;
   onApplySelection: (selection: SelectionRef, popoverPosition: ReturnType<typeof popoverPositionFromDomSelection>) => void;
   onContinueTeaching: () => void;
@@ -336,6 +341,8 @@ export function CourseStudioChatSidebar({
   composerMode,
   composerSelection,
   composerSelections,
+  sourceQuerySelections,
+  sourceQueryAllReady,
   includeSelectionInPrompt,
   onApplySelection,
   onContinueTeaching,
@@ -359,6 +366,18 @@ export function CourseStudioChatSidebar({
   const attachmentsReady = composerAttachments.every(
     (attachment) => attachment.kind === "image" || attachment.status === "ready"
   );
+
+  async function openSourceCitation(citation: SourceCitation) {
+    try {
+      const blob = await api.downloadPackageSource(packageId, citation.source_id);
+      const objectUrl = URL.createObjectURL(blob);
+      const page = citation.page_start && citation.page_start > 0 ? citation.page_start : 1;
+      window.open(`${objectUrl}#page=${page}`, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "无法打开引用资料");
+    }
+  }
 
   function startEditingMessage(message: ChatMessage) {
     setEditingMessageId(message.id);
@@ -469,6 +488,7 @@ export function CourseStudioChatSidebar({
                         })
                       : undefined
                   }
+                  onOpenSourceCitation={(citation) => openSourceCitation(citation)}
                 />
                 {message.role === "assistant" && message.status === "ready" && message.content.trim() ? (
                   <button
@@ -557,6 +577,61 @@ export function CourseStudioChatSidebar({
               : "border-gray-200 focus-within:border-black focus-within:ring-black"
           )}
         >
+          {sourceQueryAllReady || sourceQuerySelections.length ? (
+            <div className="mx-2.5 mt-2.5 space-y-1.5">
+              <div className="flex items-center justify-between px-1 text-[10px] text-blue-700">
+                <span>资料问答范围</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateComposerState((current) => ({
+                      ...current,
+                      sourceQuerySelections: [],
+                      sourceQueryAllReady: false,
+                    }))
+                  }
+                  className="hover:text-blue-950"
+                >
+                  清空范围
+                </button>
+              </div>
+              {sourceQueryAllReady ? (
+                <div className="flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-2.5 py-1.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <TextQuote className="h-4 w-4 shrink-0 text-blue-600" />
+                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">全部资料</span>
+                    <p className="truncate text-xs text-blue-900">当前课程全部可问答资料</p>
+                  </div>
+                </div>
+              ) : sourceQuerySelections.map((selection, index) => (
+                <div
+                  key={`${selection.source_ingestion_id}:${selection.source_chapter_id ?? selection.source_scope_kind}:${index}`}
+                  className="flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-2.5 py-1.5"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <TextQuote className="h-4 w-4 shrink-0 text-blue-600" />
+                    <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">
+                      {selection.source_scope_kind === "chapter" ? "章节" : selection.source_scope_kind === "page_range" ? "页段" : "资料"}
+                    </span>
+                    <p className="truncate text-xs text-blue-900">{sourceQuerySelectionLabel(selection)}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateComposerState((current) => ({
+                        ...current,
+                        sourceQuerySelections: current.sourceQuerySelections.filter((_item, itemIndex) => itemIndex !== index),
+                      }))
+                    }
+                    aria-label={`移除资料问答范围 ${index + 1}`}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-blue-500 transition hover:bg-white hover:text-blue-900"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {composerSelections.length ? (
             <div className="mx-2.5 mt-2.5 space-y-1.5">
               {composerSelections.length > 1 ? (
@@ -663,6 +738,8 @@ export function CourseStudioChatSidebar({
                   ? "点击输入会回到当前版本并继续对话"
                   : composerMode === "direct_edit"
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
+                    : sourceQueryAllReady || sourceQuerySelections.length
+                      ? "询问选中资料中的内容"
                     : composerSelection
                       ? composerSelection.kind === "source"
                         ? "基于引用章节继续提问"

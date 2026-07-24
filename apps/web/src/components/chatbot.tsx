@@ -26,6 +26,7 @@ import type {
   GuidedRequirementDiscovery,
   SectionTeachingProgress,
   SelectionRef,
+  SourceCitation,
 } from "@/types";
 
 export type CourseChatMessageView = {
@@ -44,6 +45,7 @@ export type CourseChatMessageView = {
   editableContent?: string;
   interactionMode?: ChatInteractionMode;
   editedFromCommitId?: string | null;
+  sourceCitations?: SourceCitation[];
 };
 
 function selectionPreviewLabel(selection: SelectionRef): string {
@@ -183,6 +185,7 @@ export function CourseChatMessage({
   onEditingContentChange,
   onCancelEdit,
   onSubmitEdit,
+  onOpenSourceCitation,
   isEditDisabled = false,
 }: {
   message: CourseChatMessageView;
@@ -194,6 +197,7 @@ export function CourseChatMessage({
   onEditingContentChange?: (value: string) => void;
   onCancelEdit?: () => void;
   onSubmitEdit?: () => void;
+  onOpenSourceCitation?: (citation: SourceCitation) => void | Promise<void>;
   isEditDisabled?: boolean;
 }) {
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
@@ -205,6 +209,7 @@ export function CourseChatMessage({
   const teachingProgress = message.teachingProgress;
   const agentActivity = message.agentActivity ?? [];
   const followUpSuggestions = message.followUpSuggestions ?? [];
+  const sourceCitations = message.sourceCitations ?? [];
   const hasContent = message.content.trim().length > 0;
 
   async function copyMessage() {
@@ -349,6 +354,44 @@ export function CourseChatMessage({
                 ) : null}
               </div>
             ) : null}
+          </div>
+        ) : null}
+
+        {isAssistant && !isPending && !isError && sourceCitations.length ? (
+          <div className="overflow-hidden rounded-xl border border-blue-100 bg-blue-50/40">
+            <p className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-700">
+              资料依据
+            </p>
+            <div className="divide-y divide-blue-100">
+              {sourceCitations.map((citation, index) => {
+                const pageLabel = citation.page_start
+                  ? citation.page_end && citation.page_end !== citation.page_start
+                    ? `第 ${citation.page_start}–${citation.page_end} 页`
+                    : `第 ${citation.page_start} 页`
+                  : "原文位置";
+                const sectionLabel = citation.section_path.filter(Boolean).join(" › ");
+                return (
+                  <button
+                    key={`${citation.evidence_id}:${index}`}
+                    type="button"
+                    onClick={() => void onOpenSourceCitation?.(citation)}
+                    disabled={!onOpenSourceCitation}
+                    className="group/citation block w-full px-3 py-2.5 text-left transition hover:bg-blue-50 disabled:cursor-default"
+                  >
+                    <span className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 text-[11px] font-semibold leading-5 text-blue-900">
+                        [{index + 1}] {citation.source_title} · {pageLabel}
+                      </span>
+                      {onOpenSourceCitation ? <MoveUpRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" /> : null}
+                    </span>
+                    {sectionLabel ? <span className="block truncate text-[10px] text-blue-700">{sectionLabel}</span> : null}
+                    <span className="mt-1 block max-h-10 overflow-hidden text-[11px] leading-5 text-gray-600">
+                      “{selectionPreviewText(citation.excerpt)}”
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ) : null}
 
