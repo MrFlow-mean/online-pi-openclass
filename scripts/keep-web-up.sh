@@ -18,6 +18,12 @@ log() {
 }
 
 source_revision() {
+  local revision_reader="$PROJECT_DIR/scripts/read-source-revision.sh"
+
+  if [[ -x "$revision_reader" ]]; then
+    "$revision_reader" "$PROJECT_DIR" 2>/dev/null || printf "nogit"
+    return
+  fi
   git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || printf "nogit"
 }
 
