@@ -1533,6 +1533,123 @@ class UserView(BaseModel):
     auth_identities: list[AuthIdentityView] = Field(default_factory=list)
 
 
+CommunityPostType = Literal["question", "discussion", "resource", "study_note"]
+CommunityFeedSort = Literal["recent", "hot", "unanswered"]
+
+
+class CommunitySpaceCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    slug: str = Field(default="", max_length=80)
+    description: str = Field(default="", max_length=500)
+
+    @field_validator("name", "slug", "description")
+    @classmethod
+    def strip_space_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class CommunitySpaceView(BaseModel):
+    id: str
+    slug: str
+    name: str
+    description: str
+    creator_user_id: str
+    created_at: str
+    updated_at: str
+    post_count: int = 0
+    follower_count: int = 0
+
+
+class CommunityPostCreate(BaseModel):
+    community_slug: str = Field(min_length=1, max_length=80)
+    post_type: CommunityPostType = "discussion"
+    title: str = Field(min_length=4, max_length=180)
+    body: str = Field(min_length=1, max_length=40_000)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("community_slug", "title", "body")
+    @classmethod
+    def strip_post_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, tags: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw_tag in tags:
+            tag = raw_tag.strip().lstrip("#").strip()
+            if not tag:
+                continue
+            if len(tag) > 40:
+                raise ValueError("标签不能超过 40 个字符")
+            key = tag.casefold()
+            if key not in seen:
+                result.append(tag)
+                seen.add(key)
+        return result
+
+
+class CommunityPostView(BaseModel):
+    id: str
+    community_id: str
+    community_slug: str
+    community_name: str
+    author_user_id: str
+    author_display_name: str
+    post_type: CommunityPostType
+    title: str
+    body: str
+    tags: list[str] = Field(default_factory=list)
+    vote_score: int = 0
+    comment_count: int = 0
+    viewer_vote: int = 0
+    created_at: str
+    updated_at: str
+
+
+class CommunityCommentCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=10_000)
+    parent_comment_id: str | None = None
+
+    @field_validator("body")
+    @classmethod
+    def strip_comment_body(cls, value: str) -> str:
+        return value.strip()
+
+
+class CommunityCommentView(BaseModel):
+    id: str
+    post_id: str
+    parent_comment_id: str | None = None
+    author_user_id: str
+    author_display_name: str
+    body: str
+    created_at: str
+    updated_at: str
+
+
+class CommunityPostDetail(BaseModel):
+    post: CommunityPostView
+    comments: list[CommunityCommentView] = Field(default_factory=list)
+
+
+class CommunityVoteRequest(BaseModel):
+    value: Literal[-1, 0, 1]
+
+
+class CommunityVoteView(BaseModel):
+    post_id: str
+    viewer_vote: int
+    vote_score: int
+
+
+class CommunityFollowView(BaseModel):
+    community_id: str
+    following: bool
+    follower_count: int
+
+
 class AuthRequest(BaseModel):
     identifier: str | None = None
     email: str | None = None
