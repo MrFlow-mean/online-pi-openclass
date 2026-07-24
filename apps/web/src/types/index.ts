@@ -1,4 +1,80 @@
 export type BoardAction = "no_change" | "edit_board";
+export type CommunityPostType = "question" | "discussion" | "resource" | "study_note";
+export type CommunityFeedSort = "recent" | "hot" | "unanswered";
+export type CommunitySpaceSort = "active" | "new" | "popular";
+
+export interface CommunitySpace {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  creator_user_id: string;
+  created_at: string;
+  updated_at: string;
+  post_count: number;
+  follower_count: number;
+}
+
+export interface CommunityPost {
+  id: string;
+  community_id: string;
+  community_slug: string;
+  community_name: string;
+  author_user_id: string;
+  author_display_name: string;
+  post_type: CommunityPostType;
+  title: string;
+  body: string;
+  tags: string[];
+  vote_score: number;
+  comment_count: number;
+  viewer_vote: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommunityComment {
+  id: string;
+  post_id: string;
+  parent_comment_id?: string | null;
+  author_user_id: string;
+  author_display_name: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommunityPostDetail {
+  post: CommunityPost;
+  comments: CommunityComment[];
+}
+
+export interface CreateCommunitySpacePayload {
+  name: string;
+  slug?: string;
+  description?: string;
+}
+
+export interface CreateCommunityPostPayload {
+  community_slug: string;
+  post_type: CommunityPostType;
+  title: string;
+  body: string;
+  tags: string[];
+}
+
+export interface CommunityVoteResult {
+  post_id: string;
+  viewer_vote: number;
+  vote_score: number;
+}
+
+export interface CommunityFollowResult {
+  community_id: string;
+  following: boolean;
+  follower_count: number;
+}
+
 export type ChatInteractionMode = "ask" | "direct_edit";
 export type AIProvider =
   | "openai"
