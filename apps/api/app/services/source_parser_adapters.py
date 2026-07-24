@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -57,6 +57,7 @@ class SourceParserAdapter(Protocol):
         source_content_hash: str,
         path: Path,
         mime_type: str,
+        page_numbers: Sequence[int] = (),
     ) -> ParsedDocumentV2: ...
 
 
@@ -71,7 +72,9 @@ class NativeFastParserAdapter:
         source_content_hash: str,
         path: Path,
         mime_type: str,
+        page_numbers: Sequence[int] = (),
     ) -> ParsedDocumentV2:
+        del page_numbers
         if path.suffix.lower() == ".pdf" or mime_type == "application/pdf":
             return self._parse_pdf(
                 source_id=source_id,
@@ -154,14 +157,14 @@ class JsonSidecarParserAdapter:
         source_content_hash: str,
         path: Path,
         mime_type: str,
+        page_numbers: Sequence[int] = (),
     ) -> ParsedDocumentV2:
         command = Path((os.getenv(self.command_env) or "").strip()).expanduser()
         if not command.is_file():
             raise RuntimeError(f"{self.name} sidecar is not configured")
         with tempfile.TemporaryDirectory(prefix=f"{self.name}-") as temporary:
             output_path = Path(temporary) / "parsed-document-v2.json"
-            completed = subprocess.run(
-                [
+            command_args = [
                     str(command),
                     "--input",
                     str(path),
@@ -173,7 +176,11 @@ class JsonSidecarParserAdapter:
                     source_content_hash,
                     "--mime-type",
                     mime_type,
-                ],
+                ]
+            if page_numbers:
+                command_args.extend(("--pages", ",".join(str(page) for page in page_numbers)))
+            completed = subprocess.run(
+                command_args,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -201,12 +208,24 @@ class SourceParserRouter:
         *,
         native: SourceParserAdapter | None = None,
         opendataloader: JsonSidecarParserAdapter | None = None,
+        mineru: JsonSidecarParserAdapter | None = None,
+        docling: JsonSidecarParserAdapter | None = None,
     ) -> None:
         self.native = native or NativeFastParserAdapter()
         self.opendataloader = opendataloader or JsonSidecarParserAdapter(
             name="opendataloader",
             version=os.getenv("OPENCLASS_OPENDATALOADER_VERSION", "2.5.0"),
             command_env="OPENCLASS_OPENDATALOADER_COMMAND",
+        )
+        self.mineru = mineru or JsonSidecarParserAdapter(
+            name="mineru",
+            version=os.getenv("OPENCLASS_MINERU_VERSION", "3.4.4"),
+            command_env="OPENCLASS_MINERU_COMMAND",
+        )
+        self.docling = docling or JsonSidecarParserAdapter(
+            name="docling",
+            version=os.getenv("OPENCLASS_DOCLING_VERSION", "2.115.0"),
+            command_env="OPENCLASS_DOCLING_COMMAND",
         )
 
     def parse_fast(
@@ -250,6 +269,27 @@ class SourceParserRouter:
             source_content_hash=source_content_hash,
             path=path,
             mime_type=mime_type,
+        )
+
+    def parse_enhancement(
+        self,
+        *,
+        parser: Literal["mineru", "docling"],
+        source_id: str,
+        source_content_hash: str,
+        path: Path,
+        mime_type: str,
+        page_numbers: Sequence[int],
+    ) -> ParsedDocumentV2:
+        adapter = self.mineru if parser == "mineru" else self.docling
+        if not adapter.configured:
+            raise RuntimeError(f"{parser} sidecar is not configured")
+        return adapter.parse(
+            source_id=source_id,
+            source_content_hash=source_content_hash,
+            path=path,
+            mime_type=mime_type,
+            page_numbers=page_numbers,
         )
 
 

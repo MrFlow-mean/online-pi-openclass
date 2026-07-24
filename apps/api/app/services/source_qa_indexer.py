@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from app.models import SourceIngestionRecord
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_parser_adapters import SourceParserRouter, source_parser_router
+from app.services.source_qa_enhancement import SourceQAEnhancementService
 from app.services.source_qa_index import SourceQAIndexStore
 
 
 class SourceQAIndexingError(RuntimeError):
     pass
+
+
+def source_qa_enabled() -> bool:
+    return os.getenv("OPENCLASS_SOURCE_QA_ENABLED", "1") == "1"
 
 
 class SourceQAIndexer:
@@ -19,10 +25,12 @@ class SourceQAIndexer:
         evidence_store: SourceEvidenceStore,
         index_store: SourceQAIndexStore,
         parser_router: SourceParserRouter = source_parser_router,
+        enhancement_service: SourceQAEnhancementService | None = None,
     ) -> None:
         self.evidence_store = evidence_store
         self.index_store = index_store
         self.parser_router = parser_router
+        self.enhancement_service = enhancement_service
 
     def index_fast(self, *, record: SourceIngestionRecord, path: Path) -> SourceIngestionRecord:
         content_hash = str(record.metadata.get("content_hash") or "").strip().lower()
@@ -65,7 +73,7 @@ class SourceQAIndexer:
                         "source_qa_shadow_element_count": len(shadow.elements),
                     }
             indexed_pages = len({item.page_no for item in document.elements})
-            return self.evidence_store.save_source(
+            ready = self.evidence_store.save_source(
                 indexing.model_copy(
                     update={
                         "qa_status": "ready",
@@ -84,6 +92,12 @@ class SourceQAIndexer:
                     }
                 )
             )
+            if self.enhancement_service is not None:
+                ready = self.enhancement_service.assess_and_queue(
+                    record=ready,
+                    document=document,
+                )
+            return ready
         except Exception as exc:
             self.evidence_store.save_source(
                 indexing.model_copy(

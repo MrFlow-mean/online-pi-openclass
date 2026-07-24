@@ -187,6 +187,131 @@ def test_json_sidecar_rejects_mismatched_source_identity(
         )
 
 
+def test_sqlite_vec_search_is_partitioned_by_source_scope(tmp_path: Path) -> None:
+    pytest.importorskip("sqlite_vec")
+    database_path = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database_path)
+    qa_store = SourceQAIndexStore(
+        database_path,
+        embedding_provider=_FixedEmbeddingProvider(),
+        reranker=_FixedReranker(),
+    )
+    selected = source_store.save_source(
+        SourceIngestionRecord(
+            id="source_vec_selected",
+            owner_user_id="user_1",
+            package_id="package_1",
+            title="Selected",
+            file_name="selected.pdf",
+            mime_type="application/pdf",
+            status="ready",
+            qa_status="ready",
+            metadata={"content_hash": "d" * 64},
+        )
+    )
+    excluded = source_store.save_source(
+        selected.model_copy(
+            update={
+                "id": "source_vec_excluded",
+                "title": "Excluded",
+                "metadata": {"content_hash": "e" * 64},
+            }
+        )
+    )
+    qa_store.publish_document(
+        record=selected,
+        document=_document(
+            source_id=selected.id,
+            content_hash="d" * 64,
+            parser="test",
+            text="selected sapphire evidence",
+        ),
+    )
+    qa_store.publish_document(
+        record=excluded,
+        document=_document(
+            source_id=excluded.id,
+            content_hash="e" * 64,
+            parser="test",
+            text="excluded sapphire evidence",
+        ),
+    )
+
+    matches = qa_store.search(
+        owner_user_id="user_1",
+        package_id="package_1",
+        query="sapphire",
+        source_ingestion_ids=[selected.id],
+        source_by_id={selected.id: selected},
+    )
+
+    assert qa_store.sqlite_vec_available is True
+    assert matches
+    assert {item.source_ingestion_id for item in matches} == {selected.id}
+    assert matches[0].metadata["embedding_model"] == "test-embedding"
+
+
+def test_multi_source_retrieval_reserves_evidence_for_each_selected_source(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database_path)
+    structure_store = SourceStructureStore(database_path)
+    qa_store = SourceQAIndexStore(database_path)
+    sources: list[SourceIngestionRecord] = []
+    for index, marker in enumerate(("alpha 111", "beta 222"), start=1):
+        content_hash = str(index) * 64
+        source = source_store.save_source(
+            SourceIngestionRecord(
+                id=f"source_compare_{index}",
+                owner_user_id="user_1",
+                package_id="package_1",
+                title=f"Comparison {index}",
+                file_name=f"comparison-{index}.pdf",
+                mime_type="application/pdf",
+                status="ready",
+                qa_status="ready",
+                metadata={"content_hash": content_hash},
+            )
+        )
+        qa_store.publish_document(
+            record=source,
+            document=_document(
+                source_id=source.id,
+                content_hash=content_hash,
+                parser="test",
+                text=f"comparison recovery value {marker}",
+            ),
+        )
+        sources.append(source)
+    retrieval = SourceRetrievalService(
+        evidence_store=source_store,
+        structure_store=structure_store,
+        qa_index_store=qa_store,
+    )
+
+    result = retrieval.retrieve(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        query="compare the recovery values",
+        scope=SourceQueryScope(
+            mode="sources",
+            refs=[
+                SourceQueryRef(
+                    source_ingestion_id=source.id,
+                    source_content_hash=str(source.metadata["content_hash"]),
+                )
+                for source in sources
+            ],
+        ),
+    )
+
+    assert {item.source_ingestion_id for item in result.bundle.evidence_items} == {
+        source.id for source in sources
+    }
+
+
 class _StaticParser:
     name = "primary"
     version = "1"
@@ -217,6 +342,28 @@ class _StaticSidecarParser(_StaticParser):
 
     def __init__(self, text: str) -> None:
         super().__init__("opendataloader", text)
+
+
+class _FixedEmbeddingProvider:
+    provider = "test"
+    model = "test-embedding"
+    dimensions = 1024
+
+    def embed(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        vector[0 if "sapphire" in text.lower() else 1] = 1.0
+        return vector
+
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed(text) for text in texts]
+
+
+class _FixedReranker:
+    provider = "test"
+    model = "test-reranker"
+
+    def rerank(self, *, query: str, documents: list[str]) -> list[float]:
+        return [1.0 if query.lower() in document.lower() else 0.0 for document in documents]
 
 
 def _document(

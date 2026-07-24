@@ -26,6 +26,7 @@ from app.services.codex_app_server import codex_app_server_available, codex_app_
 from app.services.deepseek_api import deepseek_provider_configured
 from app.services.workspace_state import ensure_data_dirs
 from app.services.source_ingestion_jobs import source_ingestion_task_manager
+from app.services.source_qa_enhancement import source_qa_enhancement_task_manager
 
 ensure_data_dirs()
 
@@ -33,6 +34,7 @@ ensure_data_dirs()
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     source_ingestion_task_manager.recover_active()
+    source_qa_enhancement_task_manager.recover_active()
     yield
 
 

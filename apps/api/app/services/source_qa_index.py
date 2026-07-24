@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -13,7 +14,6 @@ from typing import Iterator, Mapping, Sequence
 
 from app.models import RetrievalEvidence, SourceIngestionRecord, new_id, now_iso
 from app.services.native_source_index import (
-    DeterministicHashEmbeddingProvider,
     SourceEmbeddingProvider,
 )
 from app.services.source_ingestion_jobs import (
@@ -21,6 +21,12 @@ from app.services.source_ingestion_jobs import (
     source_ingestion_coordinator,
 )
 from app.services.source_parser_adapters import ParsedDocumentV2, ParsedSourceElement
+from app.services.source_qa_model_sidecar import (
+    SourceReranker,
+    default_embedding_provider,
+    default_reranker,
+    embed_many,
+)
 
 
 TARGET_CHUNK_TOKENS = 500
@@ -60,13 +66,17 @@ class SourceQAIndexStore:
         *,
         coordinator: SourceIngestionCoordinator = source_ingestion_coordinator,
         embedding_provider: SourceEmbeddingProvider | None = None,
+        reranker: SourceReranker | None = None,
     ) -> None:
         self.path = path
         self.coordinator = coordinator
-        self.embedding_provider = embedding_provider or DeterministicHashEmbeddingProvider()
+        self.embedding_provider = embedding_provider or default_embedding_provider()
+        self.reranker = reranker or default_reranker()
         self._lock = threading.RLock()
         self._initialized = False
         self.fts_available = False
+        self.sqlite_vec_available = False
+        self._sqlite_vec_module: object | None = None
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -78,6 +88,7 @@ class SourceQAIndexStore:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
+            self._load_sqlite_vec(conn)
             self._initialize(conn)
             yield conn
         finally:
@@ -168,8 +179,82 @@ class SourceQAIndexStore:
                 self.fts_available = False
             else:
                 self.fts_available = True
+            if self.sqlite_vec_available and self.embedding_provider.dimensions == 1024:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS source_qa_vec_map (
+                        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chunk_id TEXT NOT NULL UNIQUE
+                    );
+                    CREATE VIRTUAL TABLE IF NOT EXISTS source_qa_vec_chunks USING vec0(
+                        embedding float[1024],
+                        source_partition integer partition key
+                    );
+                    """
+                )
             conn.commit()
             self._initialized = True
+
+    def _load_sqlite_vec(self, conn: sqlite3.Connection) -> None:
+        if (
+            self.embedding_provider.dimensions != 1024
+            or os.getenv("OPENCLASS_SOURCE_QA_SQLITE_VEC_ENABLED", "1") != "1"
+        ):
+            return
+        try:
+            import sqlite_vec
+
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except (ImportError, sqlite3.Error):
+            self.sqlite_vec_available = False
+            self._sqlite_vec_module = None
+        else:
+            self.sqlite_vec_available = True
+            self._sqlite_vec_module = sqlite_vec
+
+    def _delete_vec_chunks(self, conn: sqlite3.Connection, chunk_ids: Sequence[str]) -> None:
+        if not self.sqlite_vec_available or not chunk_ids:
+            return
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        rowids = [
+            int(row["rowid"])
+            for row in conn.execute(
+                f"SELECT rowid FROM source_qa_vec_map WHERE chunk_id IN ({placeholders})",
+                list(chunk_ids),
+            ).fetchall()
+        ]
+        if rowids:
+            row_placeholders = ", ".join("?" for _ in rowids)
+            conn.execute(
+                f"DELETE FROM source_qa_vec_chunks WHERE rowid IN ({row_placeholders})",
+                rowids,
+            )
+        conn.execute(
+            f"DELETE FROM source_qa_vec_map WHERE chunk_id IN ({placeholders})",
+            list(chunk_ids),
+        )
+
+    def _insert_vec_chunk(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        chunk: SourceQAChunk,
+        embedding: Sequence[float],
+    ) -> None:
+        if not self.sqlite_vec_available or self._sqlite_vec_module is None:
+            return
+        cursor = conn.execute("INSERT INTO source_qa_vec_map(chunk_id) VALUES (?)", (chunk.id,))
+        serialize = getattr(self._sqlite_vec_module, "serialize_float32")
+        conn.execute(
+            "INSERT INTO source_qa_vec_chunks(rowid, embedding, source_partition) VALUES (?, ?, ?)",
+            (
+                int(cursor.lastrowid),
+                serialize(list(embedding)),
+                _source_partition(chunk.owner_user_id, chunk.package_id, chunk.source_ingestion_id),
+            ),
+        )
 
     def current_index_version(self, *, source_ingestion_id: str) -> int:
         with self._lock, self._connect() as conn:
@@ -221,6 +306,10 @@ class SourceQAIndexStore:
         )
         next_version = self.current_index_version(source_ingestion_id=record.id) + 1
         stamp = now_iso()
+        chunk_embeddings = embed_many(
+            self.embedding_provider,
+            [chunk.normalized_text for chunk in chunks],
+        )
 
         def publish() -> None:
             with self._lock, self._connect() as conn, conn:
@@ -237,11 +326,12 @@ class SourceQAIndexStore:
                         f"DELETE FROM source_qa_chunk_embeddings WHERE chunk_id IN ({placeholders})",
                         old_ids,
                     )
+                    self._delete_vec_chunks(conn, old_ids)
                 conn.execute("DELETE FROM source_qa_chunks WHERE source_ingestion_id = ?", (record.id,))
                 if self.fts_available:
                     conn.execute("DELETE FROM source_qa_chunks_fts WHERE source_ingestion_id = ?", (record.id,))
 
-                for index, chunk in enumerate(chunks):
+                for index, (chunk, embedding) in enumerate(zip(chunks, chunk_embeddings)):
                     previous_id = chunks[index - 1].id if index else None
                     next_id = chunks[index + 1].id if index + 1 < len(chunks) else None
                     conn.execute(
@@ -264,7 +354,7 @@ class SourceQAIndexStore:
                             _dumps(chunk.context_path), previous_id, next_id, stamp,
                         ),
                     )
-                    embedding = self.embedding_provider.embed(chunk.normalized_text)
+                    self._insert_vec_chunk(conn, chunk=chunk, embedding=embedding)
                     conn.execute(
                         """
                         INSERT INTO source_qa_chunk_embeddings(
@@ -343,6 +433,7 @@ class SourceQAIndexStore:
                         f"DELETE FROM source_qa_chunk_embeddings WHERE chunk_id IN ({placeholders})",
                         chunk_ids,
                     )
+                    self._delete_vec_chunks(conn, chunk_ids)
                 conn.execute(
                     "DELETE FROM source_qa_chunks WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?",
                     (owner_user_id, package_id, source_ingestion_id),
@@ -358,6 +449,179 @@ class SourceQAIndexStore:
                 )
 
         self.coordinator.run_write(self.path, delete)
+
+    def publish_enhanced_pages(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        document: ParsedDocumentV2,
+        page_numbers: Sequence[int],
+    ) -> int:
+        requested_pages = tuple(sorted({page for page in page_numbers if page >= 1}))
+        if not requested_pages:
+            return self.current_index_version(source_ingestion_id=record.id)
+        content_hash = str(record.metadata.get("content_hash") or "").strip().lower()
+        if document.source_id != record.id or document.source_content_hash.lower() != content_hash:
+            raise ValueError("Enhanced document identity does not match the ingestion record.")
+        document_pages = {element.page_no for element in document.elements}
+        if not set(requested_pages).issubset(document_pages):
+            raise ValueError("Enhanced parser did not return every requested page.")
+        parser_run_id = new_id("parser_run")
+        enhanced_chunks = [
+            chunk
+            for chunk in build_source_qa_chunks(
+                record=record,
+                document=document,
+                parser_run_id=parser_run_id,
+            )
+            if chunk.page_start in requested_pages
+        ]
+        if not enhanced_chunks:
+            raise ValueError("Enhanced parser returned no indexable content.")
+        next_version = self.current_index_version(source_ingestion_id=record.id) + 1
+        stamp = now_iso()
+        chunk_embeddings = embed_many(
+            self.embedding_provider,
+            [chunk.normalized_text for chunk in enhanced_chunks],
+        )
+
+        def publish() -> None:
+            with self._lock, self._connect() as conn, conn:
+                placeholders = ", ".join("?" for _ in requested_pages)
+                old_rows = conn.execute(
+                    f"""
+                    SELECT id FROM source_qa_chunks
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                        AND page_start IN ({placeholders})
+                    """,
+                    [record.owner_user_id, record.package_id, record.id, *requested_pages],
+                ).fetchall()
+                old_ids = [str(row["id"]) for row in old_rows]
+                if old_ids:
+                    old_placeholders = ", ".join("?" for _ in old_ids)
+                    conn.execute(
+                        f"DELETE FROM source_qa_chunk_embeddings WHERE chunk_id IN ({old_placeholders})",
+                        old_ids,
+                    )
+                    self._delete_vec_chunks(conn, old_ids)
+                    conn.execute(
+                        f"DELETE FROM source_qa_chunks WHERE id IN ({old_placeholders})",
+                        old_ids,
+                    )
+                if self.fts_available:
+                    conn.execute(
+                        f"""
+                        DELETE FROM source_qa_chunks_fts
+                        WHERE source_ingestion_id = ? AND chunk_id IN ({', '.join('?' for _ in old_ids)})
+                        """ if old_ids else "SELECT 1",
+                        [record.id, *old_ids] if old_ids else [],
+                    )
+                conn.execute(
+                    "UPDATE source_qa_chunks SET index_version = ? WHERE source_ingestion_id = ?",
+                    (next_version, record.id),
+                )
+                for chunk, embedding in zip(enhanced_chunks, chunk_embeddings):
+                    conn.execute(
+                        """
+                        INSERT INTO source_qa_chunks(
+                            id, owner_user_id, package_id, source_ingestion_id, source_content_hash,
+                            parser_run_id, index_version, page_start, page_end, reading_order_start,
+                            reading_order_end, text, normalized_text, token_count, element_ids_json,
+                            element_types_json, bbox_json, context_path_json, previous_chunk_id,
+                            next_chunk_id, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                        """,
+                        (
+                            chunk.id, chunk.owner_user_id, chunk.package_id,
+                            chunk.source_ingestion_id, chunk.source_content_hash, chunk.parser_run_id,
+                            next_version, chunk.page_start, chunk.page_end,
+                            chunk.reading_order_start, chunk.reading_order_end, chunk.text,
+                            chunk.normalized_text, chunk.token_count, _dumps(chunk.element_ids),
+                            _dumps(chunk.element_types), _dumps(chunk.bbox),
+                            _dumps(chunk.context_path), stamp,
+                        ),
+                    )
+                    self._insert_vec_chunk(conn, chunk=chunk, embedding=embedding)
+                    conn.execute(
+                        """
+                        INSERT INTO source_qa_chunk_embeddings(
+                            chunk_id, owner_user_id, package_id, source_ingestion_id,
+                            provider, model, dimensions, embedding_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            chunk.id, chunk.owner_user_id, chunk.package_id,
+                            chunk.source_ingestion_id, self.embedding_provider.provider,
+                            self.embedding_provider.model, self.embedding_provider.dimensions,
+                            _dumps(embedding), stamp,
+                        ),
+                    )
+                    if self.fts_available:
+                        conn.execute(
+                            "INSERT INTO source_qa_chunks_fts VALUES (?, ?, ?, ?, ?)",
+                            (
+                                chunk.id, chunk.owner_user_id, chunk.package_id,
+                                chunk.source_ingestion_id, chunk.normalized_text,
+                            ),
+                        )
+                ordered_ids = [
+                    str(row["id"])
+                    for row in conn.execute(
+                        """
+                        SELECT id FROM source_qa_chunks
+                        WHERE source_ingestion_id = ?
+                        ORDER BY page_start, reading_order_start, id
+                        """,
+                        (record.id,),
+                    ).fetchall()
+                ]
+                for index, chunk_id in enumerate(ordered_ids):
+                    conn.execute(
+                        "UPDATE source_qa_chunks SET previous_chunk_id = ?, next_chunk_id = ? WHERE id = ?",
+                        (
+                            ordered_ids[index - 1] if index else None,
+                            ordered_ids[index + 1] if index + 1 < len(ordered_ids) else None,
+                            chunk_id,
+                        ),
+                    )
+                conn.execute(
+                    """
+                    UPDATE source_qa_indexes
+                    SET parser_run_id = ?, status = 'enhancing', index_version = ?,
+                        chunk_count = ?, updated_at = ?
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (
+                        parser_run_id, next_version, len(ordered_ids), stamp,
+                        record.owner_user_id, record.package_id, record.id,
+                    ),
+                )
+
+        self.coordinator.run_write(self.path, publish)
+        return next_version
+
+    def set_index_status(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_id: str,
+        status: str,
+    ) -> None:
+        if status not in {"ready", "enhancing", "complete", "failed"}:
+            raise ValueError("Unsupported Source QA index status.")
+
+        def update() -> None:
+            with self._lock, self._connect() as conn, conn:
+                conn.execute(
+                    """
+                    UPDATE source_qa_indexes SET status = ?, updated_at = ?
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (status, now_iso(), owner_user_id, package_id, source_ingestion_id),
+                )
+
+        self.coordinator.run_write(self.path, update)
 
     def search(
         self,
@@ -376,6 +640,8 @@ class SourceQAIndexStore:
             return []
         placeholders = ", ".join("?" for _ in source_ids)
         scope_sql, scope_params = _page_scope_sql(source_ids, page_ranges or {})
+        query_embedding = self.embedding_provider.embed(query)
+        vector_ids: list[str] = []
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -404,21 +670,45 @@ class SourceQAIndexStore:
                 query=query,
                 allowed_ids={str(row["id"]) for row in rows},
             )
+            vector_ids = self._vector_candidates(
+                conn,
+                query_embedding=query_embedding,
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_ingestion_ids=source_ids,
+                allowed_ids={str(row["id"]) for row in rows},
+            )
 
-        query_embedding = self.embedding_provider.embed(query)
-        semantic_rank = sorted(
-            rows,
-            key=lambda row: _cosine(query_embedding, _loads(row["embedding_json"], [])),
-            reverse=True,
-        )[:40]
-        semantic_ids = [str(row["id"]) for row in semantic_rank]
+        if vector_ids:
+            semantic_ids = vector_ids
+        else:
+            semantic_rank = sorted(
+                rows,
+                key=lambda row: _cosine(query_embedding, _loads(row["embedding_json"], [])),
+                reverse=True,
+            )[:40]
+            semantic_ids = [str(row["id"]) for row in semantic_rank]
         rrf: dict[str, float] = {}
         for rank, chunk_id in enumerate(keyword_ids[:40], start=1):
             rrf[chunk_id] = rrf.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
         for rank, chunk_id in enumerate(semantic_ids, start=1):
             rrf[chunk_id] = rrf.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
         rows_by_id = {str(row["id"]): row for row in rows}
-        ranked_ids = sorted(rrf, key=lambda chunk_id: rrf[chunk_id], reverse=True)
+        fused_ids = sorted(rrf, key=lambda chunk_id: rrf[chunk_id], reverse=True)[:32]
+        rerank_scores = self.reranker.rerank(
+            query=query,
+            documents=[str(rows_by_id[chunk_id]["text"]) for chunk_id in fused_ids],
+        )
+        score_by_id = {
+            chunk_id: rerank_scores[index]
+            for index, chunk_id in enumerate(fused_ids)
+            if index < len(rerank_scores)
+        }
+        ranked_ids = sorted(
+            fused_ids,
+            key=lambda chunk_id: (score_by_id.get(chunk_id, 0.0), rrf[chunk_id]),
+            reverse=True,
+        )
 
         evidence: list[RetrievalEvidence] = []
         used_tokens = 0
@@ -475,8 +765,8 @@ class SourceQAIndexStore:
                     chunk_ids=expanded_chunk_ids,
                     excerpt=_compact_text(str(row["text"]), 360),
                     expanded_text=expanded_text,
-                    relevance_score=rrf[chunk_id],
-                    reason="FTS5 keyword and local semantic retrieval with reciprocal rank fusion.",
+                    relevance_score=score_by_id.get(chunk_id, rrf[chunk_id]),
+                    reason="FTS5 and local embeddings fused with RRF, then reranked.",
                     token_count=token_count,
                     metadata={
                         "retrieval_mode": "source_qa_hybrid",
@@ -488,6 +778,8 @@ class SourceQAIndexStore:
                         "parser_run_id": str(row["parser_run_id"]),
                         "qa_index_version": int(row["index_version"]),
                         "source_content_hash": str(row["source_content_hash"]),
+                        "embedding_model": self.embedding_provider.model,
+                        "reranker_model": self.reranker.model,
                         "element_ids": _loads(row["element_ids_json"], []),
                         "element_types": _loads(row["element_types_json"], []),
                     },
@@ -536,6 +828,50 @@ class SourceQAIndexStore:
         except sqlite3.OperationalError:
             return []
         return [str(row["chunk_id"]) for row in rows if str(row["chunk_id"]) in allowed_ids][:40]
+
+    def _vector_candidates(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        query_embedding: Sequence[float],
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_ids: Sequence[str],
+        allowed_ids: set[str],
+    ) -> list[str]:
+        if not self.sqlite_vec_available or self._sqlite_vec_module is None:
+            return []
+        serialize = getattr(self._sqlite_vec_module, "serialize_float32")
+        ranked: list[tuple[float, int]] = []
+        try:
+            for source_id in source_ingestion_ids:
+                rows = conn.execute(
+                    """
+                    SELECT rowid, distance FROM source_qa_vec_chunks
+                    WHERE embedding MATCH ? AND k = 40 AND source_partition = ?
+                    ORDER BY distance
+                    """,
+                    (
+                        serialize(list(query_embedding)),
+                        _source_partition(owner_user_id, package_id, source_id),
+                    ),
+                ).fetchall()
+                ranked.extend((float(row["distance"]), int(row["rowid"])) for row in rows)
+        except sqlite3.OperationalError:
+            return []
+        ranked.sort()
+        rowids = [rowid for _distance, rowid in ranked]
+        if not rowids:
+            return []
+        placeholders = ", ".join("?" for _ in rowids)
+        mapped = {
+            int(row["rowid"]): str(row["chunk_id"])
+            for row in conn.execute(
+                f"SELECT rowid, chunk_id FROM source_qa_vec_map WHERE rowid IN ({placeholders})",
+                rowids,
+            ).fetchall()
+        }
+        return [mapped[rowid] for rowid in rowids if mapped.get(rowid) in allowed_ids][:40]
 
 
 def build_source_qa_chunks(
@@ -589,7 +925,16 @@ def _chunk_page_units(
     current_tokens = 0
     for unit in expanded:
         unit_tokens = _estimate_tokens(unit[1])
-        if current and current_tokens >= MIN_CHUNK_TOKENS and current_tokens + unit_tokens > MAX_CHUNK_TOKENS:
+        binds_formula_context = (
+            unit[0].element_type == "formula"
+            or bool(current and current[-1][0].element_type == "formula")
+        )
+        if (
+            current
+            and not binds_formula_context
+            and current_tokens >= MIN_CHUNK_TOKENS
+            and current_tokens + unit_tokens > MAX_CHUNK_TOKENS
+        ):
             result.append(_make_chunk(record, page_no, current, parser_run_id))
             overlap_target = max(1, int(TARGET_CHUNK_TOKENS * CHUNK_OVERLAP_RATIO))
             overlap: list[tuple[ParsedSourceElement, str, tuple[str, ...]]] = []
@@ -603,7 +948,7 @@ def _chunk_page_units(
             current_tokens = overlap_tokens
         current.append(unit)
         current_tokens += unit_tokens
-        if current_tokens >= TARGET_CHUNK_TOKENS:
+        if current_tokens >= TARGET_CHUNK_TOKENS and unit[0].element_type != "formula":
             result.append(_make_chunk(record, page_no, current, parser_run_id))
             current = []
             current_tokens = 0
@@ -700,6 +1045,14 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if len(left) != len(right) or not left:
         return 0.0
     return sum(a * b for a, b in zip(left, right))
+
+
+def _source_partition(owner_user_id: str, package_id: str, source_ingestion_id: str) -> int:
+    digest = hashlib.blake2b(
+        "\0".join((owner_user_id, package_id, source_ingestion_id)).encode("utf-8"),
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, "big") & ((1 << 63) - 1)
 
 
 def _bbox_union(boxes: list[list[float]]) -> list[float]:

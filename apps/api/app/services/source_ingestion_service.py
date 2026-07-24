@@ -53,7 +53,11 @@ from app.services.source_structure_store import (
     source_structure_store,
 )
 from app.services.source_qa_index import SourceQAIndexStore
-from app.services.source_qa_indexer import SourceQAIndexer
+from app.services.source_qa_indexer import SourceQAIndexer, source_qa_enabled
+from app.services.source_qa_enhancement import (
+    SourceQAEnhancementService,
+    SourceQAEnhancementTaskManager,
+)
 from app.services.source_url_snapshot import (
     SourceUrlSnapshotError,
     fetch_url_source_snapshot,
@@ -150,6 +154,8 @@ class SourceIngestionService:
         media_transcription_provider: object | None = None,
         qa_index_store: SourceQAIndexStore | None = None,
         qa_indexer: SourceQAIndexer | None = None,
+        qa_enhancement_service: SourceQAEnhancementService | None = None,
+        qa_enhancement_task_manager: SourceQAEnhancementTaskManager | None = None,
     ) -> None:
         self.adapter = adapter
         self.open_notebook_backend = OpenNotebookSourceBackend(
@@ -176,9 +182,18 @@ class SourceIngestionService:
             path=store.path,
             coordinator=store.coordinator,
         )
+        self.qa_enhancement_service = qa_enhancement_service or SourceQAEnhancementService(
+            evidence_store=store,
+            index_store=self.qa_index_store,
+        )
+        self.qa_enhancement_task_manager = (
+            qa_enhancement_task_manager
+            or SourceQAEnhancementTaskManager(service=self.qa_enhancement_service)
+        )
         self.qa_indexer = qa_indexer or SourceQAIndexer(
             evidence_store=store,
             index_store=self.qa_index_store,
+            enhancement_service=self.qa_enhancement_service,
         )
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
@@ -603,6 +618,7 @@ class SourceIngestionService:
             package_id=record.package_id,
             source_ingestion_id=record.id,
         )
+        self.qa_enhancement_service.store.delete_for_source(record=record)
         removed = self.store.delete_source(
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
@@ -1345,7 +1361,7 @@ class SourceIngestionService:
             return self._attach_job(self.structure_store.attach_summary(failed))
         final_status = "ready" if structure.status in {"ready", "linear_only"} else "failed"
         error = structure.error if final_status == "failed" else ""
-        if final_status == "ready":
+        if final_status == "ready" and source_qa_enabled():
             local_path = source_local_path(saved)
             if local_path is None:
                 saved = self.store.save_source(
@@ -1426,6 +1442,8 @@ class SourceIngestionService:
             error=error,
             phase=final_status,
         )
+        if final_status == "ready":
+            self.qa_enhancement_task_manager.submit(final_record)
         return self._attach_job(self.structure_store.attach_summary(final_record))
 
     def _failed_record(self, record: SourceIngestionRecord, error: str, *, phase: str) -> SourceIngestionRecord:
