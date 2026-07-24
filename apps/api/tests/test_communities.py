@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.models import CommunityPostCreate, CommunitySpaceCreate, UserView
+from app.models import CommunityPostCreate, CommunityPostUpdate, CommunitySpaceCreate, UserView
 from app.routers import communities
 from app.services.community_store import (
     CommunityConflictError,
@@ -264,3 +264,54 @@ def test_missing_entities_do_not_create_orphan_interactions(tmp_path) -> None:
         store.set_vote("missing", user_id="user_voter", value=1)
     with pytest.raises(CommunityNotFoundError):
         store.set_follow("missing", user_id="user_voter", following=True)
+
+
+def test_authors_can_edit_and_delete_their_content(tmp_path) -> None:
+    store = _store(tmp_path)
+    space = _space(store)
+    post = _post(store, community_slug=space.slug)
+    comment = store.add_comment(
+        post.id,
+        body="原评论",
+        parent_comment_id=None,
+        user=_user(),
+    )
+    answer = store.add_answer(post.id, body="原答案", user=_user())
+
+    updated_post = store.update_post(
+        post.id,
+        CommunityPostUpdate(title="更新后的问题标题", body="更新后的正文", tags=["更新"]),
+        _user(),
+    )
+    assert updated_post.title == "更新后的问题标题"
+    assert updated_post.tags == ["更新"]
+    assert store.update_comment(comment.id, body="更新后的评论", user=_user()).body == "更新后的评论"
+    assert store.update_answer(answer.id, body="更新后的答案", user=_user()).body == "更新后的答案"
+
+    store.delete_comment(comment.id, _user())
+    store.delete_answer(answer.id, _user())
+    assert store.get_post(post.id).comments == []
+    assert store.get_post(post.id).answers == []
+    store.delete_post(post.id, _user())
+    with pytest.raises(CommunityNotFoundError):
+        store.get_post(post.id)
+
+
+def test_content_mutations_require_author_or_admin(tmp_path) -> None:
+    store = _store(tmp_path)
+    space = _space(store)
+    post = _post(store, community_slug=space.slug)
+    answer = store.add_answer(post.id, body="作者答案", user=_user())
+
+    with pytest.raises(CommunityValidationError, match="只有作者"):
+        store.update_post(
+            post.id,
+            CommunityPostUpdate(title=post.title, body=post.body, tags=post.tags),
+            _user("user_other"),
+        )
+    with pytest.raises(CommunityValidationError, match="只有作者"):
+        store.delete_answer(answer.id, _user("user_other"))
+
+    store.delete_post(post.id, _user("user_admin", role="admin"))
+    with pytest.raises(CommunityNotFoundError):
+        store.get_post(post.id)

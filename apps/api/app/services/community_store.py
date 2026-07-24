@@ -12,6 +12,7 @@ from app.models import (
     CommunityCommentView,
     CommunityPostCreate,
     CommunityPostDetail,
+    CommunityPostUpdate,
     CommunityPostView,
     CommunitySpaceCreate,
     CommunitySpaceView,
@@ -298,6 +299,60 @@ class CommunityStore:
                 )
         return self.get_post(post_id, viewer_user_id=user.id).post
 
+    def update_post(
+        self,
+        post_id: str,
+        payload: CommunityPostUpdate,
+        user: UserView,
+    ) -> CommunityPostView:
+        timestamp = now_iso()
+        with self._lock:
+            with self._connect() as conn, conn:
+                post = conn.execute(
+                    "SELECT community_id, author_user_id FROM community_posts WHERE id = ?",
+                    (post_id,),
+                ).fetchone()
+                if post is None:
+                    raise CommunityNotFoundError("帖子不存在")
+                self._require_author_or_admin(post["author_user_id"], user, "只有作者可以编辑帖子")
+                conn.execute(
+                    "UPDATE community_posts SET title = ?, body = ?, updated_at = ? WHERE id = ?",
+                    (payload.title, payload.body, timestamp, post_id),
+                )
+                conn.execute("DELETE FROM community_post_tags WHERE post_id = ?", (post_id,))
+                for display_tag in payload.tags:
+                    normalized_tag = _normalize_tag(display_tag)
+                    if normalized_tag:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO community_post_tags(
+                                post_id, normalized_tag, display_tag
+                            ) VALUES (?, ?, ?)
+                            """,
+                            (post_id, normalized_tag, display_tag),
+                        )
+                conn.execute(
+                    "UPDATE community_spaces SET updated_at = ? WHERE id = ?",
+                    (timestamp, post["community_id"]),
+                )
+        return self.get_post(post_id, viewer_user_id=user.id).post
+
+    def delete_post(self, post_id: str, user: UserView) -> None:
+        with self._lock:
+            with self._connect() as conn, conn:
+                post = conn.execute(
+                    "SELECT community_id, author_user_id FROM community_posts WHERE id = ?",
+                    (post_id,),
+                ).fetchone()
+                if post is None:
+                    raise CommunityNotFoundError("帖子不存在")
+                self._require_author_or_admin(post["author_user_id"], user, "只有作者可以删除帖子")
+                conn.execute("DELETE FROM community_posts WHERE id = ?", (post_id,))
+                conn.execute(
+                    "UPDATE community_spaces SET updated_at = ? WHERE id = ?",
+                    (now_iso(), post["community_id"]),
+                )
+
     def list_posts(
         self,
         *,
@@ -451,6 +506,39 @@ class CommunityStore:
                 assert row is not None
                 return CommunityCommentView(**dict(row))
 
+    def update_comment(self, comment_id: str, *, body: str, user: UserView) -> CommunityCommentView:
+        with self._lock:
+            with self._connect() as conn, conn:
+                comment = conn.execute(
+                    "SELECT * FROM community_comments WHERE id = ?",
+                    (comment_id,),
+                ).fetchone()
+                if comment is None:
+                    raise CommunityNotFoundError("评论不存在")
+                self._require_author_or_admin(comment["author_user_id"], user, "只有作者可以编辑评论")
+                conn.execute(
+                    "UPDATE community_comments SET body = ?, updated_at = ? WHERE id = ?",
+                    (body, now_iso(), comment_id),
+                )
+                row = conn.execute(
+                    "SELECT * FROM community_comments WHERE id = ?",
+                    (comment_id,),
+                ).fetchone()
+                assert row is not None
+                return CommunityCommentView(**dict(row))
+
+    def delete_comment(self, comment_id: str, user: UserView) -> None:
+        with self._lock:
+            with self._connect() as conn, conn:
+                comment = conn.execute(
+                    "SELECT author_user_id FROM community_comments WHERE id = ?",
+                    (comment_id,),
+                ).fetchone()
+                if comment is None:
+                    raise CommunityNotFoundError("评论不存在")
+                self._require_author_or_admin(comment["author_user_id"], user, "只有作者可以删除评论")
+                conn.execute("DELETE FROM community_comments WHERE id = ?", (comment_id,))
+
     def add_answer(
         self,
         post_id: str,
@@ -489,6 +577,36 @@ class CommunityStore:
                 )
         detail = self.get_post(post_id, viewer_user_id=user.id)
         return next(answer for answer in detail.answers if answer.id == answer_id)
+
+    def update_answer(self, answer_id: str, *, body: str, user: UserView) -> CommunityAnswerView:
+        with self._lock:
+            with self._connect() as conn, conn:
+                answer = conn.execute(
+                    "SELECT post_id, author_user_id FROM community_answers WHERE id = ?",
+                    (answer_id,),
+                ).fetchone()
+                if answer is None:
+                    raise CommunityNotFoundError("答案不存在")
+                self._require_author_or_admin(answer["author_user_id"], user, "只有作者可以编辑答案")
+                conn.execute(
+                    "UPDATE community_answers SET body = ?, updated_at = ? WHERE id = ?",
+                    (body, now_iso(), answer_id),
+                )
+                post_id = str(answer["post_id"])
+        detail = self.get_post(post_id, viewer_user_id=user.id)
+        return next(answer for answer in detail.answers if answer.id == answer_id)
+
+    def delete_answer(self, answer_id: str, user: UserView) -> None:
+        with self._lock:
+            with self._connect() as conn, conn:
+                answer = conn.execute(
+                    "SELECT author_user_id FROM community_answers WHERE id = ?",
+                    (answer_id,),
+                ).fetchone()
+                if answer is None:
+                    raise CommunityNotFoundError("答案不存在")
+                self._require_author_or_admin(answer["author_user_id"], user, "只有作者可以删除答案")
+                conn.execute("DELETE FROM community_answers WHERE id = ?", (answer_id,))
 
     def set_answer_vote(
         self,
@@ -665,6 +783,10 @@ class CommunityStore:
             post_count=int(row["post_count"]),
             follower_count=int(row["follower_count"]),
         )
+
+    def _require_author_or_admin(self, author_user_id: str, user: UserView, message: str) -> None:
+        if user.role != "admin" and author_user_id != user.id:
+            raise CommunityValidationError(message)
 
     def _post_from_row(
         self,

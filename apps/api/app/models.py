@@ -1600,6 +1600,15 @@ class CommunityPostCreate(BaseModel):
         return result
 
 
+class CommunityPostUpdate(BaseModel):
+    title: str = Field(min_length=4, max_length=180)
+    body: str = Field(min_length=1, max_length=40_000)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+
+    _strip_fields = field_validator("title", "body")(CommunityPostCreate.strip_post_fields.__func__)
+    _clean_tags = field_validator("tags")(CommunityPostCreate.clean_tags.__func__)
+
+
 class CommunityPostView(BaseModel):
     id: str
     community_id: str
@@ -1627,6 +1636,15 @@ class CommunityCommentCreate(BaseModel):
     @field_validator("body")
     @classmethod
     def strip_comment_body(cls, value: str) -> str:
+        return value.strip()
+
+
+class CommunityContentUpdate(BaseModel):
+    body: str = Field(min_length=1, max_length=40_000)
+
+    @field_validator("body")
+    @classmethod
+    def strip_body(cls, value: str) -> str:
         return value.strip()
 
 

@@ -12,10 +12,12 @@ from app.models import (
     CommunityAnswerVoteView,
     CommunityCommentCreate,
     CommunityCommentView,
+    CommunityContentUpdate,
     CommunityFollowView,
     CommunityIntegrationView,
     CommunityPostCreate,
     CommunityPostDetail,
+    CommunityPostUpdate,
     CommunityPostView,
     CommunitySpaceCreate,
     CommunitySpaceView,
@@ -132,12 +134,14 @@ def list_community_posts(
     q: str = "",
     sort: Literal["recent", "hot", "unanswered"] = "recent",
     limit: int = Query(default=50, ge=1, le=100),
+    user: UserView = Depends(current_user),
 ) -> list[CommunityPostView]:
     return community_store.list_posts(
         community_slug=community,
         tag=tag,
         query=q,
         sort=sort,
+        viewer_user_id=None if user.role == "guest" else user.id,
         limit=limit,
     )
 
@@ -153,10 +157,39 @@ def create_community_post(
         _raise_http_error(exc)
 
 
-@router.get("/posts/{post_id}", response_model=CommunityPostDetail)
-def get_community_post(post_id: str) -> CommunityPostDetail:
+@router.put("/posts/{post_id}", response_model=CommunityPostView)
+def update_community_post(
+    post_id: str,
+    payload: CommunityPostUpdate,
+    user: UserView = Depends(_registered_user),
+) -> CommunityPostView:
     try:
-        return community_store.get_post(post_id)
+        return community_store.update_post(post_id, payload, user)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.delete("/posts/{post_id}", status_code=204)
+def delete_community_post(
+    post_id: str,
+    user: UserView = Depends(_registered_user),
+) -> None:
+    try:
+        community_store.delete_post(post_id, user)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.get("/posts/{post_id}", response_model=CommunityPostDetail)
+def get_community_post(
+    post_id: str,
+    user: UserView = Depends(current_user),
+) -> CommunityPostDetail:
+    try:
+        return community_store.get_post(
+            post_id,
+            viewer_user_id=None if user.role == "guest" else user.id,
+        )
     except ValueError as exc:
         _raise_http_error(exc)
 
@@ -173,6 +206,29 @@ def create_community_answer(
 ) -> CommunityAnswerView:
     try:
         return community_store.add_answer(post_id, body=payload.body, user=user)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.put("/answers/{answer_id}", response_model=CommunityAnswerView)
+def update_community_answer(
+    answer_id: str,
+    payload: CommunityContentUpdate,
+    user: UserView = Depends(_registered_user),
+) -> CommunityAnswerView:
+    try:
+        return community_store.update_answer(answer_id, body=payload.body, user=user)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.delete("/answers/{answer_id}", status_code=204)
+def delete_community_answer(
+    answer_id: str,
+    user: UserView = Depends(_registered_user),
+) -> None:
+    try:
+        community_store.delete_answer(answer_id, user)
     except ValueError as exc:
         _raise_http_error(exc)
 
@@ -238,6 +294,29 @@ def create_community_comment(
             parent_comment_id=payload.parent_comment_id,
             user=user,
         )
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.put("/comments/{comment_id}", response_model=CommunityCommentView)
+def update_community_comment(
+    comment_id: str,
+    payload: CommunityContentUpdate,
+    user: UserView = Depends(_registered_user),
+) -> CommunityCommentView:
+    try:
+        return community_store.update_comment(comment_id, body=payload.body, user=user)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.delete("/comments/{comment_id}", status_code=204)
+def delete_community_comment(
+    comment_id: str,
+    user: UserView = Depends(_registered_user),
+) -> None:
+    try:
+        community_store.delete_comment(comment_id, user)
     except ValueError as exc:
         _raise_http_error(exc)
 
