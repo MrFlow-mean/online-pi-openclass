@@ -242,15 +242,13 @@ def test_chat_stream_emits_live_activity_updates_and_avoids_duplicate_final_even
     ].index("final")
 
 
-def test_chat_stream_paces_visible_chat_deltas(monkeypatch) -> None:
-    sleep_calls: list[float] = []
-    monkeypatch.setattr(chat_router, "CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS", 0.02)
-    monkeypatch.setattr(chat_router, "time", type("FakeTime", (), {"sleep": staticmethod(sleep_calls.append)}))
-    monkeypatch.setattr(
-        chat_router,
-        "process_chat_on_lesson",
-        lambda *args, **kwargs: _chat_response("lesson_stream_test", chatbot_message="流式"),
-    )
+def test_chat_stream_preserves_live_model_delta_chunks(monkeypatch) -> None:
+    def process_with_model_chunks(*args, **kwargs) -> ChatResponse:
+        kwargs["on_delta"]("真正的")
+        kwargs["on_delta"]("流式输出")
+        return _chat_response("lesson_stream_test", chatbot_message="真正的流式输出")
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_model_chunks)
 
     events = _collect_events(
         chat_router._chat_stream_events(
@@ -260,8 +258,9 @@ def test_chat_stream_paces_visible_chat_deltas(monkeypatch) -> None:
         )
     )
 
-    assert _joined_delta(events, "chat_delta") == "流式"
-    assert sleep_calls == [0.02, 0.02]
+    chat_deltas = [payload["delta"] for event, payload in events if event == "chat_delta"]
+    assert chat_deltas == ["真正的", "流式输出"]
+    assert _joined_delta(events, "chat_delta") == "真正的流式输出"
 
 
 def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(monkeypatch) -> None:

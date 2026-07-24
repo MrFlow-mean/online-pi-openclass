@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import queue
 import threading
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -19,8 +18,6 @@ from app.services.codex_app_server import CodexTurnCancelledError
 
 router = APIRouter()
 CHAT_STREAM_HEARTBEAT_SECONDS = 10.0
-CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS = 0.004
-CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS = 0.0015
 
 
 @dataclass
@@ -87,14 +84,6 @@ def _sse_event(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _visible_delta_delay_seconds(event: str) -> float:
-    if event == "chat_delta":
-        return CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS
-    if event == "document_delta":
-        return CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS
-    return 0.0
-
-
 def _elapsed_ms_since(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
 
@@ -146,8 +135,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             return
         state.last_phase = "codex"
         log_first_delta_once(metric="chat", role="codex", field="agent_message")
-        for char in delta:
-            emit("chat_delta", {"delta": char})
+        emit("chat_delta", {"delta": delta})
         chat_delta_emitted = True
 
     def emit_requirement_update(payload: dict[str, object]) -> None:
@@ -167,8 +155,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         nonlocal chat_delta_emitted, document_delta_emitted
         if not chat_delta_emitted and response.chatbot_message:
             log_first_delta_once(metric="chat", role="codex", field="agent_message")
-            for char in response.chatbot_message:
-                emit("chat_delta", {"delta": char})
+            emit("chat_delta", {"delta": response.chatbot_message})
             chat_delta_emitted = True
         if (
             not document_delta_emitted
@@ -177,8 +164,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             document_text = _lesson_document_text(response, lesson_id)
             if document_text:
                 log_first_delta_once(metric="document", role="codex", field="board.md")
-                for char in document_text:
-                    emit("document_delta", {"delta": char})
+                emit("document_delta", {"delta": document_text})
                 document_delta_emitted = True
 
     def emit_agent_activity(response: ChatResponse) -> None:
@@ -253,9 +239,6 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             if event == "final":
                 state.final_yielded = True
             yield _sse_event(event, data)
-            delay = _visible_delta_delay_seconds(event)
-            if delay > 0:
-                time.sleep(delay)
     finally:
         if not state.final_yielded and not state.error_enqueued:
             cancel_event.set()
