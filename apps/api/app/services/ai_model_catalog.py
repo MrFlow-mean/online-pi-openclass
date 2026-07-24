@@ -22,10 +22,10 @@ OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
 PI_OPENAI_CODEX_MODELS = (
-    ("gpt-5.5", "OpenAI GPT-5.5"),
-    ("gpt-5.4", "OpenAI GPT-5.4"),
-    ("gpt-5.4-mini", "OpenAI GPT-5.4 Mini"),
-    ("gpt-5.3-codex-spark", "OpenAI GPT-5.3 Codex Spark"),
+    ("gpt-5.5", "GPT 5.5"),
+    ("gpt-5.4", "GPT 5.4"),
+    ("gpt-5.4-mini", "GPT 5.4 Mini"),
+    ("gpt-5.3-codex-spark", "GPT 5.3 Codex Spark"),
 )
 PI_OPENAI_CODEX_REASONING_EFFORTS = (
     "minimal",
@@ -220,7 +220,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="openai_codex",
             model=str(item["model"]),
-            label=f"{item['displayName']} via Pi",
+            label=str(item["displayName"]),
             capability="text",
             enabled=pi_openai_configured,
             configured=pi_openai_configured,

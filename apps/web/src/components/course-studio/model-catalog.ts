@@ -33,7 +33,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     {
       provider: "openai_codex",
       model: "gpt-5.5",
-      label: "OpenAI GPT-5.5 via Pi",
+      label: "GPT 5.5",
       capability: "text",
       enabled: false,
       configured: false,

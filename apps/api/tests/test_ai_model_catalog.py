@@ -25,6 +25,14 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
         ("deepseek", "deepseek-v4-flash"),
         ("deepseek", "deepseek-v4-pro"),
     ]
+    assert [option.label for option in catalog.text] == [
+        "GPT 5.5",
+        "GPT 5.4",
+        "GPT 5.4 Mini",
+        "GPT 5.3 Codex Spark",
+        "DeepSeek V4 Flash",
+        "DeepSeek V4 Pro",
+    ]
     assert catalog.defaults["text"].provider == "openai_codex"
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
     assert catalog.defaults["realtime"].provider == "openai"
