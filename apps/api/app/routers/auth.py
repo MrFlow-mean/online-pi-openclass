@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from urllib import parse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
@@ -7,6 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from app.models import AdminOverview, AuthProviderView, AuthRequest, AuthSessionResponse, UserView
 from app.services.auth_service import AuthService, bearer_token_from_request, bearer_token_from_websocket
+from app.services.community_oauth import community_oauth_service
 from app.services.workspace_state import DATABASE_PATH
 
 
@@ -53,9 +55,68 @@ def me(user: UserView = Depends(current_user)) -> UserView:
     return user
 
 
+@router.get("/auth/community/authorize")
+def authorize_community_login(
+    client_id: str,
+    redirect_uri: str,
+    response_type: str,
+    state: str = "",
+    scope: str = "",
+    user: UserView = Depends(current_user),
+) -> RedirectResponse:
+    del scope
+    target = community_oauth_service.authorization_redirect(
+        user=user,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        response_type=response_type,
+        state=state,
+    )
+    return RedirectResponse(target, status_code=302)
+
+
+@router.post("/auth/community/token")
+async def exchange_community_authorization_code(request: Request) -> dict[str, object]:
+    form = parse.parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)
+    client_id = _form_value(form, "client_id")
+    client_secret = _form_value(form, "client_secret")
+    authorization = request.headers.get("authorization", "")
+    scheme, _, credentials = authorization.partition(" ")
+    if scheme.casefold() == "basic" and credentials:
+        try:
+            decoded = base64.b64decode(credentials).decode("utf-8")
+            basic_client_id, separator, basic_client_secret = decoded.partition(":")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=401, detail="invalid_client") from exc
+        if not separator:
+            raise HTTPException(status_code=401, detail="invalid_client")
+        client_id = parse.unquote(basic_client_id)
+        client_secret = parse.unquote(basic_client_secret)
+    return community_oauth_service.exchange_code(
+        code=_form_value(form, "code"),
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=_form_value(form, "redirect_uri"),
+        grant_type=_form_value(form, "grant_type"),
+    )
+
+
+@router.get("/auth/community/userinfo")
+def community_userinfo(request: Request) -> dict[str, object]:
+    scheme, _, access_token = request.headers.get("authorization", "").partition(" ")
+    if scheme.casefold() != "bearer" or not access_token.strip():
+        raise HTTPException(status_code=401, detail="invalid_token")
+    return community_oauth_service.userinfo(access_token.strip())
+
+
 @router.get("/auth/providers", response_model=list[AuthProviderView])
 def auth_providers() -> list[AuthProviderView]:
     return auth_service.providers()
+
+
+def _form_value(form: dict[str, list[str]], name: str) -> str:
+    values = form.get(name, [])
+    return values[0] if values else ""
 
 
 @router.get("/auth/oauth/{provider}/start")
