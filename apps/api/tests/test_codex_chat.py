@@ -152,7 +152,7 @@ def test_chat_attachment_verification_rejects_a_source_outside_the_current_packa
         )
 
 
-def test_ready_file_attachment_uses_indexed_text_as_verified_context(
+def test_ready_file_attachment_defers_content_to_source_retrieval(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
     tmp_path: Path,
@@ -211,7 +211,8 @@ def test_ready_file_attachment_uses_indexed_text_as_verified_context(
     prepared = chat_attachments.prepare_chat_attachments(attachments=verified)
 
     assert prepared.image_inputs == []
-    assert "Backend-indexed attachment evidence." in prepared.prompt_context
+    assert "Backend-indexed attachment evidence." not in prepared.prompt_context
+    assert "backend source retrieval context" in prepared.prompt_context
     assert "Raw attachment copy" not in prepared.prompt_context
     assert "spoofed.txt" not in prepared.prompt_context
 

@@ -7,7 +7,7 @@ import re
 import sqlite3
 import unicodedata
 from dataclasses import dataclass
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Mapping, Protocol, Sequence
 
 from app.models import SourceChunk, now_iso
 
@@ -203,6 +203,8 @@ class NativeSourceIndex:
         source_ingestion_ids: Sequence[str],
         limit: int,
         search_mode: NativeSearchMode = "hybrid",
+        chapter_ids: Sequence[str] = (),
+        page_ranges: Mapping[str, tuple[int, int]] | None = None,
     ) -> list[NativeChunkMatch]:
         if search_mode not in {"text", "semantic", "hybrid"}:
             raise ValueError(f"Unsupported native source search mode: {search_mode}")
@@ -211,6 +213,29 @@ class NativeSourceIndex:
             return []
         placeholders = ", ".join("?" for _ in source_ids)
         scope_params: list[object] = [owner_user_id, package_id, *source_ids]
+        scope_clauses: list[str] = []
+        normalized_chapter_ids = tuple(dict.fromkeys(value for value in chapter_ids if value))
+        if normalized_chapter_ids:
+            chapter_placeholders = ", ".join("?" for _ in normalized_chapter_ids)
+            scope_clauses.append(f"source_chunks.chapter_id IN ({chapter_placeholders})")
+            scope_params.extend(normalized_chapter_ids)
+        normalized_page_ranges = {
+            source_id: page_range
+            for source_id, page_range in (page_ranges or {}).items()
+            if source_id in source_ids and page_range[0] >= 1 and page_range[1] >= page_range[0]
+        }
+        if normalized_page_ranges:
+            page_clauses: list[str] = []
+            for source_id, (page_start, page_end) in normalized_page_ranges.items():
+                page_clauses.append(
+                    "(source_chunks.source_ingestion_id = ? "
+                    "AND source_chunks.page_start IS NOT NULL "
+                    "AND source_chunks.page_start <= ? "
+                    "AND COALESCE(source_chunks.page_end, source_chunks.page_start) >= ?)"
+                )
+                scope_params.extend((source_id, page_end, page_start))
+            scope_clauses.append("(" + " OR ".join(page_clauses) + ")")
+        extra_scope_sql = "" if not scope_clauses else " AND " + " AND ".join(scope_clauses)
         rows = conn.execute(
             f"""
             SELECT source_chunks.id AS chunk_id, source_chunks.text,
@@ -223,6 +248,7 @@ class NativeSourceIndex:
             WHERE source_chunks.owner_user_id = ?
                 AND source_chunks.package_id = ?
                 AND source_chunks.source_ingestion_id IN ({placeholders})
+                {extra_scope_sql}
             """,
             [self.embedding_provider.provider, self.embedding_provider.model, *scope_params],
         ).fetchall()
@@ -254,7 +280,8 @@ class NativeSourceIndex:
             else {}
         )
         max_lexical = max(lexical_scores.values(), default=0.0)
-        candidate_ids = set(fts_ranks)
+        valid_chunk_ids = {str(row["chunk_id"]) for row in rows}
+        candidate_ids = set(fts_ranks).intersection(valid_chunk_ids)
         top_semantic = sorted(
             semantic_scores.items(),
             key=lambda item: item[1],
