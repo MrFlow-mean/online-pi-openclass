@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 
-test("browses a community post, votes, follows, and joins the discussion", async ({ page }) => {
+test("answers a question, votes, accepts an answer, and joins the discussion", async ({ page }) => {
   const now = "2026-07-24T10:00:00+00:00";
   const space = {
     id: "community-learning",
@@ -27,10 +27,25 @@ test("browses a community post, votes, follows, and joins the discussion", async
     tags: ["理解检查", "学习方法"],
     vote_score: 3,
     comment_count: 0,
+    answer_count: 1,
+    accepted_answer_id: null as string | null,
     viewer_vote: 0,
     created_at: now,
     updated_at: now,
   };
+  const answers = [{
+    id: "answer-first",
+    post_id: post.id,
+    author_user_id: "user-answerer",
+    author_display_name: "学习者乙",
+    body: "先用自己的话复述，再用一个新例子和一个反例检查边界。",
+    vote_score: 2,
+    viewer_vote: 0,
+    is_accepted: false,
+    author_reputation: 30,
+    created_at: now,
+    updated_at: now,
+  }];
   const comments: Array<Record<string, unknown>> = [];
 
   await page.context().addCookies([
@@ -41,10 +56,10 @@ test("browses a community post, votes, follows, and joins the discussion", async
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      id: "user-reader",
-      email: "reader@example.com",
+      id: "user-author",
+      email: "author@example.com",
       role: "user",
-      display_name: "测试学习者",
+      display_name: "学习者甲",
       avatar_url: null,
       created_at: now,
       last_login_at: now,
@@ -67,13 +82,34 @@ test("browses a community post, votes, follows, and joins the discussion", async
       return;
     }
     if (path === `/api/community/posts/${post.id}` && method === "GET") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ post, comments }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ post, answers, comments }) });
       return;
     }
     if (path === `/api/community/posts/${post.id}/vote` && method === "PUT") {
       post.viewer_vote = 1;
       post.vote_score = 4;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ post_id: post.id, viewer_vote: 1, vote_score: 4 }) });
+      return;
+    }
+    if (path === `/api/community/answers/${answers[0].id}/vote` && method === "PUT") {
+      answers[0].viewer_vote = 1;
+      answers[0].vote_score = 3;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ answer_id: answers[0].id, viewer_vote: 1, vote_score: 3 }) });
+      return;
+    }
+    if (path === `/api/community/posts/${post.id}/accepted-answer` && method === "PUT") {
+      const payload = request.postDataJSON() as { answer_id: string | null };
+      post.accepted_answer_id = payload.answer_id;
+      answers.forEach((answer) => { answer.is_accepted = answer.id === payload.answer_id; });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ post_id: post.id, accepted_answer_id: payload.answer_id }) });
+      return;
+    }
+    if (path === `/api/community/posts/${post.id}/answers` && method === "POST") {
+      const payload = request.postDataJSON() as { body: string };
+      const answer = { id: "answer-new", post_id: post.id, author_user_id: "user-author", author_display_name: "学习者甲", body: payload.body, vote_score: 0, viewer_vote: 0, is_accepted: false, author_reputation: 0, created_at: now, updated_at: now };
+      answers.push(answer);
+      post.answer_count += 1;
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(answer) });
       return;
     }
     if (path === `/api/community/posts/${post.id}/comments` && method === "POST") {
@@ -107,6 +143,15 @@ test("browses a community post, votes, follows, and joins the discussion", async
 
   await page.getByRole("button", { name: "赞同帖子", exact: true }).click();
   await expect(page.getByText("4", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "赞同 学习者乙 的回答", exact: true }).click();
+  await expect(page.getByText("3", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "采纳 学习者乙 的回答" }).click();
+  await expect(page.getByText("提问者已采纳")).toBeVisible();
+
+  await page.getByLabel("写回答").fill("我还会让别人根据我的解释复现同一个判断过程。");
+  await page.getByRole("button", { name: "提交回答" }).click();
+  await expect(page.getByText("我还会让别人根据我的解释复现同一个判断过程。")).toBeVisible();
 
   await page.getByLabel("写评论").fill("我会先尝试复述，再用反例检查边界。 ");
   await page.getByRole("button", { name: "参与讨论" }).click();
@@ -156,7 +201,7 @@ test("creates a topic-neutral community and post through the composer", async ({
     }
     if (path === "/api/community/posts" && method === "POST") {
       const payload = request.postDataJSON() as { community_slug: string; post_type: string; title: string; body: string; tags: string[] };
-      const post = { id: "post-new", community_id: "community-new", community_slug: payload.community_slug, community_name: "知识可视化", author_user_id: "user-author", author_display_name: "发布者", post_type: payload.post_type, title: payload.title, body: payload.body, tags: payload.tags, vote_score: 0, comment_count: 0, viewer_vote: 0, created_at: now, updated_at: now };
+      const post = { id: "post-new", community_id: "community-new", community_slug: payload.community_slug, community_name: "知识可视化", author_user_id: "user-author", author_display_name: "发布者", post_type: payload.post_type, title: payload.title, body: payload.body, tags: payload.tags, vote_score: 0, comment_count: 0, answer_count: 0, accepted_answer_id: null, viewer_vote: 0, created_at: now, updated_at: now };
       posts.push(post);
       await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(post) });
       return;

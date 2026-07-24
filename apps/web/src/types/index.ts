@@ -28,6 +28,8 @@ export interface CommunityPost {
   tags: string[];
   vote_score: number;
   comment_count: number;
+  answer_count: number;
+  accepted_answer_id?: string | null;
   viewer_vote: number;
   created_at: string;
   updated_at: string;
@@ -44,8 +46,23 @@ export interface CommunityComment {
   updated_at: string;
 }
 
+export interface CommunityAnswer {
+  id: string;
+  post_id: string;
+  author_user_id: string;
+  author_display_name: string;
+  body: string;
+  vote_score: number;
+  viewer_vote: number;
+  is_accepted: boolean;
+  author_reputation: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CommunityPostDetail {
   post: CommunityPost;
+  answers: CommunityAnswer[];
   comments: CommunityComment[];
 }
 
@@ -67,6 +84,17 @@ export interface CommunityVoteResult {
   post_id: string;
   viewer_vote: number;
   vote_score: number;
+}
+
+export interface CommunityAnswerVoteResult {
+  answer_id: string;
+  viewer_vote: number;
+  vote_score: number;
+}
+
+export interface CommunityAcceptedAnswerResult {
+  post_id: string;
+  accepted_answer_id?: string | null;
 }
 
 export interface CommunityFollowResult {

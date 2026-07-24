@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   ArrowUp,
   BookOpen,
+  CheckCircle2,
   CircleHelp,
   Clock3,
   Flame,
@@ -26,6 +27,7 @@ import { BrandMark } from "@/components/brand-mark";
 import { api } from "@/lib/api";
 import { communityApi } from "@/lib/community-api";
 import type {
+  CommunityAnswer,
   CommunityFeedSort,
   CommunityPost,
   CommunityPostDetail,
@@ -113,9 +115,17 @@ function PostCard({ post, onOpen, onTag }: {
                   #{tag}
                 </button>
               ))}
-              <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-stone-500">
-                <MessageCircle className="h-3.5 w-3.5" />
-                {post.comment_count} 条讨论
+              <span className="ml-auto flex items-center gap-3 text-xs font-semibold text-stone-500">
+                {post.post_type === "question" ? (
+                  <span className={clsx("inline-flex items-center gap-1.5", post.accepted_answer_id && "text-emerald-700")}>
+                    {post.accepted_answer_id ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleHelp className="h-3.5 w-3.5" />}
+                    {post.answer_count} 条回答
+                  </span>
+                ) : null}
+                <span className="inline-flex items-center gap-1.5">
+                  <MessageCircle className="h-3.5 w-3.5" />
+                  {post.comment_count} 条讨论
+                </span>
               </span>
             </div>
           </div>
@@ -248,36 +258,100 @@ function ComposerPanel({
 }
 
 
+function AnswerCard({
+  answer,
+  canAccept,
+  onVote,
+  onAccept,
+}: {
+  answer: CommunityAnswer;
+  canAccept: boolean;
+  onVote: (answerId: string, value: -1 | 0 | 1) => void;
+  onAccept: (answerId: string | null) => void;
+}) {
+  return (
+    <article className={clsx("rounded-2xl border p-4 sm:p-5", answer.is_accepted ? "border-emerald-300 bg-emerald-50/40" : "border-stone-200 bg-white")}>
+      <div className="flex gap-4">
+        <div className="flex w-9 shrink-0 flex-col items-center gap-1">
+          <button type="button" aria-label={`赞同 ${answer.author_display_name} 的回答`} onClick={() => onVote(answer.id, answer.viewer_vote === 1 ? 0 : 1)} className={clsx("rounded-lg p-1.5 transition", answer.viewer_vote === 1 ? "bg-[#ffe7ef] text-[#d74f7b]" : "text-stone-400 hover:bg-stone-100 hover:text-stone-800")}><ArrowUp className="h-5 w-5" /></button>
+          <span className="text-sm font-bold text-stone-900">{answer.vote_score}</span>
+          <button type="button" aria-label={`不赞同 ${answer.author_display_name} 的回答`} onClick={() => onVote(answer.id, answer.viewer_vote === -1 ? 0 : -1)} className={clsx("rounded-lg p-1.5 transition", answer.viewer_vote === -1 ? "bg-sky-100 text-sky-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-800")}><ArrowDown className="h-5 w-5" /></button>
+          {canAccept ? (
+            <button type="button" aria-label={answer.is_accepted ? `取消采纳 ${answer.author_display_name} 的回答` : `采纳 ${answer.author_display_name} 的回答`} onClick={() => onAccept(answer.is_accepted ? null : answer.id)} className={clsx("mt-2 rounded-full p-1.5 transition", answer.is_accepted ? "bg-emerald-600 text-white" : "border border-stone-300 text-stone-400 hover:border-emerald-500 hover:text-emerald-600")}><CheckCircle2 className="h-5 w-5" /></button>
+          ) : answer.is_accepted ? <CheckCircle2 aria-label="已采纳" className="mt-2 h-6 w-6 text-emerald-600" /> : null}
+        </div>
+        <div className="min-w-0 flex-1">
+          {answer.is_accepted ? <p className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800"><CheckCircle2 className="h-3.5 w-3.5" />提问者已采纳</p> : null}
+          <p className="whitespace-pre-wrap text-[15px] leading-7 text-stone-700">{answer.body}</p>
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500">
+            <span className="font-semibold text-stone-800">{answer.author_display_name}</span>
+            <span>贡献 {answer.author_reputation}</span>
+            <span>·</span>
+            <span>{formatRelativeTime(answer.created_at)}</span>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+
 function PostDetailView({
   detail,
+  viewerUserId,
   onBack,
   onVote,
+  onAnswer,
+  onAnswerVote,
+  onAcceptAnswer,
   onComment,
 }: {
   detail: CommunityPostDetail;
+  viewerUserId?: string;
   onBack: () => void;
   onVote: (value: -1 | 0 | 1) => void;
+  onAnswer: (body: string) => Promise<void>;
+  onAnswerVote: (answerId: string, value: -1 | 0 | 1) => void;
+  onAcceptAnswer: (answerId: string | null) => void;
   onComment: (body: string, parentCommentId?: string | null) => Promise<void>;
 }) {
+  const [answerBody, setAnswerBody] = useState("");
   const [commentBody, setCommentBody] = useState("");
   const [replyTo, setReplyTo] = useState<{ id: string; name: string } | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
+  const [answerSubmitting, setAnswerSubmitting] = useState(false);
+  const [answerError, setAnswerError] = useState("");
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [commentError, setCommentError] = useState("");
   const post = detail.post;
+
+  async function handleAnswer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!answerBody.trim()) return;
+    setAnswerSubmitting(true);
+    setAnswerError("");
+    try {
+      await onAnswer(answerBody.trim());
+      setAnswerBody("");
+    } catch (requestError) {
+      setAnswerError(requestError instanceof Error ? requestError.message : "回答发布失败");
+    } finally {
+      setAnswerSubmitting(false);
+    }
+  }
 
   async function handleComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!commentBody.trim()) return;
-    setSubmitting(true);
-    setError("");
+    setCommentSubmitting(true);
+    setCommentError("");
     try {
       await onComment(commentBody.trim(), replyTo?.id);
       setCommentBody("");
       setReplyTo(null);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "评论发布失败");
+      setCommentError(requestError instanceof Error ? requestError.message : "评论发布失败");
     } finally {
-      setSubmitting(false);
+      setCommentSubmitting(false);
     }
   }
 
@@ -307,13 +381,37 @@ function PostDetailView({
         </div>
       </div>
 
+      {post.post_type === "question" ? (
+        <div className="mt-8 border-t border-stone-200 pt-6">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-stone-950"><CircleHelp className="h-5 w-5" />{detail.answers.length} 条回答</h2>
+          <div className="mt-5 space-y-4">
+            {detail.answers.map((answer) => (
+              <AnswerCard
+                key={answer.id}
+                answer={answer}
+                canAccept={viewerUserId === post.author_user_id}
+                onVote={onAnswerVote}
+                onAccept={onAcceptAnswer}
+              />
+            ))}
+            {!detail.answers.length ? <p className="rounded-xl border border-dashed border-stone-300 px-4 py-8 text-center text-sm text-stone-500">还没有正式回答。你可以给出步骤、依据或可验证的方法。</p> : null}
+          </div>
+          <form onSubmit={handleAnswer} className="mt-5 rounded-2xl border border-stone-200 bg-[#faf9f6] p-4">
+            <label htmlFor="community-answer" className="text-sm font-semibold text-stone-800">写下你的回答</label>
+            <textarea id="community-answer" aria-label="写回答" value={answerBody} onChange={(event) => setAnswerBody(event.target.value)} placeholder="给出清晰、可验证并能直接解决问题的回答" rows={5} className="mt-3 w-full resize-y bg-transparent text-sm leading-7 outline-none placeholder:text-stone-400" />
+            {answerError ? <p role="alert" className="mt-2 text-sm text-rose-700">{answerError}</p> : null}
+            <div className="mt-3 flex justify-end"><button type="submit" disabled={answerSubmitting || !answerBody.trim()} className="inline-flex items-center gap-2 rounded-lg bg-stone-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40"><Send className="h-3.5 w-3.5" />{answerSubmitting ? "提交中…" : "提交回答"}</button></div>
+          </form>
+        </div>
+      ) : null}
+
       <div className="mt-8 border-t border-stone-200 pt-6">
         <h2 className="flex items-center gap-2 text-lg font-semibold text-stone-950"><MessageCircle className="h-5 w-5" />{detail.comments.length} 条讨论</h2>
         <form onSubmit={handleComment} className="mt-4 rounded-2xl border border-stone-200 bg-[#faf9f6] p-4">
           {replyTo ? <div className="mb-3 flex items-center justify-between rounded-lg bg-white px-3 py-2 text-xs text-stone-600"><span>回复 {replyTo.name}</span><button type="button" onClick={() => setReplyTo(null)} aria-label="取消回复"><X className="h-3.5 w-3.5" /></button></div> : null}
-          <textarea aria-label="写评论" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="补充理解、提出追问或给出可验证的回答" rows={3} className="w-full resize-y bg-transparent text-sm leading-6 outline-none placeholder:text-stone-400" />
-          {error ? <p role="alert" className="mt-2 text-sm text-rose-700">{error}</p> : null}
-          <div className="mt-3 flex justify-end"><button type="submit" disabled={submitting || !commentBody.trim()} className="inline-flex items-center gap-2 rounded-lg bg-stone-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40"><Send className="h-3.5 w-3.5" />{submitting ? "发送中…" : "参与讨论"}</button></div>
+          <textarea aria-label="写评论" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="补充信息、提出追问或继续讨论" rows={3} className="w-full resize-y bg-transparent text-sm leading-6 outline-none placeholder:text-stone-400" />
+          {commentError ? <p role="alert" className="mt-2 text-sm text-rose-700">{commentError}</p> : null}
+          <div className="mt-3 flex justify-end"><button type="submit" disabled={commentSubmitting || !commentBody.trim()} className="inline-flex items-center gap-2 rounded-lg bg-stone-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40"><Send className="h-3.5 w-3.5" />{commentSubmitting ? "发送中…" : "参与讨论"}</button></div>
         </form>
         <div className="mt-5 space-y-3">
           {detail.comments.map((comment) => (
@@ -428,6 +526,50 @@ export function CommunityHome() {
     setPosts((current) => current.map((post) => post.id === comment.post_id ? { ...post, comment_count: post.comment_count + 1 } : post));
   }
 
+  async function handleAnswer(body: string) {
+    if (!selectedPost || !canWrite()) return;
+    const answer = await communityApi.addAnswer(selectedPost.post.id, body);
+    setSelectedPost((current) => current ? {
+      ...current,
+      post: { ...current.post, answer_count: current.post.answer_count + 1 },
+      answers: [...current.answers, answer],
+    } : current);
+    setPosts((current) => current.map((post) => post.id === answer.post_id ? { ...post, answer_count: post.answer_count + 1 } : post));
+  }
+
+  async function handleAnswerVote(answerId: string, value: -1 | 0 | 1) {
+    if (!canWrite()) return;
+    try {
+      const result = await communityApi.voteAnswer(answerId, value);
+      setSelectedPost((current) => current ? {
+        ...current,
+        answers: current.answers.map((answer) => answer.id === result.answer_id ? {
+          ...answer,
+          viewer_vote: result.viewer_vote,
+          vote_score: result.vote_score,
+        } : answer),
+      } : current);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "回答投票失败");
+    }
+  }
+
+  async function handleAcceptAnswer(answerId: string | null) {
+    if (!selectedPost || !canWrite()) return;
+    try {
+      const result = await communityApi.acceptAnswer(selectedPost.post.id, answerId);
+      const acceptedAnswerId = result.accepted_answer_id ?? null;
+      setSelectedPost((current) => current ? {
+        ...current,
+        post: { ...current.post, accepted_answer_id: acceptedAnswerId },
+        answers: current.answers.map((answer) => ({ ...answer, is_accepted: answer.id === acceptedAnswerId })),
+      } : current);
+      setPosts((current) => current.map((post) => post.id === result.post_id ? { ...post, accepted_answer_id: acceptedAnswerId } : post));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "采纳答案失败");
+    }
+  }
+
   async function handleFollow(space: CommunitySpace) {
     if (!canWrite()) return;
     try {
@@ -477,7 +619,16 @@ export function CommunityHome() {
 
         <section className="min-w-0">
           {selectedPost ? (
-            <PostDetailView detail={selectedPost} onBack={() => setSelectedPost(null)} onVote={(value) => void handleVote(value)} onComment={handleComment} />
+            <PostDetailView
+              detail={selectedPost}
+              viewerUserId={user?.id}
+              onBack={() => setSelectedPost(null)}
+              onVote={(value) => void handleVote(value)}
+              onAnswer={handleAnswer}
+              onAnswerVote={(answerId, value) => void handleAnswerVote(answerId, value)}
+              onAcceptAnswer={(answerId) => void handleAcceptAnswer(answerId)}
+              onComment={handleComment}
+            />
           ) : (
             <>
               <div className="flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">

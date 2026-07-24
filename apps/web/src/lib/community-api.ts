@@ -1,5 +1,8 @@
 import { getApiBase, readEffectiveAuthToken } from "@/lib/api";
 import type {
+  CommunityAcceptedAnswerResult,
+  CommunityAnswer,
+  CommunityAnswerVoteResult,
   CommunityComment,
   CommunityFeedSort,
   CommunityFollowResult,
@@ -113,10 +116,40 @@ export const communityApi = {
     );
   },
 
+  addAnswer(postId: string, body: string) {
+    return communityRequest<CommunityAnswer>(
+      `/api/community/posts/${encodeURIComponent(postId)}/answers`,
+      {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      }
+    );
+  },
+
   vote(postId: string, value: -1 | 0 | 1) {
     return communityRequest<CommunityVoteResult>(`/api/community/posts/${encodeURIComponent(postId)}/vote`, {
       method: "PUT",
       body: JSON.stringify({ value }),
     });
+  },
+
+  voteAnswer(answerId: string, value: -1 | 0 | 1) {
+    return communityRequest<CommunityAnswerVoteResult>(
+      `/api/community/answers/${encodeURIComponent(answerId)}/vote`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      }
+    );
+  },
+
+  acceptAnswer(postId: string, answerId: string | null) {
+    return communityRequest<CommunityAcceptedAnswerResult>(
+      `/api/community/posts/${encodeURIComponent(postId)}/accepted-answer`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ answer_id: answerId }),
+      }
+    );
   },
 };
