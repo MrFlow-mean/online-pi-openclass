@@ -535,7 +535,13 @@ def codex_binary_path() -> str | None:
     configured = (os.getenv("OPENCLASS_CODEX_CLI_PATH") or "").strip()
     if configured:
         return configured if Path(configured).exists() else None
-    return shutil.which("codex")
+    discovered = shutil.which("codex")
+    if discovered:
+        return discovered
+    bundled_binary = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
+    if bundled_binary.is_file() and os.access(bundled_binary, os.X_OK):
+        return str(bundled_binary)
+    return None
 
 
 def codex_app_server_available() -> bool:

@@ -46,12 +46,17 @@ export function SourceCatalogModelPicker({
           defaultSelection={defaultSelection}
           options={options}
           onChange={onChange}
-          disabled={disabled || !enabledOption}
+          disabled={disabled || options.length === 0}
           contextLabel="目录提取模型设置"
           testIdPrefix="source-catalog-model"
           preferredPlacement="below"
           preferredSubmenuSide="left"
         />
+        {!enabledOption ? (
+          <p className="mt-1.5 text-[11px] leading-5 text-amber-700">
+            暂无已配置的目录提取模型；可以展开查看模型状态。
+          </p>
+        ) : null}
       </div>
     </div>
   );
