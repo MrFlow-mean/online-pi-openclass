@@ -177,7 +177,19 @@ class SourceEvidenceStore:
         self.coordinator.run_write(self.path, save_notebook)
 
     def save_source(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
-        record = record.model_copy(update={"updated_at": now_iso()})
+        record = record.model_copy(
+            update={
+                "updated_at": now_iso(),
+                "metadata": {
+                    **record.metadata,
+                    "qa_status": record.qa_status,
+                    "indexed_page_count": record.indexed_page_count,
+                    "qa_page_count": record.page_count,
+                    "qa_index_version": record.qa_index_version,
+                    "enhancement_failed_page_count": record.enhancement_failed_page_count,
+                },
+            }
+        )
 
         def save_record() -> SourceIngestionRecord:
             with self._lock, self._connect() as conn, conn:
@@ -459,6 +471,7 @@ class SourceEvidenceStore:
         return self.save_bundle(bundle.model_copy(update={"status": "consumed"}))
 
     def _source_from_row(self, row: sqlite3.Row) -> SourceIngestionRecord:
+        metadata = _loads(row["metadata_json"], {})
         return SourceIngestionRecord(
             id=row["id"],
             owner_user_id=row["owner_user_id"],
@@ -471,12 +484,19 @@ class SourceEvidenceStore:
             size_bytes=row["size_bytes"],
             status=row["status"],
             error=row["error"],
+            qa_status=metadata.get("qa_status", "pending"),
+            indexed_page_count=metadata.get("indexed_page_count", 0),
+            page_count=metadata.get("qa_page_count", 0),
+            qa_index_version=metadata.get("qa_index_version", 0),
+            enhancement_failed_page_count=metadata.get(
+                "enhancement_failed_page_count", 0
+            ),
             open_notebook_notebook_id=row["open_notebook_notebook_id"],
             open_notebook_source_id=row["open_notebook_source_id"],
             open_notebook_command_id=row["open_notebook_command_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            metadata=_loads(row["metadata_json"], {}),
+            metadata=metadata,
         )
 
     def _bundle_from_row(self, row: sqlite3.Row) -> EvidenceBundle:

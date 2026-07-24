@@ -739,6 +739,7 @@ ResourceSourceType = Literal[
     "transcript",
 ]
 SourceIngestionStatus = Literal["queued", "fetching", "parsing", "indexing", "ready", "failed"]
+SourceQAStatus = Literal["pending", "indexing", "ready", "enhancing", "complete", "failed"]
 EvidenceBundleStatus = Literal["candidate", "confirmed", "consumed", "archived"]
 EvidencePurpose = Literal["chat", "board_generation", "board_edit", "board_explain", "board_chat"]
 SourceStructureStatus = Literal["pending", "building", "ready", "linear_only", "failed"]
@@ -956,6 +957,11 @@ class SourceIngestionRecord(BaseModel):
     size_bytes: int = 0
     status: SourceIngestionStatus = "queued"
     error: str = ""
+    qa_status: SourceQAStatus = "pending"
+    indexed_page_count: int = Field(default=0, ge=0)
+    page_count: int = Field(default=0, ge=0)
+    qa_index_version: int = Field(default=0, ge=0)
+    enhancement_failed_page_count: int = Field(default=0, ge=0)
     open_notebook_notebook_id: str = ""
     open_notebook_source_id: str = ""
     open_notebook_command_id: str = ""

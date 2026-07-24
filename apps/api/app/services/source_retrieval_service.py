@@ -13,6 +13,7 @@ from app.models import (
     now_iso,
 )
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
+from app.services.source_qa_index import SourceQAIndexStore
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 
@@ -37,9 +38,14 @@ class SourceRetrievalService:
         *,
         evidence_store: SourceEvidenceStore = source_evidence_store,
         structure_store: SourceStructureStore = source_structure_store,
+        qa_index_store: SourceQAIndexStore | None = None,
     ) -> None:
         self.evidence_store = evidence_store
         self.structure_store = structure_store
+        self.qa_index_store = qa_index_store or SourceQAIndexStore(
+            path=evidence_store.path,
+            coordinator=evidence_store.coordinator,
+        )
 
     def retrieve(
         self,
@@ -59,28 +65,78 @@ class SourceRetrievalService:
             scope=scope,
         )
         source_ids = [source.id for source in sources]
-        chapter_ids = [
-            ref.source_chapter_id
-            for ref in refs
-            if ref.source_chapter_id
-        ]
+        chapter_ids = [ref.source_chapter_id for ref in refs if ref.source_chapter_id]
         page_ranges = {
             ref.source_ingestion_id: (ref.page_start, ref.page_end)
             for ref in refs
             if ref.page_start is not None and ref.page_end is not None
         }
-        evidence = self.structure_store.chunk_evidence_search(
+        chapter_paths: dict[str, list[str]] = {}
+        for ref in refs:
+            if not ref.source_chapter_id:
+                continue
+            pair = self.structure_store.get_catalog_chapter(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=ref.source_ingestion_id,
+                chapter_id=ref.source_chapter_id,
+            )
+            if pair is None:
+                continue
+            _structure, chapter = pair
+            chapter_paths[ref.source_ingestion_id] = chapter.path or [chapter.title]
+            if ref.source_ingestion_id not in page_ranges:
+                chapter_page_range = _chapter_page_range(chapter)
+                if chapter_page_range is not None:
+                    page_ranges[ref.source_ingestion_id] = chapter_page_range
+
+        source_by_id = {source.id: source for source in sources}
+        indexed_source_ids = self.qa_index_store.ready_source_ids(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_ingestion_ids=source_ids,
+        )
+        qa_source_ids = [source_id for source_id in source_ids if source_id in indexed_source_ids]
+        legacy_source_ids = [source_id for source_id in source_ids if source_id not in indexed_source_ids]
+        evidence = self.qa_index_store.search(
             owner_user_id=owner_user_id,
             package_id=package_id,
             query=normalized_query,
+            source_ingestion_ids=qa_source_ids,
+            source_by_id=source_by_id,
+            page_ranges=page_ranges,
             limit=SOURCE_QA_EVIDENCE_LIMIT,
             token_budget=SOURCE_QA_TOKEN_BUDGET,
-            source_ingestion_ids=source_ids,
-            chapter_ids=chapter_ids,
-            page_ranges=page_ranges,
-            search_mode="hybrid",
         )
-        source_by_id = {source.id: source for source in sources}
+        if legacy_source_ids and len(evidence) < SOURCE_QA_EVIDENCE_LIMIT:
+            remaining_budget = max(
+                1,
+                SOURCE_QA_TOKEN_BUDGET - sum(item.token_count for item in evidence),
+            )
+            evidence.extend(
+                self.structure_store.chunk_evidence_search(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    query=normalized_query,
+                    limit=SOURCE_QA_EVIDENCE_LIMIT - len(evidence),
+                    token_budget=remaining_budget,
+                    source_ingestion_ids=legacy_source_ids,
+                    chapter_ids=chapter_ids,
+                    page_ranges=page_ranges,
+                    search_mode="hybrid",
+                )
+            )
+        evidence = [
+            item.model_copy(
+                update={
+                    "section_path": chapter_paths.get(
+                        item.source_ingestion_id,
+                        item.section_path,
+                    )
+                }
+            )
+            for item in evidence
+        ]
         evidence = self._with_source_provenance(evidence, source_by_id)
         context_text = _evidence_context(evidence)
         bundle = self.evidence_store.save_bundle(
@@ -125,6 +181,7 @@ class SourceRetrievalService:
                     package_id=package_id,
                 )
                 if source.status == "ready"
+                and source.qa_status in {"ready", "enhancing", "complete"}
             ]
             if not sources:
                 raise SourceRetrievalError("当前课程没有已完成索引的资料。")
@@ -181,6 +238,22 @@ def _dedupe_sources(sources: Iterable[SourceIngestionRecord]) -> list[SourceInge
     for source in sources:
         by_id.setdefault(source.id, source)
     return list(by_id.values())
+
+
+def _chapter_page_range(chapter: object) -> tuple[int, int] | None:
+    source_range = getattr(chapter, "range", None)
+    if source_range is not None and getattr(source_range, "kind", "") == "pdf_pages":
+        start = getattr(source_range, "start", None)
+        end = getattr(source_range, "end", None)
+        if isinstance(start, int) and isinstance(end, int) and start >= 1 and end >= start:
+            return start, end
+    start = getattr(chapter, "page_start", None)
+    end = getattr(chapter, "page_end", None)
+    if isinstance(start, int) and start >= 1:
+        if isinstance(end, int) and end > start:
+            return start, end - 1
+        return start, start
+    return None
 
 
 def _citation_from_evidence(evidence: RetrievalEvidence) -> SourceCitation:
