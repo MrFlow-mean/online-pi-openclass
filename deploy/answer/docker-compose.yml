@@ -1,0 +1,22 @@
+services:
+  answer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openclass-answer:2.0.2-connector-basic-1.2.12
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OPENCLASS_ANSWER_PORT:-9080}:80"
+    environment:
+      TIMEZONE: ${TZ:-Asia/Shanghai}
+    volumes:
+      - answer-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/answer/api/v1/siteinfo"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  answer-data:
