@@ -436,6 +436,40 @@ export interface RetrievalEvidence {
   metadata: Record<string, unknown>;
 }
 
+export type SourceQueryScopeMode =
+  | "chapter"
+  | "page_range"
+  | "source"
+  | "sources"
+  | "all_ready_sources";
+
+export interface SourceQueryRef {
+  source_ingestion_id: string;
+  source_content_hash: string;
+  source_chapter_id?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+}
+
+export interface SourceQueryScope {
+  mode: SourceQueryScopeMode;
+  refs: SourceQueryRef[];
+}
+
+export interface SourceCitation {
+  evidence_id: string;
+  source_id: string;
+  source_title: string;
+  section_path: string[];
+  page_start?: number | null;
+  page_end?: number | null;
+  excerpt: string;
+  chunk_ids: string[];
+  bbox: number[];
+  source_content_hash: string;
+  parser_run_id: string;
+}
+
 export interface SourceStructure {
   id: string;
   owner_user_id: string;
@@ -973,6 +1007,7 @@ export interface ChatRequestPayload {
   selections?: SelectionRef[];
   formula_ink?: FormulaInkPayload | null;
   attachments?: ChatAttachmentRef[];
+  source_query_scope?: SourceQueryScope | null;
   interaction_mode?: ChatInteractionMode;
   board_generation_action?: "start" | null;
   teaching_action?: "continue" | "restart" | null;
@@ -1050,6 +1085,7 @@ export interface GuidedRequirementDiscovery {
 
 export interface ChatResponse {
   chatbot_message: string;
+  source_citations?: SourceCitation[];
   follow_up_suggestions?: string[];
   agent_activity?: AgentActivityEvent[];
   learning_requirement_sheet: LearningRequirementSheet;
