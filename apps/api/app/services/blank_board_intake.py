@@ -195,6 +195,18 @@ than copied from a canned script. Also return 2 to 4 concise, context-specific
 `follow_up_suggestions` that the learner could send next; do not use a fixed generic menu.
 """.strip()
 
+ORDINARY_CHAT_TEXT_INSTRUCTIONS = """
+The turn has already been classified as ordinary conversation with no learning request. Act as the
+learner-facing OpenClass Chatbot and answer naturally. When the request depends on current, recent,
+live, or otherwise externally verifiable public information, use only capabilities actually
+available in the current runtime and state uncertainty when current facts cannot be verified.
+
+Do not read or discuss the board document, a board summary, a selection, or an active learning
+requirement. Do not create, change, complete, freeze, or consume a learning requirement. Do not
+generate teaching-board content. Produce the response for the current conversation rather than
+copying a canned script. Return only the learner-facing plain text, without JSON or Markdown fences.
+""".strip()
+
 BOARD_GENERATION_HANDOFF_INSTRUCTIONS = """
 You are the learner-facing Chatbot in OpenClass. The board-writing role has already completed and
 OpenClass has safely saved the new board. Produce one brief, natural message that acknowledges
@@ -437,6 +449,7 @@ def process_blank_board_turn(
     base_commit_id = current_head_commit(lesson).id
     activity_by_id: dict[str, AgentActivityEvent] = {}
     activity_order: list[str] = []
+    chatbot_message_streamed = False
 
     def record_activity(event: AgentActivityEvent) -> None:
         if event.id not in activity_by_id:
@@ -580,21 +593,46 @@ def process_blank_board_turn(
                 previous_phase=active_state.phase,
             )
         if outcome.route == "ordinary_chat":
-            ordinary_parsed = adapter.parse_structured(
-                system_prompt=ORDINARY_CHAT_INSTRUCTIONS,
-                user_prompt=_ordinary_chat_user_prompt(
-                    request,
-                    conversation_text=conversation_text,
-                ),
-                schema=OrdinaryChatTurnResponse,
-                allow_live_web_search=True,
-                on_activity=record_activity,
-            )
-            merge_unreported_activity(getattr(ordinary_parsed, "activity", []))
-            ordinary_response = OrdinaryChatTurnResponse.model_validate(
-                ordinary_parsed.output_parsed
-            )
-            chatbot_message = ordinary_response.chatbot_message.strip()
+            complete_text = getattr(adapter, "complete_text", None)
+            if callable(complete_text):
+
+                def publish_chat_delta(delta: str) -> None:
+                    nonlocal chatbot_message_streamed
+                    if not delta or on_delta is None:
+                        return
+                    chatbot_message_streamed = True
+                    on_delta(delta)
+
+                ordinary_text = complete_text(
+                    system_prompt=ORDINARY_CHAT_TEXT_INSTRUCTIONS,
+                    user_prompt=_ordinary_chat_user_prompt(
+                        request,
+                        conversation_text=conversation_text,
+                    ),
+                    is_cancelled=is_cancelled,
+                    on_activity=record_activity,
+                    on_text_delta=publish_chat_delta,
+                )
+                merge_unreported_activity(getattr(ordinary_text, "activity", []))
+                chatbot_message = ordinary_text.output_text.strip()
+                ordinary_follow_up_suggestions: list[str] = []
+            else:
+                ordinary_parsed = adapter.parse_structured(
+                    system_prompt=ORDINARY_CHAT_INSTRUCTIONS,
+                    user_prompt=_ordinary_chat_user_prompt(
+                        request,
+                        conversation_text=conversation_text,
+                    ),
+                    schema=OrdinaryChatTurnResponse,
+                    allow_live_web_search=True,
+                    on_activity=record_activity,
+                )
+                merge_unreported_activity(getattr(ordinary_parsed, "activity", []))
+                ordinary_response = OrdinaryChatTurnResponse.model_validate(
+                    ordinary_parsed.output_parsed
+                )
+                chatbot_message = ordinary_response.chatbot_message.strip()
+                ordinary_follow_up_suggestions = ordinary_response.follow_up_suggestions
             if not chatbot_message:
                 raise CodexAppServerError(
                     "The network-enabled Chatbot completed without a learner-facing response"
@@ -602,7 +640,7 @@ def process_blank_board_turn(
             outcome = outcome.model_copy(
                 update={
                     "chatbot_message": chatbot_message,
-                    "follow_up_suggestions": ordinary_response.follow_up_suggestions,
+                    "follow_up_suggestions": ordinary_follow_up_suggestions,
                 }
             )
     existing_run_id = None if source_plan is not None else active_state.run_id
@@ -650,7 +688,11 @@ def process_blank_board_turn(
                 version_id=version_id,
                 phase=outcome.requirement_phase,
             )
-        if on_delta is not None and outcome.chatbot_message:
+        if (
+            on_delta is not None
+            and outcome.chatbot_message
+            and not chatbot_message_streamed
+        ):
             on_delta(outcome.chatbot_message)
         return _chat_response(
             user_id=user_id,
@@ -1102,6 +1144,7 @@ def process_blank_board_turn(
                     error=str(persistence_error)[:500],
                 )
     auto_teaching_result = None
+    final_chatbot_streamed = False
     if request.post_generation_action == "auto_explain":
         from app.services.auto_board_teaching import start_auto_board_teaching
 
@@ -1109,16 +1152,20 @@ def process_blank_board_turn(
             owner_user_id=user_id,
             lesson_id=lesson.id,
             adapter=adapter,
+            on_delta=on_delta,
+            on_activity=record_activity,
+            is_cancelled=is_cancelled,
         )
         merge_unreported_activity(auto_teaching_result.activity)
         if auto_teaching_result.status == "succeeded":
             final_chatbot_message = auto_teaching_result.chatbot_message
             generation_follow_up_suggestions = auto_teaching_result.follow_up_suggestions
+            final_chatbot_streamed = auto_teaching_result.chatbot_streamed
     if visual_insertion_notice:
         final_chatbot_message = "\n\n".join(
             part for part in [final_chatbot_message.strip(), visual_insertion_notice] if part
         )
-    if on_delta is not None and final_chatbot_message:
+    if on_delta is not None and final_chatbot_message and not final_chatbot_streamed:
         on_delta(final_chatbot_message)
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
@@ -1285,7 +1332,7 @@ def _intake_metadata(
     if outcome.route == "ordinary_chat":
         metadata.update(
             {
-                "chatbot_web_search_mode": "live",
+                "chatbot_web_search_mode": "disabled",
                 "chatbot_raw_network_access": False,
             }
         )

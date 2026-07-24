@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -35,7 +35,7 @@ facts that are absent from the target. Return needs_clarification or blocked whe
 usable. Do not output learner-facing prose.
 """
 
-CHATBOT_EXPLANATION_INSTRUCTIONS = """
+_CHATBOT_EXPLANATION_CORE_INSTRUCTIONS = """
 You are the learner-facing Chatbot in OpenClass. The Board AI has already selected and authorized
 one title-scoped teaching unit. Explain only from the supplied directive. Do not claim that you read the whole
 board, do not add unsupported facts, do not write or edit the board, and do not ask whether to begin.
@@ -59,6 +59,13 @@ their next turn. They are proposals, not executed actions, and must stay within 
 title scope or ask to continue through the normal workflow. Do not use a fixed generic menu.
 """
 
+CHATBOT_EXPLANATION_INSTRUCTIONS = _CHATBOT_EXPLANATION_CORE_INSTRUCTIONS.strip()
+
+CHATBOT_EXPLANATION_TEXT_INSTRUCTIONS = (
+    _CHATBOT_EXPLANATION_CORE_INSTRUCTIONS.rsplit("Also return", maxsplit=1)[0]
+    + "Return only the learner-facing explanation as plain text, without JSON or Markdown fences."
+).strip()
+
 
 class _LearnerExplanation(BaseModel):
     chatbot_message: str
@@ -76,6 +83,7 @@ class AutoTeachingResult:
     board_task_version_id: str | None = None
     progress: SectionTeachingProgressView | None = None
     activity: list[AgentActivityEvent] = field(default_factory=list)
+    chatbot_streamed: bool = False
 
 
 def start_auto_board_teaching(
@@ -84,6 +92,9 @@ def start_auto_board_teaching(
     lesson_id: str,
     model: str | None = None,
     adapter: AIExecutionAdapter | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> AutoTeachingResult:
     return _teach_section(
         owner_user_id=owner_user_id,
@@ -95,6 +106,9 @@ def start_auto_board_teaching(
         trigger="post_generation_auto_teach",
         target_heading="",
         user_message="",
+        on_delta=on_delta,
+        on_activity=on_activity,
+        is_cancelled=is_cancelled,
     )
 
 
@@ -106,6 +120,9 @@ def start_board_teaching(
     adapter: AIExecutionAdapter | None = None,
     target_heading: str,
     user_message: str,
+    on_delta: Callable[[str], None] | None = None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> AutoTeachingResult:
     return _teach_section(
         owner_user_id=owner_user_id,
@@ -117,6 +134,9 @@ def start_board_teaching(
         trigger="board_teaching_start",
         target_heading=target_heading,
         user_message=user_message,
+        on_delta=on_delta,
+        on_activity=on_activity,
+        is_cancelled=is_cancelled,
     )
 
 
@@ -128,6 +148,9 @@ def continue_board_teaching(
     adapter: AIExecutionAdapter | None = None,
     restart: bool,
     user_message: str = "",
+    on_delta: Callable[[str], None] | None = None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> AutoTeachingResult:
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
@@ -143,6 +166,9 @@ def continue_board_teaching(
         trigger="board_teaching_restart" if restart else "board_teaching_continue",
         target_heading=target_heading,
         user_message=user_message,
+        on_delta=on_delta,
+        on_activity=on_activity,
+        is_cancelled=is_cancelled,
     )
 
 
@@ -157,6 +183,9 @@ def _teach_section(
     trigger: str,
     target_heading: str,
     user_message: str,
+    on_delta: Callable[[str], None] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+    is_cancelled: Callable[[], bool] | None,
 ) -> AutoTeachingResult:
     if adapter is None:
         if not model:
@@ -254,6 +283,7 @@ def _teach_section(
     ready_commit_id = current_head_commit(lesson).id
 
     activity: list[AgentActivityEvent] = []
+    chatbot_streamed = False
     try:
         directive_response = adapter.parse_structured(
             system_prompt=BOARD_DIRECTIVE_INSTRUCTIONS,
@@ -267,34 +297,61 @@ def _teach_section(
                 ensure_ascii=False,
             ),
             schema=BoardExplanationDirective,
+            on_activity=on_activity,
         )
         activity.extend(directive_response.activity)
         directive = BoardExplanationDirective.model_validate(directive_response.output_parsed)
         if directive.status != "approved" or not directive.target_excerpt.strip():
             raise RuntimeError(directive.reason or "board_explanation_not_approved")
-        explanation_response = adapter.explain_from_directive(
-            system_prompt=CHATBOT_EXPLANATION_INSTRUCTIONS,
-            user_prompt=json.dumps(
-                {
-                    "board_explanation_directive": directive.model_dump(mode="json"),
-                    "teaching_context": {
-                        "is_opening_unit": requested_index == 0,
-                        "has_next_unit": requested_index + 1 < len(guide.section_plans),
+        explanation_payload = {
+            "board_explanation_directive": directive.model_dump(mode="json"),
+            "teaching_context": {
+                "is_opening_unit": requested_index == 0,
+                "has_next_unit": requested_index + 1 < len(guide.section_plans),
+            },
+        }
+        complete_text = getattr(adapter, "complete_text", None)
+        if callable(complete_text):
+
+            def publish_chat_delta(delta: str) -> None:
+                nonlocal chatbot_streamed
+                if not delta or on_delta is None:
+                    return
+                chatbot_streamed = True
+                on_delta(delta)
+
+            explanation_response = complete_text(
+                system_prompt=CHATBOT_EXPLANATION_TEXT_INSTRUCTIONS,
+                user_prompt=json.dumps(explanation_payload, ensure_ascii=False),
+                is_cancelled=is_cancelled,
+                on_activity=on_activity,
+                on_text_delta=publish_chat_delta,
+            )
+            activity.extend(explanation_response.activity)
+            chatbot_message = explanation_response.output_text.strip()
+            follow_up_suggestions: list[str] = []
+        else:
+            explanation_response = adapter.explain_from_directive(
+                system_prompt=CHATBOT_EXPLANATION_INSTRUCTIONS,
+                user_prompt=json.dumps(
+                    {
+                        **explanation_payload,
+                        "response_contract": _LearnerExplanation.model_json_schema(),
                     },
-                    "response_contract": _LearnerExplanation.model_json_schema(),
-                },
-                ensure_ascii=False,
-            ),
-            schema=_LearnerExplanation,
-        )
-        activity.extend(explanation_response.activity)
-        explanation = _LearnerExplanation.model_validate(explanation_response.output_parsed)
-        chatbot_message = explanation.chatbot_message.strip()
-        follow_up_suggestions = [
-            suggestion.strip()
-            for suggestion in explanation.follow_up_suggestions[:4]
-            if suggestion.strip()
-        ]
+                    ensure_ascii=False,
+                ),
+                schema=_LearnerExplanation,
+            )
+            activity.extend(explanation_response.activity)
+            explanation = _LearnerExplanation.model_validate(
+                explanation_response.output_parsed
+            )
+            chatbot_message = explanation.chatbot_message.strip()
+            follow_up_suggestions = [
+                suggestion.strip()
+                for suggestion in explanation.follow_up_suggestions[:4]
+                if suggestion.strip()
+            ]
         if not chatbot_message:
             raise RuntimeError("empty_board_explanation")
     except Exception as exc:
@@ -376,6 +433,7 @@ def _teach_section(
         board_task_version_id=version_id,
         progress=progress,
         activity=activity,
+        chatbot_streamed=chatbot_streamed,
     )
 
 
