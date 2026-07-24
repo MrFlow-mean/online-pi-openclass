@@ -17,6 +17,14 @@ if command -v git >/dev/null 2>&1; then
   fi
 fi
 
+if [[ -n "${OPENCLASS_SOURCE_REVISION_FILE:-}" && -f "$OPENCLASS_SOURCE_REVISION_FILE" ]]; then
+  IFS= read -r revision < "$OPENCLASS_SOURCE_REVISION_FILE" || exit 1
+  if [[ -n "$revision" && ${#revision} -ge 7 && "$revision" != *[^0-9a-fA-F]* ]]; then
+    printf "%s" "$revision"
+    exit 0
+  fi
+fi
+
 GIT_MARKER="$PROJECT_DIR/.git"
 if [[ -d "$GIT_MARKER" ]]; then
   GIT_DIR="$(cd "$GIT_MARKER" 2>/dev/null && pwd -P)" || exit 1

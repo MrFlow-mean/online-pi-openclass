@@ -12,6 +12,7 @@ LAUNCH_DIR="${OPENCLASS_LAUNCH_DIR:-$HOME/.openclass-launch}"
 LAUNCH_AGENTS_DIR="${OPENCLASS_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 RUNTIME_CONFIG_DIR="${OPENCLASS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/openclass}"
 RUNTIME_ENV_FILE="${OPENCLASS_ENV_FILE:-$RUNTIME_CONFIG_DIR/runtime.env}"
+RUNTIME_REVISION_FILE="${OPENCLASS_SOURCE_REVISION_FILE:-$RUNTIME_CONFIG_DIR/source-revision}"
 API_LABEL="com.openclass.api"
 WEB_LABEL="com.openclass.web"
 API_PLIST="$LAUNCH_AGENTS_DIR/$API_LABEL.plist"
@@ -70,6 +71,16 @@ replace_launch_link() {
   fi
   [[ ! -L "$LAUNCH_DIR" ]] || unlink "$LAUNCH_DIR"
   ln -s "$target" "$LAUNCH_DIR"
+}
+
+write_source_revision() {
+  local target="$1"
+  local revision
+
+  revision="$(git -C "$target" rev-parse HEAD)"
+  mkdir -p "$(dirname "$RUNTIME_REVISION_FILE")"
+  install -m 600 /dev/null "$RUNTIME_REVISION_FILE"
+  printf "%s\n" "$revision" > "$RUNTIME_REVISION_FILE"
 }
 
 runtime_env_value() {
@@ -168,6 +179,7 @@ rollback() {
     if [[ "$(resolve_directory "$LAUNCH_DIR" || true)" != "$PREVIOUS_TARGET" ]]; then
       replace_launch_link "$PREVIOUS_TARGET"
     fi
+    write_source_revision "$PREVIOUS_TARGET"
     start_agents
   fi
   exit "$exit_code"
@@ -178,6 +190,7 @@ trap rollback EXIT
 log "Stopping services before switching the runtime"
 stop_agents
 replace_launch_link "$TARGET"
+write_source_revision "$TARGET"
 log "Starting services from $TARGET"
 start_agents
 

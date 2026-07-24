@@ -8,6 +8,7 @@ LAUNCH_PARENT="$(dirname "$LAUNCH_DIR")"
 LAUNCH_BIN_DIR="$HOME/.openclass-launch-bin"
 RUNTIME_CONFIG_DIR="${OPENCLASS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/openclass}"
 RUNTIME_ENV_FILE="${OPENCLASS_ENV_FILE:-$RUNTIME_CONFIG_DIR/runtime.env}"
+RUNTIME_REVISION_FILE="${OPENCLASS_SOURCE_REVISION_FILE:-$RUNTIME_CONFIG_DIR/source-revision}"
 WEB_RUNNER="$LAUNCH_BIN_DIR/keep-web-up.sh"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 WEB_LABEL="com.openclass.web"
@@ -20,6 +21,7 @@ API_TARGET="$LAUNCH_AGENTS_DIR/$API_LABEL.plist"
 mkdir -p "$LAUNCH_AGENTS_DIR"
 mkdir -p "$LAUNCH_BIN_DIR"
 mkdir -p "$(dirname "$RUNTIME_ENV_FILE")"
+mkdir -p "$(dirname "$RUNTIME_REVISION_FILE")"
 if [[ ! -e "$RUNTIME_ENV_FILE" ]]; then
   if [[ -f "$PROJECT_DIR/.env" ]]; then
     install -m 600 "$PROJECT_DIR/.env" "$RUNTIME_ENV_FILE"
@@ -29,6 +31,9 @@ if [[ ! -e "$RUNTIME_ENV_FILE" ]]; then
 else
   chmod 600 "$RUNTIME_ENV_FILE"
 fi
+SOURCE_REVISION="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+install -m 600 /dev/null "$RUNTIME_REVISION_FILE"
+printf "%s\n" "$SOURCE_REVISION" > "$RUNTIME_REVISION_FILE"
 if [[ -e "$LAUNCH_DIR" && ! -L "$LAUNCH_DIR" ]]; then
   echo "Launch path exists and is not a symbolic link: $LAUNCH_DIR" >&2
   exit 1
@@ -71,6 +76,7 @@ install_agent() {
     -e "s#__LAUNCH_PARENT__#$LAUNCH_PARENT#g" \
     -e "s#__WEB_RUNNER__#$WEB_RUNNER#g" \
     -e "s#__OPENCLASS_ENV_FILE__#$RUNTIME_ENV_FILE#g" \
+    -e "s#__OPENCLASS_SOURCE_REVISION_FILE__#$RUNTIME_REVISION_FILE#g" \
     -e "s#__OPENCLASS_RUNTIME_PATH__#$RUNTIME_PATH#g" \
     "$template" > "$target"
   launchctl bootstrap "gui/$(id -u)" "$target"

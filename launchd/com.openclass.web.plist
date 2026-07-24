@@ -21,6 +21,8 @@
     <string>__OPENCLASS_RUNTIME_PATH__</string>
     <key>OPENCLASS_PROJECT_DIR</key>
     <string>__LAUNCH_DIR__</string>
+    <key>OPENCLASS_SOURCE_REVISION_FILE</key>
+    <string>__OPENCLASS_SOURCE_REVISION_FILE__</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/tmp/openclass-web.log</string>
