@@ -995,6 +995,7 @@ test("adds images and files from the chat plus menu and includes them in the tur
   );
   await expect(page.getByRole("menuitem", { name: "添加图片" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "添加文件" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "展开手写板" })).toBeVisible();
   await page.getByTestId("chat-image-input").setInputFiles({
     name: fileName,
     mimeType: "image/png",
@@ -1021,6 +1022,74 @@ test("adds images and files from the chat plus menu and includes them in the tur
     size_bytes: 68,
     kind: "image",
   });
+});
+
+test("adds a handwriting board image from the chat plus menu", async ({ page }) => {
+  const unique = Date.now();
+  const sourceId = `source_chat_ink_${unique}`;
+  const fileName = `handwriting-${unique}.png`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `聊天手写板测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `聊天手写板测试页面 ${unique}`);
+
+  await page.route("**/api/packages/*/sources", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: sourceId,
+        owner_user_id: "guest-test",
+        package_id: "package-test",
+        title: fileName,
+        source_type: "local_file",
+        source_uri: null,
+        file_name: fileName,
+        mime_type: "image/png",
+        size_bytes: 256,
+        status: "queued",
+        error: "",
+        open_notebook_notebook_id: "",
+        open_notebook_source_id: "",
+        open_notebook_command_id: "",
+        structure_status: "pending",
+        structure_strategy: null,
+        structure_has_verified_toc: false,
+        structure_error: "",
+        structure_updated_at: null,
+        ingestion_job: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        metadata: {},
+      }),
+    });
+  });
+
+  await page.getByRole("button", { name: "添加附件" }).click();
+  await page.getByRole("menuitem", { name: "展开手写板" }).click();
+  await expect(page.getByRole("dialog", { name: "手写板" })).toBeVisible();
+
+  const addButton = page.getByRole("button", { name: "添加到消息" });
+  await expect(addButton).toBeDisabled();
+  const canvas = page.getByLabel("手写输入画板");
+  const canvasBox = await canvas.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  if (!canvasBox) {
+    return;
+  }
+  await page.mouse.move(canvasBox.x + 30, canvasBox.y + 30);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + 120, canvasBox.y + 90, { steps: 5 });
+  await page.mouse.up();
+  await expect(addButton).toBeEnabled();
+  await addButton.click();
+
+  await expect(page.getByRole("dialog", { name: "手写板" })).toBeHidden();
+  await expect(page.getByLabel("已添加附件")).toContainText(fileName);
 });
 
 test("places the create control first and orders lesson tabs from newest to oldest", async ({ page }) => {

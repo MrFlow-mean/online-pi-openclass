@@ -1,10 +1,11 @@
 "use client";
 
 import clsx from "clsx";
-import { FilePlus2, FileText, ImagePlus, LoaderCircle, Plus, X } from "lucide-react";
+import { FilePlus2, FileText, ImagePlus, LoaderCircle, PenLine, Plus, X } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState, type ChangeEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
+import { ChatInkBoard } from "@/components/course-studio/chat-ink-board";
 import { api } from "@/lib/api";
 import type { ChatAttachmentRef, SourceIngestionRecord } from "@/types";
 
@@ -89,6 +90,7 @@ export function ChatAttachmentMenu({
   testIdPrefix = "chat",
   triggerText = "",
   triggerHint = "",
+  showInkBoard = false,
   onChange,
   onError,
 }: {
@@ -100,15 +102,18 @@ export function ChatAttachmentMenu({
   testIdPrefix?: string;
   triggerText?: string;
   triggerHint?: string;
+  showInkBoard?: boolean;
   onChange: (attachments: ChatAttachmentRef[]) => void;
   onError: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [inkBoardOpen, setInkBoardOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const inkBoardRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingFileIds = attachments
@@ -152,18 +157,24 @@ export function ChatAttachmentMenu({
   }, [packageId, pendingFileIds]);
 
   useEffect(() => {
-    if (!open) {
+    if (!open && !inkBoardOpen) {
       return;
     }
     function closeMenu(event: MouseEvent) {
       const target = event.target as Node;
-      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+      if (
+        !rootRef.current?.contains(target) &&
+        !menuRef.current?.contains(target) &&
+        !inkBoardRef.current?.contains(target)
+      ) {
         setOpen(false);
+        setInkBoardOpen(false);
       }
     }
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setOpen(false);
+        setInkBoardOpen(false);
       }
     }
     document.addEventListener("mousedown", closeMenu);
@@ -172,15 +183,15 @@ export function ChatAttachmentMenu({
       document.removeEventListener("mousedown", closeMenu);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open]);
+  }, [inkBoardOpen, open]);
 
   useEffect(() => {
-    if (!open) {
+    if (!open && !inkBoardOpen) {
       return;
     }
     function updateMenuPosition() {
       const trigger = rootRef.current;
-      const menu = menuRef.current;
+      const menu = inkBoardOpen ? inkBoardRef.current : menuRef.current;
       const boundary = menuAboveRef.current;
       if (!trigger || !menu || !boundary) {
         return;
@@ -201,18 +212,16 @@ export function ChatAttachmentMenu({
       window.removeEventListener("resize", updateMenuPosition);
       window.removeEventListener("scroll", updateMenuPosition, true);
     };
-  }, [menuAboveRef, open]);
+  }, [inkBoardOpen, menuAboveRef, open]);
 
-  async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  async function uploadSelectedFiles(files: File[]) {
     if (!files.length || disabled || isUploading) {
-      return;
+      return 0;
     }
     const availableSlots = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
     if (!availableSlots) {
       onError(`${limitLabel}最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件。`);
-      return;
+      return 0;
     }
     const selectedFiles = files.slice(0, availableSlots);
     if (selectedFiles.length < files.length) {
@@ -251,6 +260,29 @@ export function ChatAttachmentMenu({
       setIsUploading(false);
       setUploadProgress(null);
     }
+    return imported.length;
+  }
+
+  async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await uploadSelectedFiles(files);
+  }
+
+  async function uploadInkImage(imageDataUrl: string) {
+    try {
+      const response = await fetch(imageDataUrl);
+      const blob = await response.blob();
+      const file = new File([blob], `handwriting-${Date.now()}.png`, { type: blob.type || "image/png" });
+      const importedCount = await uploadSelectedFiles([file]);
+      if (importedCount) {
+        setInkBoardOpen(false);
+      }
+      return importedCount > 0;
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "手写内容添加失败");
+      return false;
+    }
   }
 
   const menu =
@@ -281,7 +313,36 @@ export function ChatAttachmentMenu({
               <FilePlus2 className="h-4 w-4 text-gray-500" />
               添加文件
             </button>
+            {showInkBoard ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuPosition(null);
+                  setOpen(false);
+                  setInkBoardOpen(true);
+                }}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
+              >
+                <PenLine className="h-4 w-4 text-gray-500" />
+                展开手写板
+              </button>
+            ) : null}
           </div>,
+          document.body
+        )
+      : null;
+
+  const inkBoard =
+    inkBoardOpen && typeof document !== "undefined"
+      ? createPortal(
+          <ChatInkBoard
+            panelRef={inkBoardRef}
+            position={menuPosition ?? { left: 0, top: 0, visibility: "hidden" }}
+            disabled={disabled || isUploading}
+            onClose={() => setInkBoardOpen(false)}
+            onSubmit={uploadInkImage}
+          />,
           document.body
         )
       : null;
@@ -315,16 +376,17 @@ export function ChatAttachmentMenu({
             if (!open) {
               setMenuPosition(null);
             }
+            setInkBoardOpen(false);
             setOpen(!open);
           }}
           disabled={disabled || isUploading}
           aria-label={isUploading ? "正在添加附件" : "添加附件"}
-          aria-expanded={open}
+          aria-expanded={open || inkBoardOpen}
           aria-haspopup="menu"
           className={clsx(
             "flex h-8 items-center justify-center text-gray-600 transition hover:bg-gray-100 hover:text-black disabled:cursor-not-allowed disabled:opacity-50",
             triggerText ? "w-auto gap-1.5 rounded-lg px-1.5" : "w-8 rounded-full",
-            open && "bg-gray-100 text-black"
+            (open || inkBoardOpen) && "bg-gray-100 text-black"
           )}
           title={isUploading ? `上传中 ${uploadProgress ?? 0}%` : "添加附件"}
         >
@@ -334,6 +396,7 @@ export function ChatAttachmentMenu({
         </button>
       </div>
       {menu}
+      {inkBoard}
     </>
   );
 }
