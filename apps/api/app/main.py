@@ -11,6 +11,7 @@ from app.routers import (
     auth,
     chat,
     codex_provider,
+    communities,
     documents,
     geometry,
     lesson_merges,
@@ -43,6 +44,7 @@ app.add_middleware(
 
 app.include_router(workspace.router)
 app.include_router(auth.router)
+app.include_router(communities.router)
 app.include_router(documents.router)
 app.include_router(lesson_merges.router)
 app.include_router(chat.router)
