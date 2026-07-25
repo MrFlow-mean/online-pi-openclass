@@ -1,5 +1,7 @@
 import type {
   AIModelCatalog,
+  AIProvider,
+  AIProviderCredentialStatus,
   AdminOverview,
   AuthProviderView,
   AuthSessionResponse,
@@ -450,6 +452,24 @@ export const api = {
   },
   getAIModels() {
     return request<AIModelCatalog>("/api/ai-models");
+  },
+  getModelCredentials() {
+    return request<AIProviderCredentialStatus[]>("/api/model-credentials");
+  },
+  saveModelCredential(provider: AIProvider, apiKey: string) {
+    return request<AIProviderCredentialStatus>(
+      `/api/model-credentials/${encodeURIComponent(provider)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ api_key: apiKey }),
+      }
+    );
+  },
+  deleteModelCredential(provider: AIProvider) {
+    return request<AIProviderCredentialStatus>(
+      `/api/model-credentials/${encodeURIComponent(provider)}`,
+      { method: "DELETE" }
+    );
   },
   getCodexStatus(includeRateLimits = false) {
     const query = includeRateLimits ? "?include_rate_limits=true" : "";

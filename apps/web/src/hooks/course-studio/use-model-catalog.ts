@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import {
   FALLBACK_MODEL_CATALOG,
+  MODEL_CREDENTIALS_CHANGED_EVENT,
   REALTIME_MODEL_STORAGE_KEY,
   TEXT_MODEL_STORAGE_KEY,
   findModelOption,
@@ -62,6 +63,10 @@ export function useModelCatalog() {
       }
     }
     void loadModelCatalog();
+    window.addEventListener(MODEL_CREDENTIALS_CHANGED_EVENT, loadModelCatalog);
+    return () => {
+      window.removeEventListener(MODEL_CREDENTIALS_CHANGED_EVENT, loadModelCatalog);
+    };
   }, []);
 
   const selectedTextOption = findModelOption(modelCatalog.text, selectedTextModel);
