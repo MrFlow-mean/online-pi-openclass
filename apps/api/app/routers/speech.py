@@ -72,12 +72,12 @@ def create_speech(
     except SpeechNotConfiguredError as exc:
         raise HTTPException(
             status_code=503,
-            detail="语音播报尚未配置 VOLCENGINE_TTS_API_KEY",
+            detail="语音播报服务尚未配置",
         ) from exc
     except SpeechGenerationError as exc:
         raise HTTPException(
             status_code=502,
-            detail="豆包语音模型没有成功生成音频",
+            detail="语音模型没有成功生成音频",
         ) from exc
 
     return Response(

@@ -51,20 +51,35 @@ def _volcengine_provider(text: str, voice: str | None, speech_rate: int | None) 
     return synthesize_volcengine_speech(text, speaker=voice, speech_rate=speech_rate)
 
 
+def _google_cloud_provider(text: str, voice: str | None, speech_rate: int | None) -> SpeechAudio:
+    from app.services.google_cloud_speech import synthesize_google_cloud_speech
+
+    return synthesize_google_cloud_speech(text, voice=voice, speech_rate=speech_rate)
+
+
 SPEECH_PROVIDERS: dict[str, SpeechProvider] = {
+    "google_cloud": _google_cloud_provider,
     "volcengine": _volcengine_provider,
 }
 
 
+def _provider_name() -> str:
+    configured = os.getenv("OPENCLASS_SPEECH_PROVIDER", "volcengine").strip().lower()
+    return (configured or "volcengine").replace("-", "_")
+
+
 def get_speech_options() -> SpeechOptions:
     load_root_dotenv()
-    provider_name = os.getenv("OPENCLASS_SPEECH_PROVIDER", "volcengine").strip().lower() or "volcengine"
-    if provider_name != "volcengine":
-        raise SpeechNotConfiguredError(f"Unsupported speech provider: {provider_name}")
+    provider_name = _provider_name()
+    if provider_name == "google_cloud":
+        from app.services.google_cloud_speech import get_google_cloud_speech_options
 
-    from app.services.volcengine_speech import get_volcengine_speech_options
+        return get_google_cloud_speech_options()
+    if provider_name == "volcengine":
+        from app.services.volcengine_speech import get_volcengine_speech_options
 
-    return get_volcengine_speech_options()
+        return get_volcengine_speech_options()
+    raise SpeechNotConfiguredError(f"Unsupported speech provider: {provider_name}")
 
 
 def synthesize_speech(
@@ -78,7 +93,7 @@ def synthesize_speech(
     if not normalized_text:
         raise SpeechGenerationError("Speech input is empty")
 
-    provider_name = os.getenv("OPENCLASS_SPEECH_PROVIDER", "volcengine").strip().lower() or "volcengine"
+    provider_name = _provider_name()
     provider = SPEECH_PROVIDERS.get(provider_name)
     if provider is None:
         raise SpeechNotConfiguredError(f"Unsupported speech provider: {provider_name}")

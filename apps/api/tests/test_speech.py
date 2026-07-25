@@ -10,7 +10,16 @@ import app.main as main_module
 from app.models import UserView
 from app.routers import auth as auth_router
 from app.routers import speech as speech_router
-from app.services.speech_service import SpeechAudio, SpeechNotConfiguredError
+from app.services.google_cloud_speech import (
+    get_google_cloud_speech_options,
+    synthesize_google_cloud_speech,
+)
+from app.services.speech_service import (
+    SpeechAudio,
+    SpeechNotConfiguredError,
+    get_speech_options,
+    synthesize_speech,
+)
 from app.services.volcengine_speech import _decode_audio_frames, synthesize_volcengine_speech
 
 
@@ -105,7 +114,24 @@ def test_speech_endpoint_reports_missing_provider_configuration(
     response = api_client.post("/api/speech", json={"input": "需要播报的内容"})
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "语音播报尚未配置 VOLCENGINE_TTS_API_KEY"
+    assert response.json()["detail"] == "语音播报服务尚未配置"
+
+
+def test_speech_endpoint_reports_provider_neutral_generation_failure(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed(_: str, *, voice: str | None = None, speech_rate: int | None = None) -> SpeechAudio:
+        from app.services.speech_service import SpeechGenerationError
+
+        raise SpeechGenerationError("upstream failed")
+
+    monkeypatch.setattr(speech_router, "synthesize_speech", failed)
+
+    response = api_client.post("/api/speech", json={"input": "需要播报的内容"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "语音模型没有成功生成音频"
 
 
 def test_volcengine_chunked_frames_are_joined_in_order() -> None:
@@ -171,3 +197,125 @@ def test_volcengine_provider_uses_v3_headers_and_doubao_voice(
     assert audio.content == b"mp3-data"
     assert audio.provider == "volcengine"
     assert audio.model == "seed-tts-2.0"
+
+
+def test_google_cloud_options_expose_standard_and_wavenet_voices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "voices": [
+                    {
+                        "languageCodes": ["cmn-CN"],
+                        "name": "cmn-CN-Standard-A",
+                        "ssmlGender": "FEMALE",
+                    },
+                    {
+                        "languageCodes": ["en-US"],
+                        "name": "en-US-Wavenet-D",
+                        "ssmlGender": "MALE",
+                    },
+                    {
+                        "languageCodes": ["en-US"],
+                        "name": "en-US-Neural2-A",
+                        "ssmlGender": "FEMALE",
+                    },
+                ]
+            }
+
+    def fake_get(endpoint: str, **kwargs: object) -> FakeResponse:
+        captured.update({"endpoint": endpoint, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setenv("GOOGLE_CLOUD_TTS_API_KEY", "test-google-key")
+    monkeypatch.setenv("GOOGLE_CLOUD_TTS_VOICE", "cmn-CN-Standard-A")
+    monkeypatch.setattr("app.services.google_cloud_speech.httpx.get", fake_get)
+
+    options = get_google_cloud_speech_options()
+
+    assert captured["endpoint"] == "https://texttospeech.googleapis.com/v1/voices"
+    assert captured["headers"] == {"X-Goog-Api-Key": "test-google-key"}
+    assert options.provider == "google_cloud"
+    assert options.model == "Google Cloud Standard / WaveNet"
+    assert options.default_voice == "cmn-CN-Standard-A"
+    assert [voice.id for voice in options.voices] == [
+        "cmn-CN-Standard-A",
+        "en-US-Wavenet-D",
+    ]
+
+
+def test_google_cloud_provider_sends_voice_language_rate_and_decodes_mp3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {"audioContent": base64.b64encode(b"google-mp3").decode()}
+
+    def fake_post(endpoint: str, **kwargs: object) -> FakeResponse:
+        captured.update({"endpoint": endpoint, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setenv("GOOGLE_CLOUD_TTS_API_KEY", "test-google-key")
+    monkeypatch.setattr("app.services.google_cloud_speech.httpx.post", fake_post)
+
+    audio = synthesize_google_cloud_speech(
+        "需要播报的内容",
+        voice="cmn-CN-Wavenet-A",
+        speech_rate=25,
+    )
+
+    assert captured["endpoint"] == "https://texttospeech.googleapis.com/v1/text:synthesize"
+    assert captured["headers"] == {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Goog-Api-Key": "test-google-key",
+    }
+    assert captured["json"] == {
+        "input": {"text": "需要播报的内容"},
+        "voice": {
+            "languageCode": "cmn-CN",
+            "name": "cmn-CN-Wavenet-A",
+        },
+        "audioConfig": {
+            "audioEncoding": "MP3",
+            "speakingRate": 1.25,
+        },
+    }
+    assert audio.content == b"google-mp3"
+    assert audio.provider == "google_cloud"
+    assert audio.model == "google-cloud-wavenet"
+    assert audio.voice == "cmn-CN-Wavenet-A"
+
+
+def test_speech_service_routes_google_cloud_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = SpeechAudio(
+        content=b"audio",
+        media_type="audio/mpeg",
+        provider="google_cloud",
+        model="google-cloud-standard",
+        voice="en-US-Standard-A",
+    )
+    monkeypatch.setenv("OPENCLASS_SPEECH_PROVIDER", "google_cloud")
+    monkeypatch.setattr(
+        "app.services.google_cloud_speech.synthesize_google_cloud_speech",
+        lambda text, *, voice=None, speech_rate=None: expected,
+    )
+    monkeypatch.setattr(
+        "app.services.google_cloud_speech.get_google_cloud_speech_options",
+        lambda: "google-options",
+    )
+
+    assert synthesize_speech("hello", voice="en-US-Standard-A", speech_rate=0) is expected
+    assert get_speech_options() == "google-options"
