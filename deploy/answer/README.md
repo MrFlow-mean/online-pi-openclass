@@ -12,6 +12,11 @@ docker compose --env-file ../../.env -f deploy/answer/docker-compose.yml up -d -
 
 Open `http://127.0.0.1:9080` and complete Answer's first-run site and administrator setup.
 
+The image applies `openclass-theme.css` through Answer's supported custom CSS
+surface after each database upgrade. The theme keeps Answer's forum behavior and
+responsive layout while matching the warm OpenClass visual system. Set
+`OPENCLASS_ANSWER_THEME_ENABLED=false` to keep Answer's stock appearance.
+
 For unattended first-run setup, pass `OPENCLASS_ANSWER_AUTO_INSTALL=true`,
 `OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_EMAIL`, and a temporary
 `OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_PASSWORD` to the first `docker compose up`.
