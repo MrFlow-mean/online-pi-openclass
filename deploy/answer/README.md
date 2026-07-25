@@ -13,9 +13,16 @@ docker compose --env-file ../../.env -f deploy/answer/docker-compose.yml up -d -
 Open `http://127.0.0.1:9080` and complete Answer's first-run site and administrator setup.
 
 For unattended first-run setup, pass `OPENCLASS_ANSWER_AUTO_INSTALL=true`,
-`OPENCLASS_ANSWER_ADMIN_EMAIL`, and a temporary `OPENCLASS_ANSWER_ADMIN_PASSWORD`
-to the first `docker compose up`. Recreate the container without the temporary
-password after installation; Answer keeps its database in the `answer-data` volume.
+`OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_EMAIL`, and a temporary
+`OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_PASSWORD` to the first `docker compose up`.
+The bootstrap administrator is a service account: its email must never be reused
+by an OpenClass user. Answer matches an incoming external identity by email, so an
+email collision prevents the user's first SSO account from being created. The
+default `answer-admin@openclass.local` keeps these identities separate. Use
+`OPENCLASS_ANSWER_CONTACT_EMAIL` for a public contact address instead.
+
+Recreate the container without the temporary password after installation; Answer
+keeps its database in the `answer-data` volume.
 If the default package registries are not reachable, set
 `OPENCLASS_ANSWER_GOPROXY` and `OPENCLASS_ANSWER_NPM_REGISTRY` without editing
 the Dockerfile.
