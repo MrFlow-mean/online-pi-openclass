@@ -19,6 +19,8 @@ responsive layout while matching the warm OpenClass visual system. Set
 The theme also adds a top-left link back to OpenClass. Set `OPENCLASS_HOME_URL`
 to the public `/home` URL in deployed environments; it defaults to
 `http://127.0.0.1:3000/home` for local development.
+The community favicon reuses the OpenClass favicon at the origin inferred from
+that URL. Set `OPENCLASS_FAVICON_URL` only when the favicon is served elsewhere.
 
 For unattended first-run setup, pass `OPENCLASS_ANSWER_AUTO_INSTALL=true`,
 `OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_EMAIL`, and a temporary

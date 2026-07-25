@@ -20,10 +20,30 @@ case "${OPENCLASS_ANSWER_THEME_ENABLED:-true}" in
         exit 1
         ;;
     esac
+    case "$openclass_home_url" in
+      */home) openclass_home_origin="${openclass_home_url%/home}" ;;
+      */home/) openclass_home_origin="${openclass_home_url%/home/}" ;;
+      *) openclass_home_origin="${openclass_home_url%/}" ;;
+    esac
+    openclass_favicon_url="${OPENCLASS_FAVICON_URL:-$openclass_home_origin/favicon.ico}"
+    case "$openclass_favicon_url" in
+      http://*|https://*) ;;
+      *)
+        echo "OPENCLASS_FAVICON_URL must use http:// or https://" >&2
+        exit 1
+        ;;
+    esac
+    case "$openclass_favicon_url" in
+      *\"*|*\'*|*\<*|*\>*|*\\*|*" "*)
+        echo "OPENCLASS_FAVICON_URL contains unsupported characters" >&2
+        exit 1
+        ;;
+    esac
 
     sqlite3 /data/answer.db \
       -cmd ".parameter init" \
-      -cmd ".parameter set @openclass_home_url \"$openclass_home_url\"" <<'SQL'
+      -cmd ".parameter set @openclass_home_url \"$openclass_home_url\"" \
+      -cmd ".parameter set @openclass_favicon_url \"$openclass_favicon_url\"" <<'SQL'
 BEGIN IMMEDIATE;
 DELETE FROM site_info WHERE type IN ('css-html', 'custom_css_html');
 INSERT INTO site_info (created_at, updated_at, type, content, status)
@@ -40,6 +60,18 @@ VALUES (
   ),
   1
 );
+INSERT INTO site_info (created_at, updated_at, type, content, status)
+SELECT
+  datetime('now'),
+  datetime('now'),
+  'branding',
+  json_object('logo', '', 'mobile_logo', '', 'square_icon', '', 'favicon', @openclass_favicon_url),
+  1
+WHERE NOT EXISTS (SELECT 1 FROM site_info WHERE type = 'branding');
+UPDATE site_info
+SET content = json_set(content, '$.favicon', @openclass_favicon_url),
+    updated_at = datetime('now')
+WHERE type = 'branding';
 UPDATE site_info
 SET content = json_set(
       content,
