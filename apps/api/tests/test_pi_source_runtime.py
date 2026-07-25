@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from app.services import pi_source_runtime
 from app.services.pi_source_runtime import PI_SOURCE_TOOLS, PiSourceTextClient
 
 
@@ -15,6 +16,45 @@ class _Catalog(BaseModel):
 
     complete: bool
     nodes: list[str]
+
+
+@pytest.fixture(autouse=True)
+def _allow_fake_pi_credentials(monkeypatch) -> None:
+    monkeypatch.setattr(
+        pi_source_runtime,
+        "ensure_pi_openai_codex_auth",
+        lambda **_kwargs: True,
+    )
+
+
+def test_pi_source_client_requires_connected_openai_codex_account(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setattr(
+        pi_source_runtime,
+        "ensure_pi_openai_codex_auth",
+        lambda **_kwargs: False,
+    )
+    source = tmp_path / "source.txt"
+    source.write_text("Contents\nOne\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="has not connected a ChatGPT account"):
+        PiSourceTextClient(
+            "user_test",
+            binary="/test/pi",
+            runtime_root=tmp_path / "runtime",
+        ).parse_source_file(
+            source_path=source,
+            provider="openai_codex",
+            model="gpt-test",
+            system_prompt="Build a directory.",
+            user_prompt="Inspect the source.",
+            schema=_Catalog,
+            output_artifact_path="scratch/catalog.json",
+            inspection_scope="directory_only",
+        )
 
 
 def _run_with_artifacts(payloads: list[dict[str, object]]):

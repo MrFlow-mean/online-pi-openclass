@@ -23,7 +23,11 @@ from app.services.codex_app_server import (
     _source_staging_suffix,
 )
 from app.services.config import DATA_DIR, load_root_dotenv
-from app.services.pi_agent_runtime import pi_agent_directory, pi_binary_path
+from app.services.pi_agent_runtime import (
+    ensure_pi_openai_codex_auth,
+    pi_agent_directory,
+    pi_binary_path,
+)
 
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
@@ -202,6 +206,12 @@ class PiSourceTextClient:
             owner_user_id=self.owner_user_id,
             runtime_root=self.runtime_root,
         )
+        if _pi_provider(provider) == "openai-codex":
+            if not ensure_pi_openai_codex_auth(
+                owner_user_id=self.owner_user_id,
+                runtime_root=self.runtime_root,
+            ):
+                raise RuntimeError("The OpenClass user has not connected a ChatGPT account")
         workspace_root = self.runtime_root / "source-workspaces"
         workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         turn_id = new_id("pisource")
