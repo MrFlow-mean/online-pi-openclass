@@ -16,6 +16,9 @@ The image applies `openclass-theme.css` through Answer's supported custom CSS
 surface after each database upgrade. The theme keeps Answer's forum behavior and
 responsive layout while matching the warm OpenClass visual system. Set
 `OPENCLASS_ANSWER_THEME_ENABLED=false` to keep Answer's stock appearance.
+The theme also adds a top-left link back to OpenClass. Set `OPENCLASS_HOME_URL`
+to the public `/home` URL in deployed environments; it defaults to
+`http://127.0.0.1:3000/home` for local development.
 
 For unattended first-run setup, pass `OPENCLASS_ANSWER_AUTO_INSTALL=true`,
 `OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_EMAIL`, and a temporary

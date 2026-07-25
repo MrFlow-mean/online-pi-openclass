@@ -6,7 +6,24 @@ set -eu
 
 case "${OPENCLASS_ANSWER_THEME_ENABLED:-true}" in
   true|TRUE|1|yes|YES)
-    sqlite3 /data/answer.db <<'SQL'
+    openclass_home_url="${OPENCLASS_HOME_URL:-http://127.0.0.1:3000/home}"
+    case "$openclass_home_url" in
+      http://*|https://*) ;;
+      *)
+        echo "OPENCLASS_HOME_URL must use http:// or https://" >&2
+        exit 1
+        ;;
+    esac
+    case "$openclass_home_url" in
+      *\"*|*\'*|*\<*|*\>*|*\\*|*" "*)
+        echo "OPENCLASS_HOME_URL contains unsupported characters" >&2
+        exit 1
+        ;;
+    esac
+
+    sqlite3 /data/answer.db \
+      -cmd ".parameter init" \
+      -cmd ".parameter set @openclass_home_url \"$openclass_home_url\"" <<'SQL'
 BEGIN IMMEDIATE;
 DELETE FROM site_info WHERE type IN ('css-html', 'custom_css_html');
 INSERT INTO site_info (created_at, updated_at, type, content, status)
@@ -17,7 +34,7 @@ VALUES (
   json_object(
     'custom_head', '',
     'custom_css', CAST(readfile('/opt/openclass/openclass-theme.css') AS TEXT),
-    'custom_header', '',
+    'custom_header', '<a class="openclass-home-link" href="' || @openclass_home_url || '" aria-label="返回 OpenClass 主页"><span aria-hidden="true">←</span><span>返回主页</span></a>',
     'custom_footer', '',
     'custom_sidebar', ''
   ),
