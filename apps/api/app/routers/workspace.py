@@ -16,10 +16,12 @@ from app.models import (
     PublicCoursePackageView,
     PublicLessonView,
     ReorderTabsRequest,
+    UpdateLessonRequest,
     UpdatePackageRequest,
     UpdateVisibilityRequest,
     UserView,
     WorkspaceStateView,
+    now_iso,
 )
 from app.routers.auth import current_user
 from app.services.history import current_head_commit
@@ -197,6 +199,24 @@ def update_lesson_visibility(
         lesson.visibility = (
             "public" if lesson.publication_review.status == "approved" else "private"
         )
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+    return workspace_view(workspace)
+
+
+@router.post("/api/lessons/{lesson_id}/rename", response_model=WorkspaceStateView)
+def update_lesson(
+    lesson_id: str,
+    request: UpdateLessonRequest,
+    user: UserView = Depends(current_user),
+) -> WorkspaceStateView:
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Lesson title is required")
+
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
+    _, lesson = find_lesson_package(workspace, lesson_id)
+    lesson.title = title
+    lesson.updated_at = now_iso()
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 

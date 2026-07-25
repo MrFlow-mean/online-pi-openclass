@@ -606,6 +606,14 @@ export const api = {
       }),
     });
   },
+  renameLesson(lessonId: string, title: string) {
+    return request<WorkspaceState>(`/api/lessons/${lessonId}/rename`, {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+      }),
+    });
+  },
   deleteLesson(lessonId: string) {
     return request<WorkspaceState>(`/api/lessons/${lessonId}/delete`, {
       method: "POST",

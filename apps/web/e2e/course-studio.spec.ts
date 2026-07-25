@@ -1507,6 +1507,38 @@ test("exports and imports a RIDOC file as a standalone lesson", async ({ page })
   await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle })).toHaveCount(2);
 });
 
+test("renames a standalone lesson from its actions menu", async ({ page }) => {
+  const unique = Date.now();
+  const originalTitle = `待重命名课程 ${unique}`;
+  const renamedTitle = `已重命名课程 ${unique}`;
+
+  await enterAsGuest(page);
+  await page.getByLabel("添加单独课程").click();
+  await nameNextGeneratedLessonForTest(page, originalTitle);
+  await page.getByRole("menuitem", { name: "新建课程" }).click();
+  await expect(page.getByRole("button", { name: `${originalTitle} main` })).toBeVisible();
+  await page.goto("/home");
+
+  const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: originalTitle });
+  await lessonCard.getByLabel("打开课程操作菜单").click();
+  await expect(page.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("prompt");
+    expect(dialog.defaultValue()).toBe(originalTitle);
+    await dialog.accept(`  ${renamedTitle}  `);
+  });
+  const renameResponse = page.waitForResponse(
+    (response) =>
+      /\/api\/lessons\/[^/]+\/rename$/.test(new URL(response.url()).pathname) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
+  await renameResponse;
+
+  await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: renamedTitle })).toBeVisible();
+  await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: originalTitle })).toHaveCount(0);
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);

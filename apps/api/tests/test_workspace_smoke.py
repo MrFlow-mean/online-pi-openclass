@@ -248,6 +248,37 @@ def test_health_reports_provider_neutral_board_and_realtime_status(
     assert evidence_routes == []
 
 
+def test_standalone_lesson_can_be_renamed(api_client: TestClient) -> None:
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Original lesson", "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+
+    renamed = api_client.post(
+        f"/api/lessons/{lesson['id']}/rename",
+        json={"title": "  Renamed lesson  "},
+    )
+
+    assert renamed.status_code == 200
+    renamed_lesson = next(
+        item
+        for package in renamed.json()["packages"]
+        for item in package["lessons"]
+        if item["id"] == lesson["id"]
+    )
+    assert renamed_lesson["title"] == "Renamed lesson"
+    assert renamed_lesson["slug"] == lesson["slug"]
+    assert renamed_lesson["updated_at"] >= lesson["updated_at"]
+
+    rejected = api_client.post(
+        f"/api/lessons/{lesson['id']}/rename",
+        json={"title": "   "},
+    )
+    assert rejected.status_code == 400
+
+
 def test_standalone_lessons_and_packages_have_revocable_public_visibility(
     api_client: TestClient,
 ) -> None:

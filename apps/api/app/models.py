@@ -1917,6 +1917,10 @@ class UpdatePackageRequest(BaseModel):
     visibility: PublicationVisibility | None = None
 
 
+class UpdateLessonRequest(BaseModel):
+    title: str
+
+
 class UpdateVisibilityRequest(BaseModel):
     visibility: PublicationVisibility
 

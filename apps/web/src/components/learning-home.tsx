@@ -491,6 +491,26 @@ export function LearningHome() {
     }
   }
 
+  async function handleRenameLesson(lesson: Lesson) {
+    const nextTitle = window.prompt(h.renameLessonPrompt, lesson.title);
+    if (!nextTitle?.trim() || nextTitle.trim() === lesson.title) {
+      return;
+    }
+
+    setBusyKey(`rename:${lesson.id}`);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+    try {
+      const payload = await api.renameLesson(lesson.id, nextTitle.trim());
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.renameLessonFail);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   async function handleDeleteLesson(lesson: Lesson) {
     if (typeof window !== "undefined" && !window.confirm(`确定删除《${lesson.title}》吗？`)) {
       return;
@@ -1352,6 +1372,22 @@ export function LearningHome() {
             >
               <Share2 className="h-4 w-4" />
               {h.share}
+            </button>
+
+            <div className="my-1 h-px bg-stone-100" />
+
+            <button
+              type="button"
+              onClick={() => void handleRenameLesson(lessonMenuLesson)}
+              disabled={busyKey !== null}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busyKey === `rename:${lessonMenuLesson.id}` ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <PencilLine className="h-4 w-4" />
+              )}
+              {h.renameLesson}
             </button>
 
             <div className="my-1 h-px bg-stone-100" />
