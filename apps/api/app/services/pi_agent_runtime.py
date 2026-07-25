@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 
 from app.models import AgentActivityEvent, new_id, now_iso
 from app.services.ai_logging import ai_usage_logger
+from app.services.billing_service import BillingError, BillingService
 from app.services.config import DATA_DIR, load_root_dotenv
 from app.services.codex_app_server import CodexTurnCancelledError
 from app.services.structured_output import (
@@ -112,6 +114,8 @@ class _PiActivityRecorder:
         self.started_at = time.monotonic()
         self.first_event_at: float | None = None
         self.first_text_at: float | None = None
+        self.upstream_cost_usd: Decimal | None = None
+        self.usage: dict[str, object] = {}
 
     @property
     def events(self) -> list[AgentActivityEvent]:
@@ -183,6 +187,7 @@ class _PiActivityRecorder:
             )
             return
         if event_type == "agent_end":
+            self._observe_usage(payload)
             self._publish(
                 event_id=runtime_id,
                 label="OpenClass 已完成模型运行",
@@ -218,6 +223,50 @@ class _PiActivityRecorder:
                 completed_label="OpenClass 已生成模型结果",
                 noun="结果",
             )
+
+    def _observe_usage(self, payload: dict[str, Any]) -> None:
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return
+        token_fields = {
+            "input": "input_tokens",
+            "output": "output_tokens",
+            "cacheRead": "cache_read_tokens",
+            "cacheWrite": "cache_write_tokens",
+            "totalTokens": "total_tokens",
+        }
+        token_totals = {target: 0 for target in token_fields.values()}
+        total_cost = Decimal("0")
+        found_cost = False
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            usage = message.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            for source, target in token_fields.items():
+                value = usage.get(source)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    token_totals[target] += value
+            cost = usage.get("cost")
+            raw_total = cost.get("total") if isinstance(cost, dict) else None
+            if raw_total is None:
+                continue
+            try:
+                parsed_cost = Decimal(str(raw_total))
+            except InvalidOperation:
+                continue
+            if parsed_cost < 0:
+                continue
+            total_cost += parsed_cost
+            found_cost = True
+        if not found_cost:
+            return
+        self.upstream_cost_usd = total_cost
+        self.usage = {
+            **token_totals,
+            "upstream_cost_usd": format(total_cost, "f"),
+        }
 
     def _observe_content_update(
         self,
@@ -791,6 +840,20 @@ def _is_transient_pi_error(error: RuntimeError) -> bool:
     return any(marker in message for marker in PI_TRANSIENT_ERROR_MARKERS)
 
 
+def _platform_credit_billing_enabled() -> bool:
+    configured = (os.getenv("OPENCLASS_CREDIT_BILLING_ENABLED") or "").strip().lower()
+    if configured:
+        if configured in {"1", "true", "yes", "on"}:
+            return True
+        if configured in {"0", "false", "no", "off"}:
+            return False
+        raise RuntimeError("OPENCLASS_CREDIT_BILLING_ENABLED must be true or false")
+    return bool(
+        (os.getenv("OPENCLASS_PAYPAL_CLIENT_ID") or "").strip()
+        and (os.getenv("OPENCLASS_PAYPAL_CLIENT_SECRET") or "").strip()
+    )
+
+
 class PiTextClient:
     """Tool-free Pi runtime used behind OpenClass workflow validation."""
 
@@ -806,6 +869,7 @@ class PiTextClient:
         binary: str | None = None,
         runtime_root: Path | None = None,
         process_runner: PiProcessRunner | None = None,
+        billing_service: BillingService | None = None,
     ) -> None:
         resolved_binary = binary or pi_binary_path()
         if not resolved_binary:
@@ -823,6 +887,14 @@ class PiTextClient:
         self.binary = resolved_binary
         self.runtime_root = runtime_root or pi_runtime_root()
         self._process_runner = process_runner
+        self._billing_service = billing_service
+
+    def _billing(self) -> BillingService:
+        if self._billing_service is None:
+            from app.services.workspace_state import DATABASE_PATH
+
+            self._billing_service = BillingService(DATABASE_PATH)
+        return self._billing_service
 
     def _command(self, *, system_prompt: str, image_paths: list[Path] | None = None) -> list[str]:
         command = [
@@ -920,6 +992,20 @@ class PiTextClient:
                 callback=on_activity,
                 on_text_delta=on_text_delta,
             )
+            billing: BillingService | None = None
+            reservation_active = False
+            if self.access_method == "platform_credits" and _platform_credit_billing_enabled():
+                billing = self._billing()
+                try:
+                    billing.reserve_model_call(
+                        user_id=self.owner_user_id,
+                        request_id=request_id,
+                        provider=self.provider,
+                        model=self.model,
+                    )
+                except BillingError as error:
+                    raise RuntimeError(error.detail) from error
+                reservation_active = True
             try:
                 command = self._command(system_prompt=system_prompt, image_paths=image_paths)
                 if self._process_runner is None:
@@ -957,6 +1043,21 @@ class PiTextClient:
                     request_id=request_id,
                     **recorder.timing_payload(),
                 )
+                if billing is not None and reservation_active:
+                    if recorder.upstream_cost_usd is None:
+                        billing.release_model_call(request_id=request_id)
+                        ai_usage_logger.log_event(
+                            "pi_usage_unavailable",
+                            provider=self.provider,
+                            model=self.model,
+                            request_id=request_id,
+                        )
+                    else:
+                        billing.settle_model_call(
+                            request_id=request_id,
+                            upstream_cost_usd=recorder.upstream_cost_usd,
+                            usage=recorder.usage,
+                        )
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
             recorder.fail("模型进程返回失败状态。")

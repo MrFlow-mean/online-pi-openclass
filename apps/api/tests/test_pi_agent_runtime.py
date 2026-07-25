@@ -12,11 +12,12 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from app.services.pi_agent_runtime import PiTextClient
 from app.models import AIModelSelection
 from app.services import ai_execution_adapter, codex_app_server, pi_agent_runtime
+from app.services.billing_service import BillingConfig, BillingService
 from app.services.codex_app_server import CodexTurnCancelledError
 from app.services.lesson_factory import build_requirements
+from app.services.pi_agent_runtime import PiTextClient
 
 
 class _Answer(BaseModel):
@@ -247,6 +248,41 @@ def _pi_stdout(content: str) -> str:
     )
 
 
+def _pi_stdout_with_usage(content: str, *, cost_usd: str) -> str:
+    return "\n".join(
+        [
+            json.dumps({"type": "agent_start"}),
+            json.dumps(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": content}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "usage": {
+                                "input": 120,
+                                "output": 30,
+                                "cacheRead": 10,
+                                "cacheWrite": 0,
+                                "totalTokens": 160,
+                                "cost": {"total": cost_usd},
+                            },
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+
+
 def _pi_error_stdout(message: str) -> str:
     return "\n".join(
         [
@@ -426,6 +462,55 @@ def test_pi_client_separates_platform_and_personal_provider_credentials(
         "type": "api_key",
         "key": "sk-personal-route",
     }
+
+
+def test_platform_credit_request_reserves_and_charges_reported_pi_cost(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setenv("OPENCLASS_CREDIT_BILLING_ENABLED", "true")
+    monkeypatch.setattr(pi_agent_runtime, "load_root_dotenv", lambda: None)
+    config = BillingConfig(
+        mode="sandbox",
+        client_id="client-id",
+        client_secret="client-secret",
+        webhook_id="webhook-id",
+        currency="USD",
+        public_origin="https://openclass.example",
+        credit_value_percent=75,
+        top_up_amounts_cents=(10000,),
+    )
+    billing = BillingService(tmp_path / "billing.sqlite3", config=config)
+    with billing._transaction() as connection:
+        wallet = billing._wallet_row(connection, "user_test")
+        connection.execute(
+            "UPDATE credit_wallets SET balance_credits = 100 WHERE user_id = ?",
+            (wallet["user_id"],),
+        )
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        access_method="platform_credits",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            _pi_stdout_with_usage("answer", cost_usd="0.1234"),
+            "",
+        ),
+        billing_service=billing,
+    ).complete_text(system_prompt="Answer.", user_prompt="Question")
+
+    assert response.output_text == "answer"
+    assert billing.wallet("user_test")["balance_credits"] == 87
+    usage_entry = billing.transactions("user_test")[0]
+    assert usage_entry["kind"] == "model_usage"
+    assert usage_entry["delta_credits"] == -13
+    assert usage_entry["metadata"]["total_tokens"] == 160
 
 
 def test_pi_client_converts_live_json_events_into_public_activity(tmp_path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -140,3 +141,50 @@ def test_capture_rejects_mismatched_amount(tmp_path: Path) -> None:
     with pytest.raises(BillingError, match="金额与订单不一致"):
         asyncio.run(service.capture_paypal_order("user-1", "ORDER-1"))
     assert service.wallet("user-1")["balance_credits"] == 0
+
+
+def test_model_call_reservation_settles_actual_cost_and_is_idempotent(tmp_path: Path) -> None:
+    service = BillingService(tmp_path / "billing.sqlite3", config=_config(), transport=_paypal_transport([]))
+    asyncio.run(service.create_paypal_order("user-1", "usd_10000"))
+    asyncio.run(service.capture_paypal_order("user-1", "ORDER-1"))
+
+    assert service.reserve_model_call(
+        user_id="user-1",
+        request_id="request-1",
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        reserve_credits=25,
+    ) == 25
+    assert service.wallet("user-1")["available_credits"] == 7475
+    charged = service.settle_model_call(
+        request_id="request-1",
+        upstream_cost_usd=Decimal("0.1234"),
+        usage={"input_tokens": 100, "output_tokens": 20},
+    )
+
+    assert charged == 13
+    assert service.settle_model_call(
+        request_id="request-1",
+        upstream_cost_usd=Decimal("99"),
+        usage={},
+    ) == 13
+    assert service.wallet("user-1")["balance_credits"] == 7487
+    usage_entry = service.transactions("user-1")[0]
+    assert usage_entry["delta_credits"] == -13
+    assert usage_entry["upstream_cost_microusd"] == 123400
+
+
+def test_model_call_reservation_rejects_insufficient_available_credits(tmp_path: Path) -> None:
+    service = BillingService(tmp_path / "billing.sqlite3", config=_config())
+
+    with pytest.raises(BillingError) as error:
+        service.reserve_model_call(
+            user_id="user-1",
+            request_id="request-1",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            reserve_credits=25,
+        )
+
+    assert error.value.status_code == 402
+    assert service.wallet("user-1")["reserved_credits"] == 0

@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -184,6 +184,23 @@ class BillingService:
                     event_type TEXT NOT NULL,
                     processed_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS credit_reservations (
+                    request_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reserved_credits INTEGER NOT NULL,
+                    charged_credits INTEGER,
+                    upstream_cost_microusd INTEGER,
+                    status TEXT NOT NULL,
+                    usage_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_credit_reservations_user_created
+                    ON credit_reservations(user_id, created_at DESC);
                 """
             )
 
@@ -231,6 +248,151 @@ class BillingService:
             }
             for row in rows
         ]
+
+    def reserve_model_call(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        provider: str,
+        model: str,
+        reserve_credits: int | None = None,
+    ) -> int:
+        credits = reserve_credits if reserve_credits is not None else self._model_call_reserve_credits()
+        if credits <= 0:
+            raise RuntimeError("Model call reserve credits must be positive")
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT status, reserved_credits FROM credit_reservations WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["status"] == "reserved":
+                    return int(existing["reserved_credits"])
+                raise BillingError(409, "模型请求计费标识已结算")
+            wallet = self._wallet_row(connection, user_id)
+            available = int(wallet["balance_credits"]) - int(wallet["reserved_credits"])
+            if available < credits:
+                raise BillingError(402, "积分余额不足，请先充值")
+            timestamp = _now()
+            connection.execute(
+                "UPDATE credit_wallets SET reserved_credits = reserved_credits + ?, updated_at = ? WHERE user_id = ?",
+                (credits, timestamp, user_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO credit_reservations (
+                    request_id, user_id, provider, model, reserved_credits,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?)
+                """,
+                (request_id, user_id, provider, model, credits, timestamp, timestamp),
+            )
+        return credits
+
+    def settle_model_call(
+        self,
+        *,
+        request_id: str,
+        upstream_cost_usd: Decimal,
+        usage: dict[str, object],
+    ) -> int:
+        if upstream_cost_usd < 0:
+            raise RuntimeError("Upstream model cost cannot be negative")
+        upstream_cost_microusd = int(
+            (upstream_cost_usd * 1_000_000).to_integral_value(rounding=ROUND_CEILING)
+        )
+        charged_credits = int(
+            (upstream_cost_usd * 100).to_integral_value(rounding=ROUND_CEILING)
+        )
+        with self._transaction() as connection:
+            reservation = connection.execute(
+                "SELECT * FROM credit_reservations WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if reservation is None:
+                raise BillingError(404, "模型请求计费预授权不存在")
+            if reservation["status"] == "settled":
+                return int(reservation["charged_credits"] or 0)
+            if reservation["status"] != "reserved":
+                raise BillingError(409, "模型请求计费预授权已释放")
+            wallet = self._wallet_row(connection, str(reservation["user_id"]))
+            balance_after = int(wallet["balance_credits"]) - charged_credits
+            reserved_after = max(
+                0,
+                int(wallet["reserved_credits"]) - int(reservation["reserved_credits"]),
+            )
+            timestamp = _now()
+            connection.execute(
+                """
+                UPDATE credit_wallets
+                SET balance_credits = ?, reserved_credits = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (balance_after, reserved_after, timestamp, reservation["user_id"]),
+            )
+            if charged_credits:
+                connection.execute(
+                    """
+                    INSERT INTO credit_ledger (
+                        entry_id, user_id, kind, delta_credits, balance_after,
+                        reference_id, provider, model, upstream_cost_microusd,
+                        metadata_json, created_at
+                    ) VALUES (?, ?, 'model_usage', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"cle_{uuid.uuid4().hex}",
+                        reservation["user_id"],
+                        -charged_credits,
+                        balance_after,
+                        f"model:{request_id}",
+                        reservation["provider"],
+                        reservation["model"],
+                        upstream_cost_microusd,
+                        json.dumps(usage, separators=(",", ":")),
+                        timestamp,
+                    ),
+                )
+            connection.execute(
+                """
+                UPDATE credit_reservations
+                SET charged_credits = ?, upstream_cost_microusd = ?, status = 'settled',
+                    usage_json = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (
+                    charged_credits,
+                    upstream_cost_microusd,
+                    json.dumps(usage, separators=(",", ":")),
+                    timestamp,
+                    request_id,
+                ),
+            )
+        return charged_credits
+
+    def release_model_call(self, *, request_id: str) -> bool:
+        with self._transaction() as connection:
+            reservation = connection.execute(
+                "SELECT * FROM credit_reservations WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if reservation is None or reservation["status"] != "reserved":
+                return False
+            wallet = self._wallet_row(connection, str(reservation["user_id"]))
+            reserved_after = max(
+                0,
+                int(wallet["reserved_credits"]) - int(reservation["reserved_credits"]),
+            )
+            timestamp = _now()
+            connection.execute(
+                "UPDATE credit_wallets SET reserved_credits = ?, updated_at = ? WHERE user_id = ?",
+                (reserved_after, timestamp, reservation["user_id"]),
+            )
+            connection.execute(
+                "UPDATE credit_reservations SET status = 'released', updated_at = ? WHERE request_id = ?",
+                (timestamp, request_id),
+            )
+        return True
 
     async def create_paypal_order(self, user_id: str, package_id: str) -> dict[str, object]:
         self._require_paypal()
@@ -556,6 +718,16 @@ class BillingService:
 
     def _credits_for_amount(self, amount_cents: int) -> int:
         return amount_cents * self.config.credit_value_percent // 100
+
+    def _model_call_reserve_credits(self) -> int:
+        raw_value = os.getenv("OPENCLASS_MODEL_CALL_RESERVE_CREDITS", "25").strip()
+        try:
+            reserve_credits = int(raw_value)
+        except ValueError as exc:
+            raise RuntimeError("OPENCLASS_MODEL_CALL_RESERVE_CREDITS must be an integer") from exc
+        if not 1 <= reserve_credits <= 100_000:
+            raise RuntimeError("OPENCLASS_MODEL_CALL_RESERVE_CREDITS must be between 1 and 100000")
+        return reserve_credits
 
     def _completed_capture(self, order: dict[str, Any]) -> dict[str, Any]:
         if order.get("status") != "COMPLETED":
