@@ -364,7 +364,6 @@ def _source_fingerprint(
     payload = [
         {
             "id": source.id,
-            "updated_at": source.updated_at,
             "status": source.status,
             "size_bytes": source.size_bytes,
             "content_hash": source.metadata.get("content_hash", ""),

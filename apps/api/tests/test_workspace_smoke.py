@@ -379,6 +379,39 @@ def test_publication_gate_keeps_project_private_when_review_finds_copyright(
     assert reviewed["publication_review"]["findings"][0]["location"] == "page 2"
     assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 404
 
+
+def test_source_upload_revokes_publication_and_requires_a_fresh_review(api_client: TestClient) -> None:
+    created = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Publication invalidation", "start_blank": True},
+    )
+    lesson = created.json()["lessons"][0]
+    standalone_package = created.json()["id"]
+    published = api_client.post(
+        f"/api/lessons/{lesson['id']}/visibility",
+        json={"visibility": "public"},
+    )
+    assert published.status_code == 200
+    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 200
+
+    uploaded = api_client.post(
+        f"/api/packages/{standalone_package}/sources",
+        data={"title": "Changed source", "text": "Newly uploaded source text."},
+    )
+
+    assert uploaded.status_code == 200
+    workspace = api_client.get("/api/workspace").json()
+    updated_lesson = next(
+        item
+        for package in workspace["packages"]
+        for item in package["lessons"]
+        if item["id"] == lesson["id"]
+    )
+    assert updated_lesson["visibility"] == "private"
+    assert updated_lesson["publication_review"]["status"] == "not_started"
+    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 404
+
+
 def _docx_text_nodes(content: bytes) -> list[str]:
     with ZipFile(BytesIO(content)) as archive:
         document_xml = archive.read("word/document.xml")

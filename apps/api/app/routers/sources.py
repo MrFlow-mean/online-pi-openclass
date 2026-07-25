@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.models import (
     AIModelSelection,
+    PublicationReview,
     SourceCatalogBatchView,
     SourceCatalogView,
     SourceIngestionJob,
@@ -41,6 +42,24 @@ class SourceContentUpdateRequest(BaseModel):
     content: str
 
 
+def _invalidate_publication_for_source_change(*, owner_user_id: str, package_id: str):
+    workspace, revision = workspace_state.load_workspace_for_user_with_revision(owner_user_id)
+    package = workspace_state.get_package(workspace, package_id)
+    package.publication_review = PublicationReview()
+    if workspace_state.is_standalone_package(workspace, package):
+        for lesson in package.lessons:
+            lesson.visibility = "private"
+            lesson.publication_review = PublicationReview()
+    else:
+        package.visibility = "private"
+    workspace_state.save_workspace_for_user_if_revision(
+        owner_user_id,
+        workspace,
+        expected_revision=revision,
+    )
+    return package
+
+
 def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
     if raw is None or not raw.strip():
         return None
@@ -70,14 +89,16 @@ async def import_package_source(
     file: UploadFile | None = File(default=None),
     user: UserView = Depends(current_user),
 ) -> SourceIngestionRecord:
-    workspace = workspace_state.load_workspace_for_user(user.id)
-    package = workspace_state.get_package(workspace, package_id)
     try:
         if file is not None:
             selected_catalog_model = _parse_catalog_model(catalog_model)
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            package = _invalidate_publication_for_source_change(
+                owner_user_id=user.id,
+                package_id=package_id,
+            )
             queued = await run_in_threadpool(
                 source_ingestion_service.queue_file_source,
                 owner_user_id=user.id,
@@ -95,6 +116,10 @@ async def import_package_source(
             )
             return queued
         if text and text.strip():
+            package = _invalidate_publication_for_source_change(
+                owner_user_id=user.id,
+                package_id=package_id,
+            )
             return source_ingestion_service.add_text_source(
                 owner_user_id=user.id,
                 package=package,
@@ -102,6 +127,10 @@ async def import_package_source(
                 title=title,
             )
         if source_uri and source_uri.strip():
+            package = _invalidate_publication_for_source_change(
+                owner_user_id=user.id,
+                package_id=package_id,
+            )
             return source_ingestion_service.add_url_source(
                 owner_user_id=user.id,
                 package=package,
@@ -151,6 +180,14 @@ def retry_package_source(
 ) -> SourceIngestionRecord:
     workspace = workspace_state.load_workspace_for_user(user.id)
     workspace_state.get_package(workspace, package_id)
+    existing = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
     try:
         source_ingestion_task_manager.submit(
             owner_user_id=user.id,
@@ -204,6 +241,14 @@ def update_package_source_content(
 ) -> SourceContentView:
     workspace = workspace_state.load_workspace_for_user(user.id)
     workspace_state.get_package(workspace, package_id)
+    existing = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
     try:
         updated = source_ingestion_service.update_source_content(
             owner_user_id=user.id,
@@ -252,6 +297,14 @@ def delete_package_source(
 ) -> SourceIngestionRecord:
     workspace = workspace_state.load_workspace_for_user(user.id)
     workspace_state.get_package(workspace, package_id)
+    existing = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
     removed = source_ingestion_service.remove_source(
         owner_user_id=user.id,
         package_id=package_id,
@@ -332,6 +385,7 @@ def rebuild_package_source_catalog(
             status_code=409,
             detail="OpenNotebook-managed sources do not use the local catalog rebuild pipeline.",
         )
+    _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
     try:
         rebuilt = source_ingestion_service.rebuild_catalog(
             owner_user_id=user.id,
@@ -363,6 +417,7 @@ def rebuild_package_source_structure(
         source_id=source_id,
     )
     if current is not None and current.strategy == "codex_directory_v1":
+        _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
         rebuilt = source_ingestion_service.rebuild_catalog(
             owner_user_id=user.id,
             package_id=package_id,
@@ -376,5 +431,6 @@ def rebuild_package_source_structure(
             status_code=409,
             detail="OpenNotebook-managed sources do not use the local structure rebuild pipeline.",
         )
+    _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
     source_structure_indexer.rebuild_structure(source)
     return source_structure_store.get_structure_view(source=source)
