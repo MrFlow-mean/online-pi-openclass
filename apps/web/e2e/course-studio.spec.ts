@@ -150,6 +150,75 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("sets standalone lessons and course packages to public or private", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `可见性单课 ${unique}`;
+  const packageTitle = `可见性课程包 ${unique}`;
+  await enterAsGuestThroughApi(page);
+
+  const token = await page.evaluate(() => window.sessionStorage.getItem("openclass.guest.auth.token"));
+  expect(token).toBeTruthy();
+  const generated = await page.request.post(`${API_BASE_URL}/api/lessons/generate`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { topic: lessonTitle, start_blank: true },
+  });
+  expect(generated.ok()).toBeTruthy();
+  const lesson = (await generated.json()).lessons[0] as { id: string };
+
+  await page.reload();
+  const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
+  await expect(lessonCard).toBeVisible();
+  await lessonCard.getByLabel("打开课程操作菜单").click();
+  const lessonVisibilityResponse = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility`) && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Public", exact: true }).click();
+  expect((await lessonVisibilityResponse).ok()).toBeTruthy();
+  await expect(lessonCard.getByLabel("Public")).toBeVisible();
+
+  const publicLessonPath = `/courses/shared/lesson/${lesson.id}`;
+  await page.goto(publicLessonPath);
+  await expect(page.getByText(lessonTitle).first()).toBeVisible();
+  await expect(page.getByText("Public · 只读")).toBeVisible();
+
+  await page.goto("/home");
+  const privateLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
+  await privateLessonCard.getByLabel("打开课程操作菜单").click();
+  const privateResponse = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility`) && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Private", exact: true }).click();
+  expect((await privateResponse).ok()).toBeTruthy();
+  const unavailableLessonResponse = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/public/lessons/${lesson.id}`)
+  );
+  await page.goto(publicLessonPath);
+  expect((await unavailableLessonResponse).status()).toBe(404);
+  await expect(page.getByText(/所有者已将它设为 private/)).toBeVisible();
+
+  await page.goto("/home");
+  await createPackageFromHome(page, packageTitle);
+  const packageCard = page.locator("[data-package-selection-root]").filter({ hasText: packageTitle }).first();
+  await expect(packageCard).toBeVisible();
+  const packageId = await page.evaluate(async (apiBase) => {
+    const authToken = window.sessionStorage.getItem("openclass.guest.auth.token");
+    const response = await fetch(`${apiBase}/api/workspace`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    const workspace = (await response.json()) as { active_package_id: string };
+    return workspace.active_package_id;
+  }, API_BASE_URL);
+  const packageVisibilityResponse = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/packages/${packageId}`) && response.request().method() === "POST"
+  );
+  await page.locator('button[aria-label="课程包设为 Public"]:visible').click();
+  expect((await packageVisibilityResponse).ok()).toBeTruthy();
+
+  await page.goto(`/courses/shared/package/${packageId}`);
+  await expect(page.getByText(packageTitle).first()).toBeVisible();
+  await expect(page.getByText("Public · 只读")).toBeVisible();
+});
+
 test("connects a personal API key from the Models panel without exposing it", async ({ page }) => {
   const unique = Date.now();
   const privateKey = "sk-browser-private-test";
