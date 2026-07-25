@@ -11,6 +11,7 @@ from app.models import AIModelCatalog, UserView
 from app.routers.auth import current_user
 from app.routers import (
     auth,
+    billing,
     chat,
     codex_provider,
     communities,
@@ -55,6 +56,7 @@ app.add_middleware(
 
 app.include_router(workspace.router)
 app.include_router(auth.router)
+app.include_router(billing.router)
 app.include_router(communities.router)
 app.include_router(documents.router)
 app.include_router(lesson_merges.router)
