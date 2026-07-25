@@ -217,7 +217,7 @@ test("connects a personal API key from the Models panel without exposing it", as
       }),
     });
   });
-  await page.route("**/api/model-credentials*", async (route) => {
+  await page.route("**/api/model-credentials**", async (route) => {
     const method = route.request().method();
     if (method === "PUT") {
       submittedKey = (route.request().postDataJSON() as { api_key: string }).api_key;
@@ -282,10 +282,12 @@ test("connects a personal API key from the Models panel without exposing it", as
   const personalApiButton = page.getByRole("button", { name: /自有模型 API/ });
   await expect(personalApiButton).toBeEnabled();
   await personalApiButton.click();
-  await page.getByRole("button", { name: /DeepSeek V4 Flash/ }).click();
+  await page
+    .getByRole("button", { name: /^DeepSeek V4 Flash DeepSeek/ })
+    .click();
   await expect(page.getByText("自有模型 API · 与聊天输入框共用选择状态")).toBeVisible();
 
-  await page.getByRole("button", { name: "删除" }).click();
+  await page.getByRole("button", { name: "删除", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("DeepSeek API Key 已删除");
   await expect(page.getByText("未连接")).toBeVisible();
   await expect(page.getByText(privateKey)).toHaveCount(0);
