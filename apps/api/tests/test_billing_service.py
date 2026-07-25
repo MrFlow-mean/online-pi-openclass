@@ -78,11 +78,12 @@ def test_create_capture_and_repeat_are_idempotent(tmp_path: Path) -> None:
     assert created == {"order_id": "ORDER-1", "approve_url": "https://paypal.example/approve"}
     assert captured["credited"] is True
     assert repeated["credited"] is False
-    assert service.wallet("user-1")["balance_credits"] == 7500
+    assert service.wallet("user-1")["balance_credits"] == 10000
+    assert "credit_cost_usd" not in service.wallet("user-1")
     assert len(service.transactions("user-1")) == 1
     create_body = json.loads(next(request.content for request in requests if request.url.path == "/v2/checkout/orders"))
     assert create_body["purchase_units"][0]["amount"] == {"currency_code": "USD", "value": "100.00"}
-    assert create_body["purchase_units"][0]["description"] == "OpenClass 7500 Credits"
+    assert create_body["purchase_units"][0]["description"] == "OpenClass 10000 Credits"
 
 
 def test_completed_webhook_credits_once_and_partial_refund_debits_proportionally(tmp_path: Path) -> None:
@@ -118,8 +119,8 @@ def test_completed_webhook_credits_once_and_partial_refund_debits_proportionally
         },
     }
     assert asyncio.run(service.process_webhook(headers, refund_event)) is True
-    assert service.wallet("user-1")["balance_credits"] == 6000
-    assert [entry["delta_credits"] for entry in service.transactions("user-1")] == [-1500, 7500]
+    assert service.wallet("user-1")["balance_credits"] == 8000
+    assert [entry["delta_credits"] for entry in service.transactions("user-1")] == [-2000, 10000]
 
 
 def test_capture_rejects_mismatched_amount(tmp_path: Path) -> None:
@@ -155,23 +156,43 @@ def test_model_call_reservation_settles_actual_cost_and_is_idempotent(tmp_path: 
         model="deepseek-v4-flash",
         reserve_credits=25,
     ) == 25
-    assert service.wallet("user-1")["available_credits"] == 7475
+    assert service.wallet("user-1")["available_credits"] == 9975
     charged = service.settle_model_call(
         request_id="request-1",
         upstream_cost_usd=Decimal("0.1234"),
         usage={"input_tokens": 100, "output_tokens": 20},
     )
 
-    assert charged == 13
+    assert charged == 17
     assert service.settle_model_call(
         request_id="request-1",
         upstream_cost_usd=Decimal("99"),
         usage={},
-    ) == 13
-    assert service.wallet("user-1")["balance_credits"] == 7487
+    ) == 17
+    assert service.wallet("user-1")["balance_credits"] == 9983
     usage_entry = service.transactions("user-1")[0]
-    assert usage_entry["delta_credits"] == -13
+    assert usage_entry["delta_credits"] == -17
     assert usage_entry["upstream_cost_microusd"] == 123400
+
+
+def test_ten_thousand_credits_cover_seventy_five_dollars_of_upstream_cost(tmp_path: Path) -> None:
+    service = BillingService(tmp_path / "billing.sqlite3", config=_config(), transport=_paypal_transport([]))
+    asyncio.run(service.create_paypal_order("user-1", "usd_10000"))
+    asyncio.run(service.capture_paypal_order("user-1", "ORDER-1"))
+
+    assert service.reserve_model_call(
+        user_id="user-1",
+        request_id="request-1",
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        reserve_credits=10000,
+    ) == 10000
+    assert service.settle_model_call(
+        request_id="request-1",
+        upstream_cost_usd=Decimal("75"),
+        usage={},
+    ) == 10000
+    assert service.wallet("user-1")["balance_credits"] == 0
 
 
 def test_model_call_reservation_rejects_insufficient_available_credits(tmp_path: Path) -> None:

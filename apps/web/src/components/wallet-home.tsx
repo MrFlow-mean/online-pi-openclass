@@ -153,26 +153,7 @@ export function WalletHome() {
           </section>
         ) : null}
 
-        <section className="mt-8 grid gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-semibold text-stone-500">可用积分</p>
-            <p className="mt-2 text-2xl font-semibold">
-              {loading ? "—" : (wallet?.available_credits ?? 0).toLocaleString()}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-semibold text-stone-500">充值比例</p>
-            <p className="mt-2 text-2xl font-semibold">$100 = 7,500</p>
-          </div>
-          <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-semibold text-stone-500">收款状态</p>
-            <p className="mt-2 text-2xl font-semibold">
-              {loading ? "检查中" : wallet?.paypal_configured ? "PayPal 已连接" : "未配置"}
-            </p>
-          </div>
-        </section>
-
-        <section className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <section className="mt-8 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
           <div className="flex items-start gap-3">
             <WalletCards className="mt-0.5 h-5 w-5 shrink-0 text-blue-700" />
             <div className="w-full">
@@ -193,7 +174,7 @@ export function WalletHome() {
                     >
                       <span className="block text-xl font-semibold">${paymentPackage.amount_usd}</span>
                       <span className="mt-1 block text-sm text-stone-600">
-                        获得 {paymentPackage.credits.toLocaleString()} Credits
+                        获得 {paymentPackage.credits.toLocaleString()} 点数
                       </span>
                       <span className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-blue-700">
                         {isProcessing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}

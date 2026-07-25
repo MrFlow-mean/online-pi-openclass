@@ -506,10 +506,10 @@ def test_platform_credit_request_reserves_and_charges_reported_pi_cost(
     ).complete_text(system_prompt="Answer.", user_prompt="Question")
 
     assert response.output_text == "answer"
-    assert billing.wallet("user_test")["balance_credits"] == 87
+    assert billing.wallet("user_test")["balance_credits"] == 83
     usage_entry = billing.transactions("user_test")[0]
     assert usage_entry["kind"] == "model_usage"
-    assert usage_entry["delta_credits"] == -13
+    assert usage_entry["delta_credits"] == -17
     assert usage_entry["metadata"]["total_tokens"] == 160
 
 

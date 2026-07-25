@@ -262,7 +262,6 @@ export type CreditWallet = {
   balance_credits: number;
   reserved_credits: number;
   available_credits: number;
-  credit_cost_usd: string;
   paypal_configured: boolean;
   currency: string;
   updated_at: string;

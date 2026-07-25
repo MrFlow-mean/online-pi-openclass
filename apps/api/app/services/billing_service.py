@@ -302,9 +302,7 @@ class BillingService:
         upstream_cost_microusd = int(
             (upstream_cost_usd * 1_000_000).to_integral_value(rounding=ROUND_CEILING)
         )
-        charged_credits = int(
-            (upstream_cost_usd * 100).to_integral_value(rounding=ROUND_CEILING)
-        )
+        charged_credits = self._credits_for_upstream_cost(upstream_cost_usd)
         with self._transaction() as connection:
             reservation = connection.execute(
                 "SELECT * FROM credit_reservations WHERE request_id = ?",
@@ -710,14 +708,17 @@ class BillingService:
             "balance_credits": balance,
             "reserved_credits": reserved,
             "available_credits": balance - reserved,
-            "credit_cost_usd": "0.01",
             "paypal_configured": self.config.configured,
             "currency": self.config.currency,
             "updated_at": str(row["updated_at"]),
         }
 
     def _credits_for_amount(self, amount_cents: int) -> int:
-        return amount_cents * self.config.credit_value_percent // 100
+        return amount_cents
+
+    def _credits_for_upstream_cost(self, upstream_cost_usd: Decimal) -> int:
+        credit_value_usd = Decimal(self.config.credit_value_percent) / Decimal(10_000)
+        return int((upstream_cost_usd / credit_value_usd).to_integral_value(rounding=ROUND_CEILING))
 
     def _model_call_reserve_credits(self) -> int:
         raw_value = os.getenv("OPENCLASS_MODEL_CALL_RESERVE_CREDITS", "25").strip()
