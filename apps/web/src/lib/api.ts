@@ -257,6 +257,53 @@ type ChatStreamHandlers = {
   onFinal?: (response: ChatResponse) => void;
 };
 
+export type CreditWallet = {
+  user_id: string;
+  balance_credits: number;
+  reserved_credits: number;
+  available_credits: number;
+  credit_cost_usd: string;
+  paypal_configured: boolean;
+  currency: string;
+  updated_at: string;
+};
+
+export type CreditPackage = {
+  id: string;
+  amount_cents: number;
+  amount_usd: string;
+  credits: number;
+};
+
+export type CreditWalletOverview = {
+  wallet: CreditWallet;
+  packages: CreditPackage[];
+};
+
+export type CreditTransaction = {
+  entry_id: string;
+  kind: string;
+  delta_credits: number;
+  balance_after: number;
+  provider: string | null;
+  model: string | null;
+  upstream_cost_microusd: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type PayPalOrder = {
+  order_id: string;
+  approve_url: string;
+};
+
+export type PayPalCapture = {
+  order_id: string;
+  status: string;
+  credited: boolean;
+  wallet: CreditWallet;
+};
+
 export type ChatStreamFailureKind = "http" | "sse" | "missing_final" | "aborted";
 
 export class ChatStreamTransportError extends Error {
@@ -443,6 +490,24 @@ export const api = {
   },
   getCurrentUser() {
     return request<UserView>("/api/auth/me");
+  },
+  getCreditWallet() {
+    return request<CreditWalletOverview>("/api/billing/wallet");
+  },
+  getCreditTransactions() {
+    return request<CreditTransaction[]>("/api/billing/transactions");
+  },
+  createPayPalOrder(packageId: string) {
+    return request<PayPalOrder>("/api/billing/paypal/orders", {
+      method: "POST",
+      body: JSON.stringify({ package_id: packageId }),
+    });
+  },
+  capturePayPalOrder(orderId: string) {
+    return request<PayPalCapture>(
+      `/api/billing/paypal/orders/${encodeURIComponent(orderId)}/capture`,
+      { method: "POST" }
+    );
   },
   getAuthProviders() {
     return request<AuthProviderView[]>("/api/auth/providers");
