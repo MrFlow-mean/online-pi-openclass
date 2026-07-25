@@ -14,6 +14,7 @@ from app.services.google_cloud_speech import (
     get_google_cloud_speech_options,
     synthesize_google_cloud_speech,
 )
+from app.services.openai_speech import get_openai_speech_options, synthesize_openai_speech
 from app.services.speech_service import (
     SpeechAudio,
     SpeechNotConfiguredError,
@@ -319,3 +320,87 @@ def test_speech_service_routes_google_cloud_provider(
 
     assert synthesize_speech("hello", voice="en-US-Standard-A", speech_rate=0) is expected
     assert get_speech_options() == "google-options"
+
+
+def test_openai_options_reuse_shared_key_and_expose_builtin_voices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+    monkeypatch.setenv("OPENAI_TTS_VOICE", "cedar")
+
+    options = get_openai_speech_options()
+
+    assert options.provider == "openai"
+    assert options.model == "gpt-4o-mini-tts"
+    assert options.default_voice == "cedar"
+    assert options.minimum_speech_rate == -50
+    assert options.maximum_speech_rate == 100
+    assert {voice.id for voice in options.voices} >= {"marin", "cedar", "coral"}
+
+
+def test_openai_provider_sends_model_voice_rate_and_returns_mp3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        content = b"openai-mp3"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_post(endpoint: str, **kwargs: object) -> FakeResponse:
+        captured.update({"endpoint": endpoint, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setattr("app.services.openai_speech.httpx.post", fake_post)
+
+    audio = synthesize_openai_speech(
+        "需要播报的内容",
+        voice="marin",
+        speech_rate=25,
+    )
+
+    assert captured["endpoint"] == "https://api.openai.com/v1/audio/speech"
+    assert captured["headers"] == {
+        "Authorization": "Bearer test-openai-key",
+        "Content-Type": "application/json",
+    }
+    assert captured["json"] == {
+        "model": "gpt-4o-mini-tts",
+        "voice": "marin",
+        "input": "需要播报的内容",
+        "response_format": "mp3",
+        "speed": 1.25,
+    }
+    assert audio.content == b"openai-mp3"
+    assert audio.provider == "openai"
+    assert audio.model == "gpt-4o-mini-tts"
+    assert audio.voice == "marin"
+
+
+def test_speech_service_routes_openai_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = SpeechAudio(
+        content=b"audio",
+        media_type="audio/mpeg",
+        provider="openai",
+        model="gpt-4o-mini-tts",
+        voice="marin",
+    )
+    monkeypatch.setenv("OPENCLASS_SPEECH_PROVIDER", "openai")
+    monkeypatch.setattr(
+        "app.services.openai_speech.synthesize_openai_speech",
+        lambda text, *, voice=None, speech_rate=None: expected,
+    )
+    monkeypatch.setattr(
+        "app.services.openai_speech.get_openai_speech_options",
+        lambda: "openai-options",
+    )
+
+    assert synthesize_speech("hello", voice="marin", speech_rate=0) is expected
+    assert get_speech_options() == "openai-options"

@@ -137,10 +137,9 @@ OPENCLASS_REALTIME_TOOLS_ENABLED=true
 OPENAI_REALTIME_MODEL=gpt-realtime-2.1
 OPENAI_REALTIME_REASONING_EFFORT=low
 OPENAI_IMAGE_MODEL=gpt-image-2
-OPENCLASS_SPEECH_PROVIDER=volcengine
-VOLCENGINE_TTS_API_KEY=your_volcengine_speech_api_key
-VOLCENGINE_TTS_RESOURCE_ID=seed-tts-2.0
-VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
+OPENCLASS_SPEECH_PROVIDER=openai
+OPENAI_TTS_MODEL=gpt-4o-mini-tts
+OPENAI_TTS_VOICE=marin
 ```
 
 `.env.example` 还包含 Pi Agent 凭据目录、DeepSeek、OpenAI Realtime 和旧 Codex app-server（Codex 应用服务）回退适配器配置。
@@ -149,7 +148,7 @@ VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，浏览器通过 OpenAI WebRTC（网页实时通信）接收 function call（函数调用），再交给经过用户与 lesson 权限校验的 OpenClass 后端读取受限板书范围或调用同一条 Chatbot workflow，最后只把受控结果返回 Realtime；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 
-聊天回复的自动播报使用独立的 TTS（文字转语音）链路。默认 adapter（适配器）通过 `VOLCENGINE_TTS_API_KEY` 调用豆包语音 V3 HTTP Chunked API（第三版 HTTP 分块接口），不复用 Pi 的模型认证。模型版本、音色和语速分别由 `VOLCENGINE_TTS_RESOURCE_ID`、`VOLCENGINE_TTS_SPEAKER`、`VOLCENGINE_TTS_SPEECH_RATE` 配置；密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重播单条回复。
+聊天回复的自动播报使用独立的 TTS（文字转语音）链路。`OPENCLASS_SPEECH_PROVIDER` 可选择 `openai`、`google_cloud` 或 `volcengine` adapter（适配器）。OpenAI adapter 复用后端 `OPENAI_API_KEY`，模型、音色和语速分别由 `OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`OPENAI_TTS_SPEECH_RATE` 配置；所有密钥都只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重播单条回复。
 
 ## 数据与文档格式
 

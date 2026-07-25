@@ -57,8 +57,15 @@ def _google_cloud_provider(text: str, voice: str | None, speech_rate: int | None
     return synthesize_google_cloud_speech(text, voice=voice, speech_rate=speech_rate)
 
 
+def _openai_provider(text: str, voice: str | None, speech_rate: int | None) -> SpeechAudio:
+    from app.services.openai_speech import synthesize_openai_speech
+
+    return synthesize_openai_speech(text, voice=voice, speech_rate=speech_rate)
+
+
 SPEECH_PROVIDERS: dict[str, SpeechProvider] = {
     "google_cloud": _google_cloud_provider,
+    "openai": _openai_provider,
     "volcengine": _volcengine_provider,
 }
 
@@ -75,6 +82,10 @@ def get_speech_options() -> SpeechOptions:
         from app.services.google_cloud_speech import get_google_cloud_speech_options
 
         return get_google_cloud_speech_options()
+    if provider_name == "openai":
+        from app.services.openai_speech import get_openai_speech_options
+
+        return get_openai_speech_options()
     if provider_name == "volcengine":
         from app.services.volcengine_speech import get_volcengine_speech_options
 
