@@ -293,7 +293,16 @@ export type CreditTransaction = {
 
 export type PayPalOrder = {
   order_id: string;
-  approve_url: string;
+  approve_url: string | null;
+};
+
+export type PayPalPaymentMethod = "redirect" | "paypal" | "card" | "apple_pay" | "google_pay";
+
+export type PayPalClientConfig = {
+  client_id: string;
+  client_token: string;
+  currency: string;
+  mode: "sandbox" | "live";
 };
 
 export type PayPalCapture = {
@@ -496,10 +505,13 @@ export const api = {
   getCreditTransactions() {
     return request<CreditTransaction[]>("/api/billing/transactions");
   },
-  createPayPalOrder(packageId: string) {
+  getPayPalClientConfig() {
+    return request<PayPalClientConfig>("/api/billing/paypal/client-config");
+  },
+  createPayPalOrder(packageId: string, paymentMethod: PayPalPaymentMethod = "redirect") {
     return request<PayPalOrder>("/api/billing/paypal/orders", {
       method: "POST",
-      body: JSON.stringify({ package_id: packageId }),
+      body: JSON.stringify({ package_id: packageId, payment_method: paymentMethod }),
     });
   },
   capturePayPalOrder(orderId: string) {

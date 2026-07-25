@@ -16,6 +16,8 @@ dist/
 node_modules/
 apps/web/node_modules/
 apps/web/.next/
+apps/web/.next-e2e/
+apps/web/test-results/
 RAG-Anything-main/
 .local-runtime/
 *.swp

@@ -13,7 +13,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { CreditPackage, CreditTransaction, CreditWalletOverview } from "@/lib/api";
+import type { CreditTransaction, CreditWalletOverview } from "@/lib/api";
+import { PayPalPaymentMethods } from "@/components/paypal-payment-methods";
 
 function transactionLabel(transaction: CreditTransaction) {
   if (transaction.kind === "paypal_top_up") {
@@ -39,7 +40,8 @@ export function WalletHome() {
   const [overview, setOverview] = useState<CreditWalletOverview | null>(null);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
   const [loading, setLoading] = useState(true);
-  const [processingPackageId, setProcessingPackageId] = useState<string | null>(null);
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
   const [processingReturn, setProcessingReturn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -93,20 +95,30 @@ export function WalletHome() {
     };
   }, [loadWallet]);
 
-  async function startPayment(paymentPackage: CreditPackage) {
+  const handlePaymentSuccess = useCallback(async () => {
+    await loadWallet();
     setError(null);
+    setNotice("付款已完成，OpenClass 已确认收到这笔款项。积分已到账。");
+  }, [loadWallet]);
+
+  const handlePaymentError = useCallback((message: string) => {
     setNotice(null);
-    setProcessingPackageId(paymentPackage.id);
-    try {
-      const order = await api.createPayPalOrder(paymentPackage.id);
-      window.location.assign(order.approve_url);
-    } catch (paymentError) {
-      setError(paymentError instanceof Error ? paymentError.message : "无法创建 PayPal 订单");
-      setProcessingPackageId(null);
-    }
-  }
+    setError(message);
+  }, []);
+
+  const handlePaymentNotice = useCallback((message: string) => {
+    setError(null);
+    setNotice(message);
+  }, []);
+
+  const handlePaymentBusyChange = useCallback((busy: boolean) => {
+    setPaymentBusy(busy);
+  }, []);
 
   const wallet = overview?.wallet;
+  const selectedPackage = (overview?.packages ?? []).find(
+    (paymentPackage) => paymentPackage.id === selectedPackageId
+  );
 
   return (
     <main className="min-h-screen bg-[#f7f5f0] px-5 py-8 text-stone-950 sm:px-8">
@@ -126,7 +138,7 @@ export function WalletHome() {
             </p>
             <h1 className="mt-2 text-3xl font-semibold">积分与充值</h1>
             <p className="mt-2 text-sm text-stone-500">
-              选择金额后前往 PayPal 安全付款，完成后自动返回 OpenClass。
+              选择金额后，使用 PayPal 支持的付款方式安全充值。
             </p>
           </div>
           <Coins className="h-10 w-10 text-amber-500" />
@@ -159,31 +171,50 @@ export function WalletHome() {
             <div className="w-full">
               <h2 className="font-semibold">选择充值金额</h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                付款在 PayPal 页面完成。OpenClass 不接触或保存你的银行卡信息。
+                付款由 PayPal 处理。OpenClass 不接触或保存你的银行卡信息。
               </p>
               <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {(overview?.packages ?? []).map((paymentPackage) => {
-                  const isProcessing = processingPackageId === paymentPackage.id;
+                  const isSelected = selectedPackageId === paymentPackage.id;
                   return (
                     <button
                       key={paymentPackage.id}
                       type="button"
-                      onClick={() => void startPayment(paymentPackage)}
-                      disabled={loading || !wallet?.paypal_configured || processingPackageId !== null}
-                      className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-4 text-left transition hover:border-blue-400 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        setError(null);
+                        setNotice(null);
+                        setSelectedPackageId(paymentPackage.id);
+                      }}
+                      disabled={loading || !wallet?.paypal_configured || paymentBusy}
+                      aria-pressed={isSelected}
+                      className={`rounded-xl border px-4 py-4 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-50 ring-2 ring-blue-100"
+                          : "border-stone-200 bg-stone-50 hover:border-blue-400 hover:bg-blue-50"
+                      }`}
                     >
                       <span className="block text-xl font-semibold">${paymentPackage.amount_usd}</span>
                       <span className="mt-1 block text-sm text-stone-600">
                         获得 {paymentPackage.credits.toLocaleString()} 点数
                       </span>
                       <span className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-blue-700">
-                        {isProcessing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-                        {isProcessing ? "正在前往 PayPal" : "使用 PayPal 支付"}
+                        {isSelected ? <CheckCircle2 className="h-4 w-4" /> : null}
+                        {isSelected ? "已选择" : "选择此金额"}
                       </span>
                     </button>
                   );
                 })}
               </div>
+              {selectedPackage ? (
+                <PayPalPaymentMethods
+                  paymentPackage={selectedPackage}
+                  disabled={loading || paymentBusy || !wallet?.paypal_configured}
+                  onBusyChange={handlePaymentBusyChange}
+                  onSuccess={handlePaymentSuccess}
+                  onError={handlePaymentError}
+                  onNotice={handlePaymentNotice}
+                />
+              ) : null}
               {!loading && !wallet?.paypal_configured ? (
                 <p className="mt-4 text-sm text-red-700">PayPal 收款配置尚未在当前服务中生效。</p>
               ) : null}

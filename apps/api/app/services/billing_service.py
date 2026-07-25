@@ -392,11 +392,36 @@ class BillingService:
             )
         return True
 
-    async def create_paypal_order(self, user_id: str, package_id: str) -> dict[str, object]:
+    async def paypal_client_config(self) -> dict[str, str]:
+        self._require_paypal()
+        response = await self._paypal_request(
+            "POST",
+            "/v1/identity/generate-token",
+            json_body=None,
+        )
+        client_token = str(response.get("client_token") or "")
+        if not client_token:
+            raise BillingError(502, "PayPal 未返回客户端令牌")
+        return {
+            "client_id": self.config.client_id,
+            "client_token": client_token,
+            "currency": self.config.currency,
+            "mode": self.config.mode,
+        }
+
+    async def create_paypal_order(
+        self,
+        user_id: str,
+        package_id: str,
+        *,
+        payment_method: str = "redirect",
+    ) -> dict[str, object]:
         self._require_paypal()
         package = next((item for item in self.packages() if item["id"] == package_id), None)
         if package is None:
             raise BillingError(400, "无效的充值套餐")
+        if payment_method not in {"redirect", "paypal", "card", "apple_pay", "google_pay"}:
+            raise BillingError(400, "无效的 PayPal 付款方式")
         local_order_id = f"oc_{uuid.uuid4().hex}"
         return_url = f"{self.config.public_origin}/wallet?paypal=approved"
         cancel_url = f"{self.config.public_origin}/wallet?paypal=cancelled"
@@ -413,7 +438,9 @@ class BillingService:
                     },
                 }
             ],
-            "payment_source": {
+        }
+        if payment_method == "redirect":
+            payload["payment_source"] = {
                 "paypal": {
                     "experience_context": {
                         "return_url": return_url,
@@ -422,8 +449,20 @@ class BillingService:
                         "shipping_preference": "NO_SHIPPING",
                     }
                 }
-            },
-        }
+            }
+        elif payment_method == "card":
+            payload["payment_source"] = {
+                "card": {
+                    "attributes": {
+                        "verification": {"method": "SCA_WHEN_REQUIRED"},
+                    },
+                    "experience_context": {
+                        "return_url": return_url,
+                        "cancel_url": cancel_url,
+                        "shipping_preference": "NO_SHIPPING",
+                    },
+                }
+            }
         response = await self._paypal_request(
             "POST",
             "/v2/checkout/orders",
@@ -439,8 +478,8 @@ class BillingService:
             ),
             "",
         )
-        if not paypal_order_id or not approve_url:
-            raise BillingError(502, "PayPal 未返回可批准的订单")
+        if not paypal_order_id or (payment_method == "redirect" and not approve_url):
+            raise BillingError(502, "PayPal 未返回可用的订单")
         timestamp = _now()
         with self._transaction() as connection:
             connection.execute(
@@ -462,7 +501,7 @@ class BillingService:
                     timestamp,
                 ),
             )
-        return {"order_id": paypal_order_id, "approve_url": approve_url}
+        return {"order_id": paypal_order_id, "approve_url": approve_url or None}
 
     async def capture_paypal_order(self, user_id: str, paypal_order_id: str) -> dict[str, object]:
         self._require_paypal()
@@ -780,7 +819,7 @@ class BillingService:
         method: str,
         path: str,
         *,
-        json_body: dict[str, Any],
+        json_body: dict[str, Any] | None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
         async with httpx.AsyncClient(base_url=self.config.api_origin, transport=self.transport, timeout=30) as client:
@@ -802,7 +841,10 @@ class BillingService:
             }
             if request_id:
                 headers["PayPal-Request-Id"] = request_id
-            response = await client.request(method, path, json=json_body, headers=headers)
+            request_options: dict[str, Any] = {"headers": headers}
+            if json_body is not None:
+                request_options["json"] = json_body
+            response = await client.request(method, path, **request_options)
         if response.status_code >= 400:
             raise BillingError(502, f"PayPal 请求失败（{response.status_code}）")
         return _json_object(response.json(), detail="PayPal 响应格式无效")

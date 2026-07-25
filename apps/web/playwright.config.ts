@@ -52,6 +52,7 @@ export default defineConfig({
       env: {
         ...process.env,
         NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
+        OPENCLASS_NEXT_DIST_DIR: ".next-e2e",
       },
     },
   ],

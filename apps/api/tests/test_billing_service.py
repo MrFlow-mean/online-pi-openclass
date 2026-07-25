@@ -30,6 +30,8 @@ def _paypal_transport(requests: list[httpx.Request]) -> httpx.MockTransport:
         requests.append(request)
         if request.url.path == "/v1/oauth2/token":
             return httpx.Response(200, json={"access_token": "access-token"})
+        if request.url.path == "/v1/identity/generate-token":
+            return httpx.Response(200, json={"client_token": "client-token"})
         if request.url.path == "/v2/checkout/orders":
             return httpx.Response(
                 201,
@@ -84,6 +86,33 @@ def test_create_capture_and_repeat_are_idempotent(tmp_path: Path) -> None:
     create_body = json.loads(next(request.content for request in requests if request.url.path == "/v2/checkout/orders"))
     assert create_body["purchase_units"][0]["amount"] == {"currency_code": "USD", "value": "100.00"}
     assert create_body["purchase_units"][0]["description"] == "OpenClass 10000 Credits"
+
+
+def test_embedded_orders_and_client_config_do_not_expose_secret(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+    service = BillingService(tmp_path / "billing.sqlite3", config=_config(), transport=_paypal_transport(requests))
+
+    client_config = asyncio.run(service.paypal_client_config())
+    created = asyncio.run(
+        service.create_paypal_order(
+            "user-1",
+            "usd_10000",
+            payment_method="card",
+        )
+    )
+
+    assert client_config == {
+        "client_id": "client-id",
+        "client_token": "client-token",
+        "currency": "USD",
+        "mode": "sandbox",
+    }
+    assert "client_secret" not in client_config
+    assert created == {"order_id": "ORDER-1", "approve_url": "https://paypal.example/approve"}
+    create_body = json.loads(next(request.content for request in requests if request.url.path == "/v2/checkout/orders"))
+    assert create_body["payment_source"]["card"]["attributes"]["verification"] == {
+        "method": "SCA_WHEN_REQUIRED"
+    }
 
 
 def test_completed_webhook_credits_once_and_partial_refund_debits_proportionally(tmp_path: Path) -> None:
