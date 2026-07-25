@@ -382,6 +382,28 @@ export interface LessonHistoryGraph {
   current_branch: string;
 }
 
+export type PublicationReviewStatus = "not_started" | "scanning" | "approved" | "blocked" | "error";
+
+export interface PublicationReviewFinding {
+  source_id: string;
+  source_title: string;
+  location: string;
+  evidence_excerpt: string;
+  reason: string;
+}
+
+export interface PublicationReview {
+  id: string;
+  status: PublicationReviewStatus;
+  source_fingerprint: string;
+  scanned_source_count: number;
+  scanned_unit_count: number;
+  findings: PublicationReviewFinding[];
+  message: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
 export interface Lesson {
   id: string;
   title: string;
@@ -389,6 +411,7 @@ export interface Lesson {
   summary: string;
   tags: string[];
   visibility: "private" | "public";
+  publication_review: PublicationReview;
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
   board_task_requirements?: BoardTaskRequirementSheet | null;
@@ -865,6 +888,7 @@ export interface CoursePackage {
   title: string;
   summary: string;
   visibility: "private" | "public";
+  publication_review: PublicationReview;
   is_standalone: boolean;
   lessons: Lesson[];
   course_graph: CourseGraphEdge[];

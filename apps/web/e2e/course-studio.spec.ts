@@ -169,11 +169,21 @@ test("sets standalone lessons and course packages to public or private", async (
   const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
   await expect(lessonCard).toBeVisible();
   await lessonCard.getByLabel("打开课程操作菜单").click();
+  await page.route(
+    `**/api/lessons/${lesson.id}/visibility`,
+    async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await route.continue();
+    },
+    { times: 1 }
+  );
   const lessonVisibilityResponse = page.waitForResponse(
     (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility`) && response.request().method() === "POST"
   );
   await page.getByRole("button", { name: "Public", exact: true }).click();
+  await expect(page.getByText(/AI 正在扫描所有上传资料的非正文内容/)).toBeVisible();
   expect((await lessonVisibilityResponse).ok()).toBeTruthy();
+  await expect(page.getByText("课程没有上传资料，可以公开。")).toBeVisible();
   await expect(lessonCard.getByLabel("Public")).toBeVisible();
 
   const publicLessonPath = `/courses/shared/lesson/${lesson.id}`;
@@ -197,6 +207,51 @@ test("sets standalone lessons and course packages to public or private", async (
   await expect(page.getByText(/所有者已将它设为 private/)).toBeVisible();
 
   await page.goto("/home");
+  const blockedLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
+  await blockedLessonCard.getByLabel("打开课程操作菜单").click();
+  await page.route(
+    `**/api/lessons/${lesson.id}/visibility`,
+    async (route) => {
+      const authHeader = route.request().headers().authorization;
+      const workspaceResponse = await page.request.get(`${API_BASE_URL}/api/workspace`, {
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      });
+      const workspace = await workspaceResponse.json();
+      const targetLesson = workspace.packages
+        .flatMap((packageItem: { lessons: Array<Record<string, unknown>> }) => packageItem.lessons)
+        .find((item: { id?: unknown }) => item.id === lesson.id);
+      if (!targetLesson) {
+        throw new Error("Visibility fixture lesson was not found");
+      }
+      targetLesson.visibility = "private";
+      targetLesson.publication_review = {
+        id: `publicationreview_${unique}`,
+        status: "blocked",
+        source_fingerprint: "browser-fixture",
+        scanned_source_count: 1,
+        scanned_unit_count: 3,
+        findings: [
+          {
+            source_id: "source_fixture",
+            source_title: "上传资料.pdf",
+            location: "page 2",
+            evidence_excerpt: "All rights reserved.",
+            reason: "Rights statement in front matter.",
+          },
+        ],
+        message: "上传资料的非正文内容中发现版权声明，课程保持 Private。",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(workspace) });
+    },
+    { times: 1 }
+  );
+  await page.getByRole("button", { name: "Public", exact: true }).click();
+  await expect(page.getByText("上传资料的非正文内容中发现版权声明，课程保持 Private。").first()).toBeVisible();
+  await expect(page.getByText("上传资料.pdf · page 2")).toBeVisible();
+  await expect(page.getByText("All rights reserved.")).toBeVisible();
+
   await createPackageFromHome(page, packageTitle);
   const packageCard = page.locator("[data-package-selection-root]").filter({ hasText: packageTitle }).first();
   await expect(packageCard).toBeVisible();

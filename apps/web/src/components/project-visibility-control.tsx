@@ -1,9 +1,10 @@
 "use client";
 
 import clsx from "clsx";
-import { Globe2, LockKeyhole } from "lucide-react";
+import { CircleCheckBig, Globe2, LoaderCircle, LockKeyhole, ShieldAlert } from "lucide-react";
 
 import type { ProjectVisibility } from "@/lib/project-visibility";
+import type { PublicationReview } from "@/types";
 
 type ProjectVisibilityControlProps = {
   visibility: ProjectVisibility;
@@ -12,6 +13,8 @@ type ProjectVisibilityControlProps = {
   compact?: boolean;
   label?: string;
   ariaLabelPrefix?: string;
+  review?: PublicationReview;
+  reviewing?: boolean;
 };
 
 export function ProjectVisibilityControl({
@@ -21,10 +24,12 @@ export function ProjectVisibilityControl({
   compact = false,
   label = "可见权限",
   ariaLabelPrefix,
+  review,
+  reviewing = false,
 }: ProjectVisibilityControlProps) {
   const buttons = (["private", "public"] as const).map((option) => {
     const selected = visibility === option;
-    const optionLabel = option === "public" ? "Public" : "Private";
+    const optionLabel = option === "public" && reviewing ? "AI 扫描中" : option === "public" ? "Public" : "Private";
     const Icon = option === "public" ? Globe2 : LockKeyhole;
     return (
       <button
@@ -48,7 +53,9 @@ export function ProjectVisibilityControl({
               : "text-stone-500 hover:bg-white"
         )}
       >
-        {compact ? <Icon className="h-2 w-2" /> : null}
+        {compact ? (
+          option === "public" && reviewing ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Icon className="h-2 w-2" />
+        ) : null}
         {optionLabel}
       </button>
     );
@@ -69,6 +76,50 @@ export function ProjectVisibilityControl({
         {label}
       </div>
       <div className="grid grid-cols-2 gap-1 rounded-xl bg-stone-100 p-1">{buttons}</div>
+      <PublicationReviewNotice review={review} reviewing={reviewing} />
+    </div>
+  );
+}
+
+export function PublicationReviewNotice({
+  review,
+  reviewing = false,
+}: {
+  review?: PublicationReview;
+  reviewing?: boolean;
+}) {
+  if (reviewing) {
+    return (
+      <div className="mt-2 flex items-start gap-2 rounded-xl bg-blue-50 px-2.5 py-2 text-[11px] leading-4 text-blue-700">
+        <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+        AI 正在扫描所有上传资料的非正文内容。扫描完成前课程保持 Private。
+      </div>
+    );
+  }
+  if (!review || review.status === "not_started") {
+    return null;
+  }
+  if (review.status === "approved") {
+    return (
+      <div className="mt-2 flex items-start gap-2 rounded-xl bg-emerald-50 px-2.5 py-2 text-[11px] leading-4 text-emerald-700">
+        <CircleCheckBig className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        {review.message || "资料发布审查已通过。"}
+      </div>
+    );
+  }
+  const finding = review.findings[0];
+  return (
+    <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-2 text-[11px] leading-4 text-rose-700">
+      <div className="flex items-start gap-2 font-semibold">
+        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>{review.message || "资料发布审查未通过，课程保持 Private。"}</span>
+      </div>
+      {finding ? (
+        <div className="mt-1.5 border-l-2 border-rose-200 pl-2 font-normal">
+          <div>{finding.source_title}{finding.location ? ` · ${finding.location}` : ""}</div>
+          <q className="mt-0.5 block text-rose-800">{finding.evidence_excerpt}</q>
+        </div>
+      ) : null}
     </div>
   );
 }

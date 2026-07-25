@@ -48,7 +48,10 @@ import {
 import { InlineNameForm } from "@/components/inline-name-form";
 import { LearningActivityCalendar } from "@/components/learning-activity-calendar";
 import { RecentFeedCard } from "@/components/recent-feed-card";
-import { ProjectVisibilityControl } from "@/components/project-visibility-control";
+import {
+  ProjectVisibilityControl,
+  PublicationReviewNotice,
+} from "@/components/project-visibility-control";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import {
@@ -527,7 +530,14 @@ export function LearningHome() {
     try {
       const payload = await updateLessonVisibility(lesson.id, visibility);
       setWorkspaceState(payload);
-      setError(null);
+      const updatedLesson = payload.packages
+        .flatMap((packageItem) => packageItem.lessons)
+        .find((item) => item.id === lesson.id);
+      setError(
+        visibility === "public" && updatedLesson?.visibility !== "public"
+          ? updatedLesson?.publication_review.message || "资料发布审查未通过，课程保持 Private。"
+          : null
+      );
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "更新课程可见权限失败");
     } finally {
@@ -683,7 +693,12 @@ export function LearningHome() {
     try {
       const payload = await updatePackageVisibility(selectedCoursePackage.id, visibility);
       setWorkspaceState(payload);
-      setError(null);
+      const updatedPackage = payload.packages.find((item) => item.id === selectedCoursePackage.id);
+      setError(
+        visibility === "public" && updatedPackage?.visibility !== "public"
+          ? updatedPackage?.publication_review.message || "资料发布审查未通过，课程包保持 Private。"
+          : null
+      );
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "更新课程包可见权限失败");
     } finally {
@@ -1314,6 +1329,16 @@ export function LearningHome() {
               onChange={(visibility) => void handleSetLessonVisibility(lessonMenuLesson, visibility)}
               disabled={busyKey !== null}
               label={language === "en" ? "Visibility" : "可见权限"}
+              review={
+                lessonMenuLesson.visibility === "public" ||
+                ["blocked", "error"].includes(lessonMenuLesson.publication_review.status)
+                  ? lessonMenuLesson.publication_review
+                  : undefined
+              }
+              reviewing={
+                busyKey === `visibility:lesson:${lessonMenuLesson.id}` &&
+                lessonMenuLesson.visibility === "private"
+              }
             />
 
             <div className="my-1 h-px bg-stone-100" />
@@ -1730,6 +1755,7 @@ export function LearningHome() {
     const isDeletingPackage = busyKey === `package:delete:${selectedCoursePackage.id}`;
     const isRenamingPackage = busyKey === `package:rename:${selectedCoursePackage.id}`;
     const isUpdatingVisibility = busyKey === `visibility:package:${selectedCoursePackage.id}`;
+    const isReviewingPublication = isUpdatingVisibility && selectedCoursePackage.visibility === "private";
     const packageActionBusy = isDeletingPackage || isRenamingPackage || isUpdatingVisibility;
 
     return (
@@ -1747,6 +1773,7 @@ export function LearningHome() {
                 onChange={(visibility) => void handleSetSelectedPackageVisibility(visibility)}
                 disabled={packageActionBusy}
                 ariaLabelPrefix="课程包设为"
+                reviewing={isReviewingPublication}
               />
               <button
                 type="button"
@@ -1779,6 +1806,15 @@ export function LearningHome() {
                 {h.renamePackage}
               </button>
             </div>
+            <PublicationReviewNotice
+              reviewing={isReviewingPublication}
+              review={
+                selectedCoursePackage.visibility === "public" ||
+                ["blocked", "error"].includes(selectedCoursePackage.publication_review.status)
+                  ? selectedCoursePackage.publication_review
+                  : undefined
+              }
+            />
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
