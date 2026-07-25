@@ -10,7 +10,15 @@ Configure the `OPENCLASS_COMMUNITY_*` variables documented in the repository `.e
 docker compose --env-file ../../.env -f deploy/answer/docker-compose.yml up -d --build
 ```
 
-Open `http://127.0.0.1:9080` and complete Answer's first-run site and administrator setup. Keep `OPENCLASS_COMMUNITY_PROVIDER=native` until the connector below is enabled.
+Open `http://127.0.0.1:9080` and complete Answer's first-run site and administrator setup.
+
+For unattended first-run setup, pass `OPENCLASS_ANSWER_AUTO_INSTALL=true`,
+`OPENCLASS_ANSWER_ADMIN_EMAIL`, and a temporary `OPENCLASS_ANSWER_ADMIN_PASSWORD`
+to the first `docker compose up`. Recreate the container without the temporary
+password after installation; Answer keeps its database in the `answer-data` volume.
+If the default package registries are not reachable, set
+`OPENCLASS_ANSWER_GOPROXY` and `OPENCLASS_ANSWER_NPM_REGISTRY` without editing
+the Dockerfile.
 
 ## Configure the OAuth2 Basic connector
 
@@ -33,7 +41,11 @@ In Answer administration, enable `basic_connector` and configure:
 
 Set Answer's site URL to the same origin used by `OPENCLASS_COMMUNITY_PUBLIC_URL`. Its generated callback must exactly equal `OPENCLASS_COMMUNITY_OAUTH_REDIRECT_URI`.
 
-After a successful login test, set `OPENCLASS_COMMUNITY_PROVIDER=answer` and restart OpenClass API and Web services.
+Keep external registration enabled so a first OpenClass login can create the
+matching Answer account, but disable Answer's email registration and password
+login. This leaves OpenClass as the only account entry point.
+
+After a successful login test, restart OpenClass API and Web services so the integration readiness check is refreshed.
 
 ## Ownership and licensing
 

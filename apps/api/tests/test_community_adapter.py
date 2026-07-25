@@ -23,18 +23,21 @@ class _Response:
         return None
 
 
-def test_native_community_remains_the_safe_default(monkeypatch) -> None:
-    monkeypatch.delenv("OPENCLASS_COMMUNITY_PROVIDER", raising=False)
+def test_answer_is_the_only_community_provider(monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLASS_COMMUNITY_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("OPENCLASS_COMMUNITY_INTERNAL_URL", raising=False)
+    monkeypatch.delenv("OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("OPENCLASS_COMMUNITY_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("OPENCLASS_COMMUNITY_OAUTH_REDIRECT_URI", raising=False)
     integration = CommunityAdapter().integration()
 
-    assert integration.provider == "native"
+    assert integration.provider == "answer"
     assert integration.entry_url == "/community"
-    assert integration.available is True
-    assert integration.setup_required is False
+    assert integration.available is False
+    assert integration.setup_required is True
 
 
 def test_answer_integration_reports_sso_entry_when_fully_configured(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_COMMUNITY_PROVIDER", "answer")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_PUBLIC_URL", "https://community.example.com/")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_INTERNAL_URL", "http://answer:80/")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID", "openclass-answer")
@@ -72,7 +75,6 @@ def test_answer_integration_reports_sso_entry_when_fully_configured(monkeypatch)
 
 
 def test_answer_integration_requires_enabled_basic_connector(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_COMMUNITY_PROVIDER", "answer")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_PUBLIC_URL", "https://community.example.com")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID", "openclass-answer")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_OAUTH_CLIENT_SECRET", "a-long-secret")
@@ -94,7 +96,6 @@ def test_answer_integration_requires_enabled_basic_connector(monkeypatch) -> Non
 
 
 def test_answer_integration_does_not_claim_readiness_without_service_or_sso(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_COMMUNITY_PROVIDER", "answer")
     monkeypatch.setenv("OPENCLASS_COMMUNITY_PUBLIC_URL", "javascript:alert(1)")
     monkeypatch.delenv("OPENCLASS_COMMUNITY_INTERNAL_URL", raising=False)
     monkeypatch.delenv("OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID", raising=False)

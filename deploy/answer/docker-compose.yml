@@ -3,12 +3,28 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GOPROXY: ${OPENCLASS_ANSWER_GOPROXY:-https://proxy.golang.org,direct}
+        NPM_REGISTRY: ${OPENCLASS_ANSWER_NPM_REGISTRY:-https://registry.npmjs.org}
     image: openclass-answer:2.0.2-connector-basic-1.2.12
     restart: unless-stopped
     ports:
       - "127.0.0.1:${OPENCLASS_ANSWER_PORT:-9080}:80"
     environment:
       TIMEZONE: ${TZ:-Asia/Shanghai}
+      AUTO_INSTALL: ${OPENCLASS_ANSWER_AUTO_INSTALL:-}
+      DB_TYPE: sqlite3
+      DB_FILE: /data/answer.db
+      LANGUAGE: ${OPENCLASS_ANSWER_LANGUAGE:-zh_CN}
+      SITE_NAME: ${OPENCLASS_ANSWER_SITE_NAME:-OpenClass Learning Community}
+      SITE_URL: ${OPENCLASS_ANSWER_SITE_URL:-http://127.0.0.1:9080}
+      CONTACT_EMAIL: ${OPENCLASS_ANSWER_ADMIN_EMAIL:-}
+      ADMIN_NAME: ${OPENCLASS_ANSWER_ADMIN_NAME:-OpenClassAdmin}
+      ADMIN_PASSWORD: ${OPENCLASS_ANSWER_ADMIN_PASSWORD:-}
+      ADMIN_EMAIL: ${OPENCLASS_ANSWER_ADMIN_EMAIL:-}
+      EXTERNAL_CONTENT_DISPLAY: ask_before_display
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - answer-data:/data
     healthcheck:

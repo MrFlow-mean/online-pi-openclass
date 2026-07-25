@@ -4,7 +4,7 @@ export type CommunityFeedSort = "recent" | "hot" | "unanswered";
 export type CommunitySpaceSort = "active" | "new" | "popular";
 
 export interface CommunityIntegration {
-  provider: "native" | "answer";
+  provider: "answer";
   public_url?: string | null;
   entry_url: string;
   available: boolean;

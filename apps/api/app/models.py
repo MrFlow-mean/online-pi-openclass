@@ -1588,7 +1588,7 @@ class UserView(BaseModel):
 
 CommunityPostType = Literal["question", "discussion", "resource", "study_note"]
 CommunityFeedSort = Literal["recent", "hot", "unanswered"]
-CommunityProvider = Literal["native", "answer"]
+CommunityProvider = Literal["answer"]
 
 
 class CommunityIntegrationView(BaseModel):

@@ -31,7 +31,6 @@ def _http_origin(value: str) -> str:
 
 @dataclass(frozen=True)
 class CommunityAdapterConfig:
-    provider: str
     public_url: str
     internal_url: str
 
@@ -42,27 +41,15 @@ class CommunityAdapter:
         self._health_cache: tuple[str, float, bool, bool] | None = None
 
     def config(self) -> CommunityAdapterConfig:
-        provider = os.getenv("OPENCLASS_COMMUNITY_PROVIDER", "native").strip().casefold()
-        if provider not in {"native", "answer"}:
-            provider = "native"
         public_url = _http_origin(_optional_env("OPENCLASS_COMMUNITY_PUBLIC_URL"))
         internal_url = _http_origin(_optional_env("OPENCLASS_COMMUNITY_INTERNAL_URL"))
         return CommunityAdapterConfig(
-            provider=provider,
             public_url=public_url,
             internal_url=internal_url,
         )
 
     def integration(self) -> CommunityIntegrationView:
         config = self.config()
-        if config.provider == "native":
-            return CommunityIntegrationView(
-                provider="native",
-                entry_url="/community",
-                available=True,
-                sso_enabled=False,
-                setup_required=False,
-            )
         oauth_config = community_oauth_service.config()
         available, connector_available = self._answer_status(
             config.internal_url or config.public_url
