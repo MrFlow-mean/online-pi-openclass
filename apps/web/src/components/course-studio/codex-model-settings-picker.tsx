@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
+  modelAccessMethodLabel,
   modelOptionKey,
   modelSelectionKey,
   selectionForModelOption,
@@ -390,6 +391,7 @@ export function CodexModelSettingsPicker({
                       <OptionButton
                         key={modelOptionKey(option)}
                         label={shortModelLabel(option, normalizedSelection)}
+                        description={modelAccessMethodLabel(option)}
                         selected={modelOptionKey(option) === modelSelectionKey(normalizedSelection)}
                         ariaLabel={`选择模型 ${shortModelLabel(option, normalizedSelection)}`}
                         disabled={!option.enabled}

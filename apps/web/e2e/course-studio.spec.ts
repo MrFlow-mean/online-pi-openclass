@@ -6,6 +6,7 @@ test.beforeEach(async ({ page }) => {
   const textModel = {
     provider: "openai_codex",
     model: "gpt-5.5",
+    access_method: "chatgpt_subscription",
     label: "OpenAI Codex test model",
     capability: "text",
     enabled: true,
@@ -19,6 +20,7 @@ test.beforeEach(async ({ page }) => {
   const realtimeModel = {
     provider: "openai_codex",
     model: "realtime-unavailable",
+    access_method: "chatgpt_subscription",
     label: "Realtime unavailable in browser tests",
     capability: "realtime",
     enabled: false,
@@ -48,6 +50,20 @@ test.beforeEach(async ({ page }) => {
 async function enterAsGuest(page: Page, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
   await page.getByRole("button", { name: /游客登录/ }).click();
+  await expect(page.getByLabel("添加课程包")).toBeVisible();
+}
+
+async function enterAsGuestThroughApi(page: Page) {
+  const response = await page.request.post(`${API_BASE_URL}/api/auth/guest`);
+  expect(response.ok()).toBeTruthy();
+  const session = (await response.json()) as { token: string };
+  await page.goto("/");
+  await page.evaluate((token) => {
+    window.sessionStorage.setItem("openclass.guest.auth.token", token);
+    window.localStorage.setItem("openclass.connected-guest.auth.token", token);
+    document.cookie = `openclass.guest.auth.token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
+  }, session.token);
+  await page.goto("/home");
   await expect(page.getByLabel("添加课程包")).toBeVisible();
 }
 
@@ -132,6 +148,147 @@ test("creates a package and lesson, edits the document, and persists a version",
   await openHistoryPanel(page);
 
   await expect(page.getByText("Auto Save").first()).toBeVisible();
+});
+
+test("connects a personal API key from the Models panel without exposing it", async ({ page }) => {
+  const unique = Date.now();
+  const privateKey = "sk-browser-private-test";
+  let personalApiConfigured = false;
+  let submittedKey = "";
+  const textModels = () => [
+    {
+      provider: "openai_codex",
+      model: "gpt-5.5",
+      access_method: "chatgpt_subscription",
+      label: "OpenAI Codex test model",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: true,
+      supported_reasoning_efforts: [],
+      service_tiers: [],
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      access_method: "platform_credits",
+      label: "DeepSeek V4 Flash",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+      supported_reasoning_efforts: [],
+      service_tiers: [],
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      access_method: "personal_api",
+      label: "DeepSeek V4 Flash",
+      capability: "text",
+      enabled: personalApiConfigured,
+      configured: personalApiConfigured,
+      default: false,
+      supported_reasoning_efforts: [],
+      service_tiers: [],
+    },
+  ];
+
+  await page.unroute("**/api/ai-models");
+  await page.route("**/api/ai-models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: textModels(),
+        realtime: [],
+        defaults: {
+          text: {
+            provider: "openai_codex",
+            model: "gpt-5.5",
+            access_method: "chatgpt_subscription",
+          },
+          realtime: {
+            provider: "openai",
+            model: "gpt-realtime-2.1",
+            access_method: "platform_credits",
+          },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/model-credentials*", async (route) => {
+    const method = route.request().method();
+    if (method === "PUT") {
+      submittedKey = (route.request().postDataJSON() as { api_key: string }).api_key;
+      personalApiConfigured = true;
+    } else if (method === "DELETE") {
+      personalApiConfigured = false;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        method === "GET"
+          ? [
+              {
+                provider: "deepseek",
+                label: "DeepSeek",
+                configured: personalApiConfigured,
+                manageable: true,
+              },
+            ]
+          : {
+              provider: "deepseek",
+              label: "DeepSeek",
+              configured: personalApiConfigured,
+              manageable: true,
+            }
+      ),
+    });
+  });
+  await page.route("**/api/auth/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "guest-model-credentials-e2e",
+        email: "guest@openclass.local",
+        role: "guest",
+        created_at: "2026-07-25T00:00:00+00:00",
+        auth_identities: [],
+      }),
+    });
+  });
+
+  await enterAsGuestThroughApi(page);
+  await createPackageFromHome(page, `个人 API 测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `个人 API 测试页面 ${unique}`);
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Models" }).click();
+
+  const keyInput = page.getByLabel("DeepSeek API Key");
+  await expect(keyInput).toBeVisible();
+  await keyInput.fill(privateKey);
+  await page.getByRole("button", { name: "保存 Key" }).click();
+
+  await expect(page.getByRole("status")).toHaveText("DeepSeek API Key 已连接");
+  await expect(keyInput).toHaveValue("");
+  expect(submittedKey).toBe(privateKey);
+  expect(
+    await page.evaluate(() => JSON.stringify(window.localStorage))
+  ).not.toContain(privateKey);
+
+  const personalApiButton = page.getByRole("button", { name: /自有模型 API/ });
+  await expect(personalApiButton).toBeEnabled();
+  await personalApiButton.click();
+  await page.getByRole("button", { name: /DeepSeek V4 Flash/ }).click();
+  await expect(page.getByText("自有模型 API · 与聊天输入框共用选择状态")).toBeVisible();
+
+  await page.getByRole("button", { name: "删除" }).click();
+  await expect(page.getByRole("status")).toHaveText("DeepSeek API Key 已删除");
+  await expect(page.getByText("未连接")).toBeVisible();
+  await expect(page.getByText(privateKey)).toHaveCount(0);
 });
 
 test("creates an untitled lesson without asking for a name", async ({ page }) => {
