@@ -12,13 +12,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import BoardDocument, SourceIngestionJob, SourceIngestionRecord, UserView
+from app.models import (
+    BoardDocument,
+    PublicationReview,
+    SourceIngestionJob,
+    SourceIngestionRecord,
+    UserView,
+)
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
+from app.services.publication_review import PublicationSourceUnit, scan_publication_units
 from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
@@ -68,6 +75,84 @@ class _PassthroughDirectoryNormalizer:
             turn_count=1 if candidates else 0,
             metadata={"test_adapter": "passthrough"},
         )
+
+
+class _PublicationReviewAdapter:
+    def __init__(self, decisions: list[dict[str, object]]) -> None:
+        self.decisions = decisions
+
+    def parse_structured(self, **_kwargs):
+        return type("Result", (), {"output_parsed": {"decisions": self.decisions}})()
+
+
+def _publication_unit(*, unit_id: str, text: str) -> PublicationSourceUnit:
+    return PublicationSourceUnit(
+        source_id="source_test",
+        source_title="Uploaded material",
+        unit_id=unit_id,
+        order_index=0,
+        total_units=1,
+        location="page 2",
+        section_path=[],
+        text=text,
+    )
+
+
+def test_publication_scan_blocks_grounded_copyright_declaration_in_non_body_content() -> None:
+    review = scan_publication_units(
+        units=[_publication_unit(unit_id="front-1", text="Copyright 2026. All rights reserved.")],
+        source_count=1,
+        source_fingerprint="fingerprint",
+        adapter=_PublicationReviewAdapter(
+            [
+                {
+                    "unit_id": "front-1",
+                    "region": "non_body",
+                    "copyright_declaration": True,
+                    "evidence_excerpt": "Copyright 2026. All rights reserved.",
+                    "reason": "Rights statement in front matter.",
+                }
+            ]
+        ),
+    )
+
+    assert review.status == "blocked"
+    assert review.findings[0].source_id == "source_test"
+    assert review.findings[0].evidence_excerpt == "Copyright 2026. All rights reserved."
+
+
+@pytest.mark.parametrize(
+    ("region", "declaration", "text", "excerpt"),
+    [
+        ("body", True, "The lesson compares copyright systems.", "copyright systems"),
+        ("non_body", False, "Preface by the author.", ""),
+    ],
+)
+def test_publication_scan_does_not_block_body_discussion_or_non_body_without_declaration(
+    region: str,
+    declaration: bool,
+    text: str,
+    excerpt: str,
+) -> None:
+    review = scan_publication_units(
+        units=[_publication_unit(unit_id="unit-1", text=text)],
+        source_count=1,
+        source_fingerprint="fingerprint",
+        adapter=_PublicationReviewAdapter(
+            [
+                {
+                    "unit_id": "unit-1",
+                    "region": region,
+                    "copyright_declaration": declaration,
+                    "evidence_excerpt": excerpt,
+                    "reason": "Test decision.",
+                }
+            ]
+        ),
+    )
+
+    assert review.status == "approved"
+    assert review.findings == []
 
 
 def _document_with_text(document: dict, text: str) -> dict:
@@ -191,6 +276,7 @@ def test_standalone_lessons_and_packages_have_revocable_public_visibility(
         if lesson["id"] == standalone_lesson["id"]
     )
     assert published_lesson_data["visibility"] == "public"
+    assert published_lesson_data["publication_review"]["status"] == "approved"
 
     public_lesson = api_client.get(f"/api/public/lessons/{standalone_lesson['id']}")
     assert public_lesson.status_code == 200
@@ -246,6 +332,52 @@ def test_standalone_lessons_and_packages_have_revocable_public_visibility(
     assert private_package.status_code == 200
     assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
 
+
+def test_publication_gate_keeps_project_private_when_review_finds_copyright(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Private until reviewed", "start_blank": True},
+    )
+    lesson = created.json()["lessons"][0]
+    monkeypatch.setattr(
+        workspace_router,
+        "review_project_publication",
+        lambda **_kwargs: PublicationReview(
+            status="blocked",
+            scanned_source_count=1,
+            scanned_unit_count=4,
+            findings=[
+                {
+                    "source_id": "source_test",
+                    "source_title": "Uploaded material",
+                    "location": "page 2",
+                    "evidence_excerpt": "All rights reserved.",
+                    "reason": "Rights statement in front matter.",
+                }
+            ],
+            message="Copyright declaration found.",
+        ),
+    )
+
+    response = api_client.post(
+        f"/api/lessons/{lesson['id']}/visibility",
+        json={"visibility": "public"},
+    )
+
+    assert response.status_code == 200
+    reviewed = next(
+        item
+        for package in response.json()["packages"]
+        for item in package["lessons"]
+        if item["id"] == lesson["id"]
+    )
+    assert reviewed["visibility"] == "private"
+    assert reviewed["publication_review"]["status"] == "blocked"
+    assert reviewed["publication_review"]["findings"][0]["location"] == "page 2"
+    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 404
 
 def _docx_text_nodes(content: bytes) -> list[str]:
     with ZipFile(BytesIO(content)) as archive:

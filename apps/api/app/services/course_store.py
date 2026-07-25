@@ -21,6 +21,7 @@ from app.models import (
     LessonMergeSession,
     LessonRuntimeSnapshot,
     LibraryChapter,
+    PublicationReview,
     ResourceLibraryItem,
     ResourcePageStructure,
     ResourceSourceUnit,
@@ -30,7 +31,7 @@ from app.models import (
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -475,6 +476,7 @@ class SqliteCourseStore:
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 visibility TEXT NOT NULL DEFAULT 'private',
+                publication_review_json TEXT,
                 sort_order INTEGER NOT NULL,
                 active_lesson_id TEXT
             );
@@ -488,6 +490,7 @@ class SqliteCourseStore:
                 summary TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
                 visibility TEXT NOT NULL DEFAULT 'private',
+                publication_review_json TEXT,
                 board_document_id TEXT NOT NULL,
                 board_document_title TEXT NOT NULL,
                 board_content_json TEXT NOT NULL,
@@ -759,8 +762,14 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE course_packages ADD COLUMN owner_user_id TEXT")
         if "visibility" not in package_columns:
             conn.execute("ALTER TABLE course_packages ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'")
+        if "publication_review_json" not in package_columns:
+            conn.execute("ALTER TABLE course_packages ADD COLUMN publication_review_json TEXT")
+            conn.execute("UPDATE course_packages SET visibility = 'private'")
         if "visibility" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'")
+        if "publication_review_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN publication_review_json TEXT")
+            conn.execute("UPDATE lessons SET visibility = 'private'")
 
     def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
@@ -909,6 +918,9 @@ class SqliteCourseStore:
             title=row["title"],
             summary=row["summary"],
             visibility=row["visibility"],
+            publication_review=PublicationReview.model_validate(
+                _loads(row["publication_review_json"], {})
+            ),
             lessons=lessons,
             course_graph=course_graph,
             resources=resources,
@@ -964,6 +976,9 @@ class SqliteCourseStore:
             summary=row["summary"],
             tags=_loads(row["tags_json"], []),
             visibility=row["visibility"],
+            publication_review=PublicationReview.model_validate(
+                _loads(row["publication_review_json"], {})
+            ),
             board_document=_document_from_row(row, "board"),
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
             board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
@@ -1114,8 +1129,9 @@ class SqliteCourseStore:
         conn.execute(
             """
             INSERT INTO course_packages(
-                id, owner_user_id, title, summary, visibility, sort_order, active_lesson_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, owner_user_id, title, summary, visibility, publication_review_json,
+                sort_order, active_lesson_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 package.id,
@@ -1123,6 +1139,7 @@ class SqliteCourseStore:
                 package.title,
                 package.summary,
                 package.visibility,
+                _dumps(package.publication_review.model_dump(mode="json")),
                 package_index,
                 package.active_lesson_id,
             ),
@@ -1176,12 +1193,13 @@ class SqliteCourseStore:
             """
             INSERT INTO lessons(
                 id, package_id, sort_order, title, slug, summary, tags_json, visibility,
+                publication_review_json,
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json,
                 board_task_requirements_json, teaching_guide_json,
                 current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -1192,6 +1210,7 @@ class SqliteCourseStore:
                 lesson.summary,
                 _dumps(lesson.tags),
                 lesson.visibility,
+                _dumps(lesson.publication_review.model_dump(mode="json")),
                 document.id,
                 document.title,
                 _dumps(document.content_json),

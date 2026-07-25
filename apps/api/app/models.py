@@ -44,6 +44,7 @@ CourseEdgeType = Literal[
     "derived_from",
 ]
 PublicationVisibility = Literal["private", "public"]
+PublicationReviewStatus = Literal["not_started", "scanning", "approved", "blocked", "error"]
 
 TeachingMode = Literal["definition", "intuition", "analogy", "example", "dialogue"]
 BoardAction = Literal["no_change", "edit_board"]
@@ -552,6 +553,26 @@ class BranchRef(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
+class PublicationReviewFinding(BaseModel):
+    source_id: str
+    source_title: str
+    location: str = ""
+    evidence_excerpt: str
+    reason: str = ""
+
+
+class PublicationReview(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("publicationreview"))
+    status: PublicationReviewStatus = "not_started"
+    source_fingerprint: str = ""
+    scanned_source_count: int = 0
+    scanned_unit_count: int = 0
+    findings: list[PublicationReviewFinding] = Field(default_factory=list)
+    message: str = ""
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
 class LessonHistoryGraph(BaseModel):
     branches: dict[str, BranchRef]
     commits: list[CommitRecord]
@@ -565,6 +586,7 @@ class Lesson(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     visibility: PublicationVisibility = "private"
+    publication_review: PublicationReview = Field(default_factory=PublicationReview)
     board_document: BoardDocument
     board_teaching_guide: BoardTeachingGuide | None = None
     board_teaching_progress: BoardTeachingProgress | None = None
@@ -1252,6 +1274,7 @@ class CoursePackage(BaseModel):
     title: str
     summary: str
     visibility: PublicationVisibility = "private"
+    publication_review: PublicationReview = Field(default_factory=PublicationReview)
     lessons: list[Lesson]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
     resources: list[ResourceLibraryItem] = Field(default_factory=list)
@@ -1542,6 +1565,7 @@ class LessonView(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     visibility: PublicationVisibility = "private"
+    publication_review: PublicationReview = Field(default_factory=PublicationReview)
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
     board_task_requirements: BoardTaskRequirementSheet | None = None
@@ -1555,6 +1579,7 @@ class CoursePackageView(BaseModel):
     title: str
     summary: str
     visibility: PublicationVisibility = "private"
+    publication_review: PublicationReview = Field(default_factory=PublicationReview)
     is_standalone: bool = False
     lessons: list[LessonView]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)

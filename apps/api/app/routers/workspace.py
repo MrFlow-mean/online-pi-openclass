@@ -32,6 +32,7 @@ from app.services.lesson_package_format import (
     read_ridoc,
 )
 from app.services.lesson_package_import import import_ridoc_archive, rollback_imported_assets
+from app.services.publication_review import review_project_publication
 from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
     find_lesson_package,
@@ -160,7 +161,16 @@ def update_package(
     if request.visibility is not None:
         if workspace.packages and package.id == workspace.packages[0].id:
             raise HTTPException(status_code=400, detail="Standalone lessons manage visibility individually")
-        package.visibility = request.visibility
+        if request.visibility == "private":
+            package.visibility = "private"
+        else:
+            package.publication_review = review_project_publication(
+                owner_user_id=user.id,
+                package=package,
+            )
+            package.visibility = (
+                "public" if package.publication_review.status == "approved" else "private"
+            )
 
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
@@ -176,7 +186,17 @@ def update_lesson_visibility(
     package, lesson = find_lesson_package(workspace, lesson_id)
     if not workspace.packages or package.id != workspace.packages[0].id:
         raise HTTPException(status_code=400, detail="Packaged lessons inherit their package visibility")
-    lesson.visibility = request.visibility
+    if request.visibility == "private":
+        lesson.visibility = "private"
+    else:
+        lesson.publication_review = review_project_publication(
+            owner_user_id=user.id,
+            package=package,
+            lesson_id=lesson.id,
+        )
+        lesson.visibility = (
+            "public" if lesson.publication_review.status == "approved" else "private"
+        )
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
