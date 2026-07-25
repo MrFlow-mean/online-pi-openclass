@@ -377,6 +377,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         owner_user_id: str,
         provider: str,
         model: str,
+        access_method: str | None = None,
         reasoning_effort: str | None = None,
         service_tier: str | None = None,
     ) -> None:
@@ -386,6 +387,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
             owner_user_id=owner_user_id,
             provider=provider,
             model=model,
+            access_method=access_method,
             reasoning_effort=reasoning_effort,
             service_tier=service_tier,
         )
@@ -570,6 +572,12 @@ def build_ai_execution_adapter(
         owner_user_id=owner_user_id,
         provider=selection.provider,
         model=selection.model,
+        access_method=selection.access_method
+        or (
+            "chatgpt_subscription"
+            if selection.provider == "openai_codex"
+            else "platform_credits"
+        ),
         reasoning_effort=selection.reasoning_effort,
         service_tier=selection.service_tier,
     )

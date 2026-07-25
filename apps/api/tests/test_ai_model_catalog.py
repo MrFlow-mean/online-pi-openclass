@@ -1,7 +1,21 @@
+import json
+
+import pytest
+
 from app.models import AIModelSelection
-from app.services import ai_model_catalog
+from app.services import ai_model_catalog, pi_agent_runtime
 
 TEST_USER_ID = "user_model_catalog"
+
+
+@pytest.fixture(autouse=True)
+def _no_personal_api_credentials(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_personal_api_configured",
+        lambda **_kwargs: False,
+    )
+
 
 def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypatch) -> None:
     monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
@@ -18,19 +32,26 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
     monkeypatch.setenv("AI_TEXT_MODELS_JSON", '[{"provider":"deepseek","model":"legacy"}]')
     catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
 
-    assert [(option.provider, option.model) for option in catalog.text] == [
-        ("openai_codex", "gpt-5.5"),
-        ("openai_codex", "gpt-5.4"),
-        ("openai_codex", "gpt-5.4-mini"),
-        ("openai_codex", "gpt-5.3-codex-spark"),
-        ("deepseek", "deepseek-v4-flash"),
-        ("deepseek", "deepseek-v4-pro"),
+    assert [
+        (option.access_method, option.provider, option.model)
+        for option in catalog.text
+    ] == [
+        ("chatgpt_subscription", "openai_codex", "gpt-5.5"),
+        ("chatgpt_subscription", "openai_codex", "gpt-5.4"),
+        ("chatgpt_subscription", "openai_codex", "gpt-5.4-mini"),
+        ("chatgpt_subscription", "openai_codex", "gpt-5.3-codex-spark"),
+        ("platform_credits", "deepseek", "deepseek-v4-flash"),
+        ("platform_credits", "deepseek", "deepseek-v4-pro"),
+        ("personal_api", "deepseek", "deepseek-v4-flash"),
+        ("personal_api", "deepseek", "deepseek-v4-pro"),
     ]
     assert [option.label for option in catalog.text] == [
         "GPT 5.5",
         "GPT 5.4",
         "GPT 5.4 Mini",
         "GPT 5.3 Codex Spark",
+        "DeepSeek V4 Flash",
+        "DeepSeek V4 Pro",
         "DeepSeek V4 Flash",
         "DeepSeek V4 Pro",
     ]
@@ -170,12 +191,104 @@ def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypa
 
     for catalog in (guest_catalog, member_catalog):
         deepseek_options = [
-            option for option in catalog.text if option.provider == "deepseek"
+            option
+            for option in catalog.text
+            if option.provider == "deepseek"
+            and option.access_method == "platform_credits"
         ]
         assert deepseek_options
         assert all(option.enabled and option.configured for option in deepseek_options)
         assert catalog.defaults["text"].provider == "deepseek"
         assert catalog.defaults["text"].model == "deepseek-v4-flash"
+        assert catalog.defaults["text"].access_method == "platform_credits"
+
+
+def test_personal_deepseek_key_enables_only_the_personal_api_route(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "disabled")
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_personal_api_configured",
+        lambda **_kwargs: True,
+    )
+
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+
+    personal = [
+        option
+        for option in catalog.text
+        if option.provider == "deepseek"
+        and option.access_method == "personal_api"
+    ]
+    platform = [
+        option
+        for option in catalog.text
+        if option.provider == "deepseek"
+        and option.access_method == "platform_credits"
+    ]
+    assert all(option.enabled and option.configured for option in personal)
+    assert all(not option.enabled and not option.configured for option in platform)
+    assert catalog.defaults["text"].access_method == "personal_api"
+
+
+def test_personal_api_key_is_private_user_scoped_and_removable(tmp_path) -> None:
+    pi_agent_runtime.save_pi_personal_api_key(
+        owner_user_id="user_a",
+        provider="deepseek",
+        api_key="sk-user-a",
+        runtime_root=tmp_path,
+    )
+
+    assert pi_agent_runtime.pi_personal_api_configured(
+        owner_user_id="user_a",
+        provider="deepseek",
+        runtime_root=tmp_path,
+    )
+    assert not pi_agent_runtime.pi_personal_api_configured(
+        owner_user_id="user_b",
+        provider="deepseek",
+        runtime_root=tmp_path,
+    )
+    agent_dir = pi_agent_runtime._pi_user_agent_directory(
+        owner_user_id="user_a",
+        runtime_root=tmp_path,
+    )
+    auth_path = agent_dir / "auth.json"
+    assert json.loads(auth_path.read_text(encoding="utf-8"))["deepseek"] == {
+        "type": "api_key",
+        "key": "sk-user-a",
+    }
+    assert agent_dir.stat().st_mode & 0o777 == 0o700
+    assert auth_path.stat().st_mode & 0o777 == 0o600
+
+    pi_agent_runtime.remove_pi_personal_api_key(
+        owner_user_id="user_a",
+        provider="deepseek",
+        runtime_root=tmp_path,
+    )
+    assert not pi_agent_runtime.pi_personal_api_configured(
+        owner_user_id="user_a",
+        provider="deepseek",
+        runtime_root=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("api_key", ["!whoami", "$DEEPSEEK_API_KEY", "has whitespace"])
+def test_personal_api_key_rejects_pi_resolution_syntax(
+    api_key: str,
+    tmp_path,
+) -> None:
+    with pytest.raises(ValueError):
+        pi_agent_runtime.save_pi_personal_api_key(
+            owner_user_id="user_a",
+            provider="deepseek",
+            api_key=api_key,
+            runtime_root=tmp_path,
+        )
 
 
 def test_model_selection_defaults_to_pi_and_retains_codex_rollback_contract() -> None:

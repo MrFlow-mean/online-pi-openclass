@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 def now_iso() -> str:
@@ -108,6 +108,11 @@ AIProvider = Literal[
     "minimax",
     "openai_compatible",
     "anthropic_compatible",
+]
+AIModelAccessMethod = Literal[
+    "chatgpt_subscription",
+    "personal_api",
+    "platform_credits",
 ]
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
@@ -1336,13 +1341,35 @@ class AIModelSelection(BaseModel):
     agent_backend: Literal["codex", "pi"] = "pi"
     provider: AIProvider
     model: str
+    access_method: AIModelAccessMethod | None = None
     reasoning_effort: str | None = None
     service_tier: str | None = None
+
+    @model_validator(mode="after")
+    def validate_access_method(self) -> "AIModelSelection":
+        if self.access_method is None:
+            return self
+        supported_access_methods: dict[
+            AIProvider,
+            set[AIModelAccessMethod],
+        ] = {
+            "openai_codex": {"chatgpt_subscription"},
+            "openai": {"platform_credits"},
+            "deepseek": {"personal_api", "platform_credits"},
+        }
+        allowed = supported_access_methods.get(self.provider)
+        if allowed is not None and self.access_method not in allowed:
+            raise ValueError(
+                f"Access method {self.access_method!r} is not available "
+                f"for provider {self.provider!r}"
+            )
+        return self
 
 
 class AIModelOption(BaseModel):
     provider: AIProvider
     model: str
+    access_method: AIModelAccessMethod
     label: str
     capability: AIModelCapability
     enabled: bool = False
@@ -1365,6 +1392,17 @@ class AIModelCatalog(BaseModel):
         Literal["teaching", "source"],
         list[AIAgentBackendOption],
     ] = Field(default_factory=dict)
+
+
+class AIProviderCredentialInput(BaseModel):
+    api_key: SecretStr
+
+
+class AIProviderCredentialStatus(BaseModel):
+    provider: AIProvider
+    label: str
+    configured: bool = False
+    manageable: bool = False
 
 
 class CodexAccountView(BaseModel):

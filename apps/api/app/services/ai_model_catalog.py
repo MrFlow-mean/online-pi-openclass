@@ -15,7 +15,11 @@ from app.services.deepseek_api import (
     DEEPSEEK_CURATED_MODELS,
     deepseek_config,
 )
-from app.services.pi_agent_runtime import pi_credentials_available, pi_runtime_available
+from app.services.pi_agent_runtime import (
+    pi_credentials_available,
+    pi_personal_api_configured,
+    pi_runtime_available,
+)
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
@@ -91,6 +95,7 @@ def default_text_selection(
     return AIModelSelection(
         provider="openai_codex",
         model=model,
+        access_method="chatgpt_subscription",
         reasoning_effort=reasoning_effort,
         service_tier=service_tier,
     )
@@ -105,8 +110,17 @@ def resolve_text_model_selection(
     if selection is not None:
         selected_model = selection.model.strip()
         if selection.provider in {"openai_codex", "deepseek"} and selected_model:
+            access_method = selection.access_method or (
+                "chatgpt_subscription"
+                if selection.provider == "openai_codex"
+                else "platform_credits"
+            )
             return selection.model_copy(
-                update={"model": selected_model, "agent_backend": "pi"}
+                update={
+                    "model": selected_model,
+                    "agent_backend": "pi",
+                    "access_method": access_method,
+                }
             )
         raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
     try:
@@ -123,6 +137,7 @@ def resolve_text_model_selection(
                     OPENAI_CODEX_DEFAULT_TEXT_MODEL,
                 )
             ),
+            access_method=getattr(default_selection, "access_method", None),
         )
     except Exception:
         return default_text_selection(
@@ -138,6 +153,7 @@ def default_realtime_selection() -> AIModelSelection:
     return AIModelSelection(
         provider="openai",
         model=(os.getenv("OPENAI_REALTIME_MODEL") or OPENAI_DEFAULT_REALTIME_MODEL).strip(),
+        access_method="platform_credits",
     )
 
 
@@ -237,6 +253,10 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     pi_openai_configured = pi_available and pi_credentials_available(
         owner_user_id=user_id
     )
+    personal_deepseek_configured = pi_available and pi_personal_api_configured(
+        owner_user_id=user_id,
+        provider="deepseek",
+    )
     shared_deepseek = deepseek_config()
     realtime_default = default_realtime_selection()
     realtime_configured = _configured_secret("OPENAI_API_KEY")
@@ -258,6 +278,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="openai_codex",
             model=str(item["model"]),
+            access_method="chatgpt_subscription",
             label=str(item["displayName"]),
             capability="text",
             enabled=pi_openai_configured,
@@ -284,11 +305,25 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="deepseek",
             model=model,
+            access_method="platform_credits",
             label=label,
             capability="text",
             enabled=shared_deepseek.configured,
             configured=shared_deepseek.configured,
             default=deepseek_is_default and model == shared_deepseek.model,
+        )
+        for model, label in deepseek_models
+    )
+    text_options.extend(
+        AIModelOption(
+            provider="deepseek",
+            model=model,
+            access_method="personal_api",
+            label=label,
+            capability="text",
+            enabled=personal_deepseek_configured,
+            configured=personal_deepseek_configured,
+            default=False,
         )
         for model, label in deepseek_models
     )
@@ -298,7 +333,22 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         text_default = AIModelSelection(
             provider="deepseek",
             model=shared_deepseek.model,
+            access_method="platform_credits",
         )
+    elif personal_deepseek_configured and not pi_openai_configured:
+        text_default = AIModelSelection(
+            provider="deepseek",
+            model=shared_deepseek.model,
+            access_method="personal_api",
+        )
+        next(
+            option
+            for option in text_options
+            if option.provider == "deepseek"
+            and option.model == shared_deepseek.model
+            and option.access_method == "personal_api"
+        ).default = True
+        codex_default_option.default = False
     else:
         text_default = default_text_selection(
             model=codex_default_option.model,
@@ -311,6 +361,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             AIModelOption(
                 provider="openai",
                 model=model,
+                access_method="platform_credits",
                 label=label,
                 capability="realtime",
                 enabled=realtime_enabled,

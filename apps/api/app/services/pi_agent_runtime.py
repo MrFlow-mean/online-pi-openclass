@@ -49,6 +49,7 @@ PI_PROCESS_POLL_SECONDS = 0.1
 PI_PROCESS_TERMINATE_GRACE_SECONDS = 1.0
 PI_OPENAI_CODEX_PROVIDER = "openai-codex"
 PI_CODEX_AUTH_FINGERPRINT_FILE = ".openclass-codex-auth.sha256"
+PI_PERSONAL_API_PROVIDERS = frozenset({"deepseek"})
 
 
 _DATA_IMAGE_PATTERN = re.compile(
@@ -616,14 +617,8 @@ def pi_credentials_available(
         return False
 
 
-def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
+def _pi_user_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
     owner_key = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:24]
-    configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
-    if configured_agent_dir:
-        agent_dir = Path(configured_agent_dir).expanduser().resolve()
-        if not agent_dir.is_dir():
-            raise RuntimeError("The configured Pi agent directory does not exist")
-        return agent_dir
     agent_dir = runtime_root / "agents" / owner_key
     agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -633,8 +628,96 @@ def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
     return agent_dir
 
 
+def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
+    configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
+    if configured_agent_dir:
+        agent_dir = Path(configured_agent_dir).expanduser().resolve()
+        if not agent_dir.is_dir():
+            raise RuntimeError("The configured Pi agent directory does not exist")
+        return agent_dir
+    return _pi_user_agent_directory(
+        owner_user_id=owner_user_id,
+        runtime_root=runtime_root,
+    )
+
+
 def _pi_provider(provider: str) -> str:
     return "openai-codex" if provider == "openai_codex" else provider.replace("_", "-")
+
+
+def _validated_personal_api_provider(provider: str) -> str:
+    normalized = _pi_provider(provider)
+    if normalized not in PI_PERSONAL_API_PROVIDERS:
+        raise RuntimeError(f"Personal API credentials are not supported for {provider}")
+    return normalized
+
+
+def pi_personal_api_configured(
+    *,
+    owner_user_id: str,
+    provider: str,
+    runtime_root: Path | None = None,
+) -> bool:
+    normalized_provider = _validated_personal_api_provider(provider)
+    agent_dir = _pi_user_agent_directory(
+        owner_user_id=owner_user_id,
+        runtime_root=runtime_root or pi_runtime_root(),
+    )
+    credential = _read_json_object(agent_dir / "auth.json").get(normalized_provider)
+    return bool(
+        isinstance(credential, dict)
+        and credential.get("type") == "api_key"
+        and isinstance(credential.get("key"), str)
+        and credential["key"].strip()
+    )
+
+
+def save_pi_personal_api_key(
+    *,
+    owner_user_id: str,
+    provider: str,
+    api_key: str,
+    runtime_root: Path | None = None,
+) -> None:
+    normalized_provider = _validated_personal_api_provider(provider)
+    normalized_key = api_key.strip()
+    if not normalized_key:
+        raise ValueError("API Key 不能为空")
+    if len(normalized_key) > 16_384:
+        raise ValueError("API Key 过长")
+    if any(character.isspace() for character in normalized_key):
+        raise ValueError("API Key 不能包含空白字符")
+    if normalized_key.startswith(("!", "$")):
+        raise ValueError("API Key 不能以 ! 或 $ 开头")
+    agent_dir = _pi_user_agent_directory(
+        owner_user_id=owner_user_id,
+        runtime_root=runtime_root or pi_runtime_root(),
+    )
+    auth_path = agent_dir / "auth.json"
+    with _pi_auth_lock(agent_dir):
+        auth = _read_json_object(auth_path)
+        auth[normalized_provider] = {"type": "api_key", "key": normalized_key}
+        _write_private_text(auth_path, json.dumps(auth, indent=2) + "\n")
+
+
+def remove_pi_personal_api_key(
+    *,
+    owner_user_id: str,
+    provider: str,
+    runtime_root: Path | None = None,
+) -> None:
+    normalized_provider = _validated_personal_api_provider(provider)
+    agent_dir = _pi_user_agent_directory(
+        owner_user_id=owner_user_id,
+        runtime_root=runtime_root or pi_runtime_root(),
+    )
+    auth_path = agent_dir / "auth.json"
+    with _pi_auth_lock(agent_dir):
+        auth = _read_json_object(auth_path)
+        if normalized_provider not in auth:
+            return
+        del auth[normalized_provider]
+        _write_private_text(auth_path, json.dumps(auth, indent=2) + "\n")
 
 
 def _runtime_settings_extension_path() -> Path:
@@ -717,6 +800,7 @@ class PiTextClient:
         owner_user_id: str,
         provider: str,
         model: str,
+        access_method: str | None = None,
         reasoning_effort: str | None = None,
         service_tier: str | None = None,
         binary: str | None = None,
@@ -729,6 +813,11 @@ class PiTextClient:
         self.owner_user_id = owner_user_id
         self.provider = provider
         self.model = model
+        self.access_method = access_method or (
+            "chatgpt_subscription"
+            if provider == "openai_codex"
+            else "platform_credits"
+        )
         self.reasoning_effort = reasoning_effort
         self.service_tier = _validated_service_tier(provider, service_tier)
         self.binary = resolved_binary
@@ -775,11 +864,30 @@ class PiTextClient:
         is_cancelled: Callable[[], bool] | None,
     ) -> str:
         load_root_dotenv()
-        agent_dir = pi_agent_directory(
-            owner_user_id=self.owner_user_id,
-            runtime_root=self.runtime_root,
-        )
-        if _pi_provider(self.provider) == PI_OPENAI_CODEX_PROVIDER:
+        if self.access_method == "personal_api":
+            if not pi_personal_api_configured(
+                owner_user_id=self.owner_user_id,
+                provider=self.provider,
+                runtime_root=self.runtime_root,
+            ):
+                raise RuntimeError(
+                    "The OpenClass user has not connected this provider API Key"
+                )
+            persistent_agent_dir = _pi_user_agent_directory(
+                owner_user_id=self.owner_user_id,
+                runtime_root=self.runtime_root,
+            )
+        elif self.access_method == "platform_credits":
+            persistent_agent_dir = None
+        else:
+            persistent_agent_dir = pi_agent_directory(
+                owner_user_id=self.owner_user_id,
+                runtime_root=self.runtime_root,
+            )
+        if (
+            self.access_method == "chatgpt_subscription"
+            and _pi_provider(self.provider) == PI_OPENAI_CODEX_PROVIDER
+        ):
             if not ensure_pi_openai_codex_auth(
                 owner_user_id=self.owner_user_id,
                 runtime_root=self.runtime_root,
@@ -790,7 +898,6 @@ class PiTextClient:
         environment = os.environ.copy()
         environment.update(
             {
-                "PI_CODING_AGENT_DIR": str(agent_dir),
                 "PI_OFFLINE": "1",
                 "PI_SKIP_VERSION_CHECK": "1",
                 "PI_TELEMETRY": "0",
@@ -800,6 +907,9 @@ class PiTextClient:
             environment["OPENCLASS_PI_SERVICE_TIER"] = self.service_tier
         with tempfile.TemporaryDirectory(prefix="turn-", dir=workspace_root) as temporary:
             temporary_path = Path(temporary)
+            agent_dir = persistent_agent_dir or temporary_path / ".pi-platform-agent"
+            agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            environment["PI_CODING_AGENT_DIR"] = str(agent_dir)
             image_paths = _stage_image_inputs(image_inputs or [], workspace=temporary_path)
             timeout_seconds = _pi_request_timeout_seconds()
             recorder = _PiActivityRecorder(
