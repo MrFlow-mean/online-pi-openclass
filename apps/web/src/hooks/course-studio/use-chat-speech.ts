@@ -134,7 +134,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       setCurrentTime(0);
       setDuration(0);
       setStatus("loading");
-      setStatusMessage("豆包 TTS 2.0 正在生成音频…");
+      setStatusMessage("TTS 正在生成音频…");
 
       try {
         const response = await synthesizeSpeech(
