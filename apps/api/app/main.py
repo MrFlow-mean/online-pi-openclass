@@ -17,6 +17,7 @@ from app.routers import (
     documents,
     geometry,
     lesson_merges,
+    model_credentials,
     realtime,
     sources,
     speech,
@@ -57,6 +58,7 @@ app.include_router(auth.router)
 app.include_router(communities.router)
 app.include_router(documents.router)
 app.include_router(lesson_merges.router)
+app.include_router(model_credentials.router)
 app.include_router(chat.router)
 app.include_router(codex_provider.router)
 app.include_router(sources.router)

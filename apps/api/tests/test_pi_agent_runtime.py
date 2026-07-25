@@ -383,6 +383,51 @@ def test_pi_client_runs_without_tools_or_discovered_resources(
     assert str(kwargs["env"]["PI_CODING_AGENT_DIR"]).startswith(str(tmp_path))
 
 
+def test_pi_client_separates_platform_and_personal_provider_credentials(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setattr(pi_agent_runtime, "load_root_dotenv", lambda: None)
+    pi_agent_runtime.save_pi_personal_api_key(
+        owner_user_id="user_test",
+        provider="deepseek",
+        api_key="sk-personal-route",
+        runtime_root=tmp_path,
+    )
+    observed_auth: list[dict[str, object]] = []
+
+    def run(command, **kwargs):
+        auth_path = Path(kwargs["env"]["PI_CODING_AGENT_DIR"]) / "auth.json"
+        observed_auth.append(
+            json.loads(auth_path.read_text(encoding="utf-8"))
+            if auth_path.exists()
+            else {}
+        )
+        return subprocess.CompletedProcess(command, 0, _pi_stdout('{"answer":"ok"}'), "")
+
+    for access_method in ("platform_credits", "personal_api"):
+        PiTextClient(
+            owner_user_id="user_test",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            access_method=access_method,
+            binary="/test/pi",
+            runtime_root=tmp_path,
+            process_runner=run,
+        ).parse(
+            system_prompt="Answer.",
+            user_prompt="Question",
+            schema=_Answer,
+        )
+
+    assert observed_auth[0] == {}
+    assert observed_auth[1]["deepseek"] == {
+        "type": "api_key",
+        "key": "sk-personal-route",
+    }
+
+
 def test_pi_client_converts_live_json_events_into_public_activity(tmp_path) -> None:
     observed = []
 
@@ -902,6 +947,7 @@ def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypat
         "owner_user_id": "user_test",
         "provider": "deepseek",
         "model": "deepseek-v4-flash",
+        "access_method": "platform_credits",
         "reasoning_effort": None,
         "service_tier": None,
     }
