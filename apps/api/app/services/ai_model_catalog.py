@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Callable
 
 from app.models import (
     AIModelCatalog,
@@ -38,6 +38,41 @@ def default_text_selection(
         reasoning_effort=reasoning_effort,
         service_tier=service_tier,
     )
+
+
+def resolve_text_model_selection(
+    selection: AIModelSelection | None,
+    *,
+    user_id: str,
+    catalog_builder: Callable[[str], AIModelCatalog] | None = None,
+) -> AIModelSelection:
+    if selection is not None:
+        selected_model = selection.model.strip()
+        if selection.provider in {"openai_codex", "deepseek"} and selected_model:
+            return selection.model_copy(update={"model": selected_model})
+        raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
+    try:
+        default_selection = (catalog_builder or build_model_catalog)(user_id).defaults["text"]
+        if isinstance(default_selection, AIModelSelection):
+            return default_selection
+        return AIModelSelection(
+            provider=getattr(default_selection, "provider", "openai_codex"),
+            model=str(
+                getattr(
+                    default_selection,
+                    "model",
+                    OPENAI_CODEX_DEFAULT_TEXT_MODEL,
+                )
+            ),
+        )
+    except Exception:
+        return default_text_selection(
+            model=(
+                os.getenv("OPENAI_CODEX_MODEL")
+                or OPENAI_CODEX_DEFAULT_TEXT_MODEL
+            ).strip()
+            or OPENAI_CODEX_DEFAULT_TEXT_MODEL,
+        )
 
 
 def default_realtime_selection() -> AIModelSelection:

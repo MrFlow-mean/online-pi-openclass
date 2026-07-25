@@ -20,7 +20,7 @@ from app.models import (
 )
 from app.routers.auth import current_user
 from app.services.history import current_head_commit
-from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_factory import create_empty_lesson, create_untitled_lesson
 from app.services.lesson_package_format import (
     RIDOC_MAX_ARCHIVE_BYTES,
     RidocFormatError,
@@ -246,7 +246,12 @@ def generate_lesson(
     if source_package is not None and source_package.id != package.id:
         raise HTTPException(status_code=400, detail="Branch source lesson must be in the target package")
 
-    lesson = create_empty_lesson(request.topic)
+    requested_title = (request.topic or "").strip()
+    lesson = (
+        create_empty_lesson(requested_title)
+        if requested_title
+        else create_untitled_lesson(timezone_name=request.timezone)
+    )
     package.lessons.append(lesson)
     package.open_lesson_ids.append(lesson.id)
     package.workspace_tab_order.append(lesson.id)

@@ -6,6 +6,7 @@ from app.models import AgentActivityEvent, ChatRequest, ChatResponse, Conversati
 from app.services.codex_chat import document_ai_edit_request as _document_ai_edit_request
 from app.services.codex_chat import process_codex_chat_on_lesson
 from app.services.history import bind_commit_metadata
+from app.services.lesson_title import maybe_generate_lesson_title
 
 
 def process_chat_on_lesson(
@@ -20,7 +21,7 @@ def process_chat_on_lesson(
     commit_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
     with bind_commit_metadata({**(commit_metadata or {}), **_chat_edit_metadata(request)}):
-        return process_codex_chat_on_lesson(
+        response = process_codex_chat_on_lesson(
             lesson_id,
             request,
             user_id=user_id,
@@ -29,6 +30,12 @@ def process_chat_on_lesson(
             on_agent_activity=on_agent_activity,
             is_cancelled=is_cancelled,
         )
+    return maybe_generate_lesson_title(
+        lesson_id,
+        request,
+        response,
+        user_id=user_id,
+    )
 
 
 def _chat_edit_metadata(request: ChatRequest) -> dict[str, object]:

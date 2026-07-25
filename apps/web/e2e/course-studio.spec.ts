@@ -62,13 +62,36 @@ async function createPackageFromHome(page: Page, title: string) {
   await expect(page.locator("[data-package-selection-root]").filter({ hasText: title }).first()).toBeVisible();
 }
 
+async function nameNextGeneratedLessonForTest(page: Page, title: string) {
+  await page.route(
+    "**/api/lessons/generate",
+    async (route) => {
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.continue({
+        postData: JSON.stringify({ ...payload, topic: title }),
+        headers: {
+          ...route.request().headers(),
+          "content-type": "application/json",
+        },
+      });
+    },
+    { times: 1 }
+  );
+}
+
 async function createLessonFromEmptyStudio(page: Page, title: string) {
   await page.goto("/studio");
   await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+  await nameNextGeneratedLessonForTest(page, title);
   await page.getByRole("button", { name: "新建第一页" }).click();
-  await page.getByLabel("第一页名称").fill(title);
-  await page.getByLabel("确认").click();
+  await expect(page.getByRole("button", { name: `${title} main` })).toBeVisible();
   await expect(page.locator(".ProseMirror")).toBeVisible();
+}
+
+async function createLessonFromTabBar(page: Page, title: string) {
+  await nameNextGeneratedLessonForTest(page, title);
+  await page.getByLabel("新建页面").click();
+  await expect(page.getByRole("button", { name: `${title} main` })).toBeVisible();
 }
 
 async function setInterfaceLanguage(page: Page, interfaceLanguage: "zh-CN" | "en") {
@@ -109,6 +132,23 @@ test("creates a package and lesson, edits the document, and persists a version",
   await openHistoryPanel(page);
 
   await expect(page.getByText("Auto Save").first()).toBeVisible();
+});
+
+test("creates an untitled lesson without asking for a name", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `无标题创建测试课程包 ${unique}`);
+  await page.goto("/studio");
+
+  const createResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/lessons/generate") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "新建第一页" }).click();
+  const response = await createResponse;
+
+  expect(response.request().postDataJSON()).not.toHaveProperty("topic");
+  await expect(page.getByRole("button", { name: "无标题 main" })).toBeVisible();
+  await expect(page.getByLabel("第一页名称")).toHaveCount(0);
 });
 
 test("batch selects and deletes uploaded sources", async ({ page }) => {
@@ -790,10 +830,7 @@ test("restores each lesson's attached composer reference after switching tabs", 
   await createLessonFromEmptyStudio(page, firstTitle);
   await writeEditorTextAndWaitForSave(page, referencedText);
 
-  await page.getByLabel("新建页面").click();
-  await page.getByLabel("新页面名称").fill(secondTitle);
-  await page.getByLabel("确认").click();
-  await expect(page.getByRole("button", { name: `${secondTitle} main` })).toBeVisible();
+  await createLessonFromTabBar(page, secondTitle);
 
   await page.getByRole("button", { name: `${firstTitle} main` }).click();
   const editor = page.locator(".ProseMirror").first();
@@ -1101,9 +1138,7 @@ test("places the create control first and orders lesson tabs from newest to olde
   await createPackageFromHome(page, `课程顺序测试包 ${unique}`);
   await createLessonFromEmptyStudio(page, firstTitle);
 
-  await page.getByLabel("新建页面").click();
-  await page.getByLabel("新页面名称").fill(secondTitle);
-  await page.getByLabel("确认").click();
+  await createLessonFromTabBar(page, secondTitle);
 
   const lessonTabList = page
     .getByRole("navigation")
@@ -1153,8 +1188,10 @@ test("exports and imports a RIDOC file as a standalone lesson", async ({ page })
   await enterAsGuest(page);
   await page.getByLabel("添加单独课程").click();
   await expect(page.getByRole("menuitem", { name: "导入课程文件" })).toBeVisible();
+  await nameNextGeneratedLessonForTest(page, lessonTitle);
   await page.getByRole("menuitem", { name: "新建课程" }).click();
-  await createLessonFromEmptyStudio(page, lessonTitle);
+  await expect(page.getByRole("button", { name: `${lessonTitle} main` })).toBeVisible();
+  await expect(page.locator(".ProseMirror")).toBeVisible();
   await writeEditorTextAndWaitForSave(page, `主页导出内容 ${unique}`);
   await page.goto("/home");
 
@@ -1196,14 +1233,10 @@ test("localizes the empty course package page in English", async ({ page }) => {
   await expect(page.getByText("这个课程包还是空的")).toBeVisible();
   await setInterfaceLanguage(page, "en");
   await expect(page.getByRole("heading", { name: "This package is empty" })).toBeVisible();
-  await expect(page.getByText("The tab bar above is this package's page area.")).toBeVisible();
+  await expect(page.getByText("Create the page and start chatting with AI.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Create first page" }).click();
-  await expect(page.getByLabel("First page name")).toHaveAttribute(
-    "placeholder",
-    "Course intro / Lecture 1 / Practice notes"
-  );
-  await expect(page.getByLabel("Confirm")).toBeVisible();
-  await expect(page.getByLabel("Cancel")).toBeVisible();
+  await expect(page.getByRole("button", { name: "无标题 main" })).toBeVisible();
+  await expect(page.getByLabel("First page name")).toHaveCount(0);
 });
 
 test("restores an older document version from history", async ({ page }) => {

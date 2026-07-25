@@ -224,8 +224,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       lessonNamePlaceholder: z ? "课程导读 / 第一讲 / 练习讲义" : "Course intro / Lecture 1 / Practice notes",
       emptyPackageTitle: z ? "这个课程包还是空的" : "This package is empty",
       emptyPackageBody: z
-        ? "上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。"
-        : "The tab bar above is this package's page area. Use the + button in the top bar, or create the first page below.",
+        ? "创建后可以直接和 AI 对话；页面标题会在完成首轮对话后自动概括。"
+        : "Create the page and start chatting with AI. Its title will be summarized automatically after the first completed exchange.",
       createFirstPage: z ? "新建第一页" : "Create first page",
     },
 
