@@ -142,6 +142,7 @@ export function CodexModelSettingsPicker({
   testIdPrefix = "codex-model",
   preferredPlacement = "above",
   preferredSubmenuSide = "right",
+  allowSpeedSelection = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -155,6 +156,7 @@ export function CodexModelSettingsPicker({
   testIdPrefix?: string;
   preferredPlacement?: MenuPlacement;
   preferredSubmenuSide?: SubmenuSide;
+  allowSpeedSelection?: boolean;
 }) {
   const [activeMenu, setActiveMenu] = useState<SettingsMenu>(null);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
@@ -166,7 +168,7 @@ export function CodexModelSettingsPicker({
     ? selectionForModelOption(selectedOption, selectedModel)
     : selectedModel;
   const reasoningOptions = selectedOption?.supported_reasoning_efforts ?? [];
-  const serviceTiers = selectedOption?.service_tiers ?? [];
+  const serviceTiers = allowSpeedSelection ? selectedOption?.service_tiers ?? [] : [];
   const selectedServiceTier =
     serviceTiers.find((option) => option.id === normalizedSelection.service_tier) ?? null;
   const hasSelectableReasoning = reasoningOptions.length > 1;
@@ -178,6 +180,7 @@ export function CodexModelSettingsPicker({
   function applySelection(selection: AIModelSelection) {
     setActiveMenu(null);
     onChange(selection);
+    onOpenChange(true);
   }
 
   function togglePicker() {

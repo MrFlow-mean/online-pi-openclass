@@ -72,7 +72,12 @@ def test_speech_endpoint_requires_nonempty_bounded_input(api_client: TestClient)
     assert api_client.post("/api/speech", json={"input": "x", "speech_rate": 101}).status_code == 422
 
 
-def test_speech_options_expose_doubao_model_voices_and_rate_range(api_client: TestClient) -> None:
+def test_speech_options_expose_doubao_model_voices_and_rate_range(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOLCENGINE_TTS_RESOURCE_ID", "seed-tts-2.0")
+    monkeypatch.setenv("VOLCENGINE_TTS_SPEAKER", "zh_female_vv_uranus_bigtts")
     response = api_client.get("/api/speech/options")
 
     assert response.status_code == 200
@@ -139,6 +144,7 @@ def test_volcengine_provider_uses_v3_headers_and_doubao_voice(
         return FakeResponse()
 
     monkeypatch.setenv("VOLCENGINE_TTS_API_KEY", "test-api-key")
+    monkeypatch.setenv("VOLCENGINE_TTS_RESOURCE_ID", "seed-tts-2.0")
     monkeypatch.setattr("app.services.volcengine_speech.httpx.stream", fake_stream)
 
     audio = synthesize_volcengine_speech(

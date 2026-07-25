@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -21,6 +21,7 @@ from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_download_path, source_ingestion_service
+from app.services.source_ingestion_jobs import source_ingestion_task_manager
 from app.services.source_structure_indexer import source_structure_indexer
 from app.services.source_structure_store import source_structure_store
 
@@ -40,18 +41,6 @@ class SourceContentUpdateRequest(BaseModel):
     content: str
 
 
-class SourceRetryRequest(BaseModel):
-    catalog_model: AIModelSelection | None = None
-
-
-def _validate_catalog_model(selection: AIModelSelection | None) -> AIModelSelection | None:
-    if selection is None:
-        return None
-    if selection.provider not in {"openai_codex", "deepseek"} or not selection.model.strip():
-        raise HTTPException(status_code=400, detail="Catalog extraction requires a supported text model.")
-    return selection
-
-
 def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
     if raw is None or not raw.strip():
         return None
@@ -59,7 +48,9 @@ def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
         selection = AIModelSelection.model_validate(json.loads(raw))
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail="catalog_model must be a valid model selection.") from exc
-    return _validate_catalog_model(selection)
+    if not selection.model.strip():
+        raise HTTPException(status_code=400, detail="Catalog extraction requires a configured text model.")
+    return selection
 
 
 @router.get("/api/packages/{package_id}/sources", response_model=list[SourceIngestionRecord])
@@ -72,7 +63,6 @@ def list_package_sources(package_id: str, user: UserView = Depends(current_user)
 @router.post("/api/packages/{package_id}/sources", response_model=SourceIngestionRecord)
 async def import_package_source(
     package_id: str,
-    background_tasks: BackgroundTasks,
     source_uri: str | None = Form(default=None),
     title: str = Form(default=""),
     text: str | None = Form(default=None),
@@ -98,8 +88,7 @@ async def import_package_source(
                 title=title,
                 catalog_model=selected_catalog_model,
             )
-            background_tasks.add_task(
-                source_ingestion_service.process_file_source,
+            source_ingestion_task_manager.submit(
                 owner_user_id=user.id,
                 package_id=package.id,
                 source_id=queued.id,
@@ -158,20 +147,30 @@ def update_package_source(
 def retry_package_source(
     package_id: str,
     source_id: str,
-    request: SourceRetryRequest | None = None,
     user: UserView = Depends(current_user),
 ) -> SourceIngestionRecord:
     workspace = workspace_state.load_workspace_for_user(user.id)
     workspace_state.get_package(workspace, package_id)
     try:
-        updated = source_ingestion_service.retry_source(
+        source_ingestion_task_manager.submit(
             owner_user_id=user.id,
             package_id=package_id,
             source_id=source_id,
-            catalog_model=_validate_catalog_model(request.catalog_model if request else None),
+            retry=True,
         )
     except SourceIngestionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    updated = next(
+        (
+            source
+            for source in source_ingestion_service.list_sources(
+                owner_user_id=user.id,
+                package_id=package_id,
+            )
+            if source.id == source_id
+        ),
+        None,
+    )
     if updated is None:
         raise HTTPException(status_code=404, detail="Source not found.")
     return updated

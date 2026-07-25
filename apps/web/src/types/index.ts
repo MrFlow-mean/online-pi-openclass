@@ -656,6 +656,7 @@ export interface SourceCatalogView {
   source_content_hash: string;
   catalog_schema_version: string;
   catalog_model: string;
+  task_contract: string;
   chapter_count: number;
   verified_chapter_count: number;
   confidence: number;
@@ -925,10 +926,18 @@ export interface AdminOverview {
 }
 
 export interface AIModelSelection {
+  agent_backend?: "codex" | "pi";
   provider: AIProvider;
   model: string;
   reasoning_effort?: string | null;
   service_tier?: string | null;
+}
+
+export interface AIAgentBackendOption {
+  id: "codex" | "pi";
+  label: string;
+  description: string;
+  enabled: boolean;
 }
 
 export interface AIReasoningEffortOption {
@@ -963,6 +972,10 @@ export interface AIModelCatalog {
   defaults: {
     text: AIModelSelection;
     realtime: AIModelSelection;
+  };
+  agent_backends?: {
+    teaching: AIAgentBackendOption[];
+    source: AIAgentBackendOption[];
   };
 }
 

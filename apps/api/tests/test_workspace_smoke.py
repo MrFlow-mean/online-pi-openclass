@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from io import BytesIO
 import json
+import threading
+import time
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 
@@ -10,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import BoardDocument, SourceIngestionRecord, UserView
+from app.models import BoardDocument, SourceIngestionJob, SourceIngestionRecord, UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
@@ -20,6 +22,7 @@ from app.services.course_store import SqliteCourseStore
 from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
+from app.services.source_ingestion_jobs import SourceIngestionJobStore, SourceIngestionTaskManager
 from app.services.source_directory_processor import DirectoryNormalizationResult
 from app.services.youtube_transcript_adapter import YouTubeTranscript
 
@@ -78,12 +81,71 @@ def _document_with_text(document: dict, text: str) -> dict:
     return next_document
 
 
+def _wait_for_source_status(
+    api_client: TestClient,
+    package_id: str,
+    source_id: str,
+    status: str,
+    *,
+    timeout: float = 3.0,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = api_client.get(f"/api/packages/{package_id}/sources")
+        assert response.status_code == 200
+        source = next(item for item in response.json() if item["id"] == source_id)
+        if source["status"] == status:
+            return source
+        time.sleep(0.01)
+    raise AssertionError(f"source {source_id} did not reach {status}")
+
+
+def test_source_task_manager_recovers_persisted_work_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    job_store = SourceIngestionJobStore(tmp_path / "source-tasks.sqlite3")
+    active = job_store.save(
+        SourceIngestionJob(resource_id="source_pending", status="parsing", progress=30),
+        owner_user_id="user_test",
+        package_id="course_test",
+    )
+    job_store.save(
+        SourceIngestionJob(resource_id="source_ready", status="ready", progress=100),
+        owner_user_id="user_test",
+        package_id="course_test",
+    )
+    manager = SourceIngestionTaskManager(job_store)
+    started = threading.Event()
+    release = threading.Event()
+
+    def hold_task(*, key, retry):
+        assert key == ("user_test", "course_test", active.resource_id)
+        assert retry is False
+        started.set()
+        release.wait(timeout=1)
+        with manager._lock:
+            manager._active.discard(key)
+
+    monkeypatch.setattr(manager, "_run", hold_task)
+
+    assert manager.recover_active() == 1
+    assert started.wait(timeout=1)
+    assert manager.submit(
+        owner_user_id="user_test",
+        package_id="course_test",
+        source_id="source_pending",
+    ) is False
+    release.set()
+
+
 def test_health_reports_provider_neutral_board_and_realtime_status(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(main_module, "codex_app_server_runtime_enabled", lambda: True)
     monkeypatch.setattr(main_module, "codex_app_server_available", lambda: True)
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "false")
 
     response = api_client.get("/health")
 
@@ -413,12 +475,10 @@ def test_source_import_uses_persisted_directory_catalog(
     assert "open_notebook_sync_status" not in source["metadata"]
     assert source["structure_status"] == "pending"
 
-    listed = api_client.get(f"/api/packages/{package_id}/sources")
-    assert listed.status_code == 200
-    assert listed.json()[0]["status"] == "ready"
-    assert listed.json()[0]["ingestion_job"]["progress"] == 100
-    assert listed.json()[0]["structure_has_verified_toc"] is True
-    source_id = listed.json()[0]["id"]
+    source_id = source["id"]
+    completed = _wait_for_source_status(api_client, package_id, source_id, "ready")
+    assert completed["ingestion_job"]["progress"] == 100
+    assert completed["structure_has_verified_toc"] is True
     catalog = api_client.get(f"/api/packages/{package_id}/sources/{source_id}/catalog")
     assert catalog.status_code == 200
     assert catalog.json()["strategy"] == "codex_directory_v1"
@@ -572,7 +632,12 @@ def test_failed_legacy_source_can_be_retried_into_native_index(
     retried = api_client.post(f"/api/packages/{package_id}/sources/{listed.json()[0]['id']}/retry")
 
     assert retried.status_code == 200
-    recovered = retried.json()
+    recovered = _wait_for_source_status(
+        api_client,
+        package_id,
+        listed.json()[0]["id"],
+        "ready",
+    )
     assert recovered["status"] == "ready"
     assert recovered["error"] == ""
     assert recovered["structure_status"] == "ready"

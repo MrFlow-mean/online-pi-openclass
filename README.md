@@ -4,9 +4,9 @@
   <img src="docs/assets/openclass-product-cover.png" alt="OpenClass 产品封面" width="280" />
 </p>
 
-> 本项目基于 [OpenAI Codex](https://openai.com/codex/) 开发。
+> 当前后端 Agent runtime（智能体运行时）采用 [Pi](https://pi.dev/)，OpenClass 自己保留教学工作流、资料工具、写入授权、校验和历史持久化。
 
-开放课堂（OpenClass）是一个面向严肃学习、研究、写作和知识工作的 AI document workspace（AI 文档工作台）。它把 AI conversation（AI 对话）和 AI document writing（AI 文档编写）放在同一个工作空间里：左侧 Codex agent（Codex 智能体）理解需求并执行任务，右侧 Board（板书文档）沉淀结构化成果、支持继续编辑、导入导出和版本回退。
+开放课堂（OpenClass）是一个面向严肃学习、研究、写作和知识工作的 AI document workspace（AI 文档工作台）。它把 AI conversation（AI 对话）和 AI document writing（AI 文档编写）放在同一个工作空间里：左侧 Pi Agent（Pi 智能体）通过 OpenClass 受控工作流理解需求并执行任务，右侧 Board（板书文档）沉淀结构化成果、支持继续编辑、导入导出和版本回退。
 
 当前仓库是一个本地优先的课程 / 文档工作台：前端提供 OpenClass Studio、课程包、lesson（工作单元 / 文档单元）、富文本文档编辑器、模型选择、Realtime（实时输入输出）入口和版本历史；后端提供 FastAPI（Python API 服务框架）、SQLite（本地关系型数据库）持久化、AI workflow（AI 工作链路）、文档导入导出和审计日志。
 
@@ -15,9 +15,9 @@ OpenClass 不做固定学科模板系统，也不向 general agent（通用智�
 ## 当前能力
 
 - 工作空间与课程包：创建、打开、重命名、删除课程包，按 lesson 组织严肃学习或文档工作。
-- Codex + Board 双工作面：Codex 负责理解需求、讲解和文档操作；Board 负责保存正式文档内容，并通过工作目录中的 `board.md` 与 Codex 交换当前文档。
-- 空白 Board 生成：空板书时维护 LearningRequirementSheet（学习需求清单），冻结后由 Codex 根据冻结需求生成结构化文档。
-- 已有 Board 任务：Codex 每轮先读取当前 `board.md`，围绕用户请求和明确选区直接讲解或修改文档；后端负责保存结果、校验文档结构并写入历史。
+- Pi Agent + Board 双工作面：Pi 负责模型推理与受控工具调用；Board 负责保存正式文档内容，OpenClass 负责上下文构造、写入授权、校验和历史提交。
+- 空白 Board 生成：空板书时维护 LearningRequirementSheet（学习需求清单），冻结后由 Pi 根据冻结需求生成结构化文档。
+- 已有 Board 任务：Pi 根据当前板书、用户请求和明确选区生成讲解或修改提案；后端负责授权、保存结果、校验文档结构并写入历史。
 - 富文本文档编辑：右侧类 Word 编辑器支持标题、段落、列表、表格、强调、数学公式、手动编辑和自动保存。
 - 文档格式约束：正式 `content_text` 以 Markdown（轻量标记文本格式）/ 普通文本为事实来源；HTML（超文本标记语言）只作为渲染层或导出层结果。
 - 导入导出：支持 DOCX（Word 文档格式）导入、DOCX 导出和 HTML 导出。
@@ -34,17 +34,17 @@ OpenClass 不做固定学科模板系统，也不向 general agent（通用智�
 2. 后端判断当前 Board 是否为空，并识别本轮是否需要生成文档。
 3. Requirement Manager（需求管理器）维护最小必要需求清单；信息不足时只追问关键缺口。
 4. 需求达到可执行条件后写入 frozen requirement（冻结需求快照）。
-5. Codex 只根据冻结快照和必要资料摘要生成右侧 Board。
+5. Pi 只根据冻结快照和必要资料摘要生成右侧 Board。
 6. 系统写入 lesson commit，并保留 requirement run（需求运行记录）与 metadata（元数据）。
-7. Codex 承接下一步，不把临时聊天内容当作正式文档事实来源。
+7. Pi 承接下一步，不把临时聊天内容当作正式文档事实来源。
 
 ### 围绕已有 Board 工作
 
 1. 用户发起讲解、补充、改写、练习或互动请求。
-2. 后端把当前 Board 序列化为 `board.md`，并附加用户明确提供的选区或经过验证的资料上下文。
-3. Codex 读取 `board.md`，在同一 turn（一次用户请求到模型响应的回合）内完成讲解或文档操作。
-4. 后端读取 Codex 的文档结果，校验 Markdown（轻量标记文本格式）、富文本结构和资源引用。
-5. 成功执行后写入 commit / chat history（聊天历史）与 Codex thread / turn metadata（会话线程 / 回合元数据），保留可追溯历史。
+2. 后端构造当前 Board、用户明确选区和经过验证的资料上下文。
+3. Pi 在同一 turn（一次用户请求到模型响应的回合）内生成讲解或文档操作提案。
+4. 后端校验 Pi 的结构化结果、Markdown（轻量标记文本格式）、富文本结构、授权状态和资源引用。
+5. 成功执行后写入 commit / chat history（聊天历史）与 Pi turn metadata（回合元数据），保留可追溯历史。
 
 ## 仓库地图
 
@@ -143,13 +143,13 @@ VOLCENGINE_TTS_RESOURCE_ID=seed-tts-2.0
 VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
 ```
 
-`.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
+`.env.example` 还包含 Pi Agent 凭据目录、DeepSeek、OpenAI Realtime 和旧 Codex app-server（Codex 应用服务）回退适配器配置。
 
-默认的 `OPENCLASS_SOURCE_BACKEND=native` 使用 OpenClass 本地确定性解析能力建立资料结构；该路径不调用 Codex。需要接入 Open Notebook 时，可显式设置 `OPENCLASS_SOURCE_BACKEND=open_notebook`。
+默认的 `OPENCLASS_SOURCE_BACKEND=native` 使用 OpenClass 本地工具和 Pi 资料 Agent 建立资料目录；OpenClass 负责文件隔离、范围读取、机械校验和持久化。需要接入 Open Notebook 时，可显式设置 `OPENCLASS_SOURCE_BACKEND=open_notebook`。
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，浏览器通过 OpenAI WebRTC（网页实时通信）接收 function call（函数调用），再交给经过用户与 lesson 权限校验的 OpenClass 后端读取受限板书范围或调用同一条 Chatbot workflow，最后只把受控结果返回 Realtime；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 
-聊天回复的自动播报使用独立的 TTS（文字转语音）链路。默认 adapter（适配器）通过 `VOLCENGINE_TTS_API_KEY` 调用豆包语音 V3 HTTP Chunked API（第三版 HTTP 分块接口），不复用 Codex device login（设备登录）的额度或认证。模型版本、音色和语速分别由 `VOLCENGINE_TTS_RESOURCE_ID`、`VOLCENGINE_TTS_SPEAKER`、`VOLCENGINE_TTS_SPEECH_RATE` 配置；密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重播单条回复。
+聊天回复的自动播报使用独立的 TTS（文字转语音）链路。默认 adapter（适配器）通过 `VOLCENGINE_TTS_API_KEY` 调用豆包语音 V3 HTTP Chunked API（第三版 HTTP 分块接口），不复用 Pi 的模型认证。模型版本、音色和语速分别由 `VOLCENGINE_TTS_RESOURCE_ID`、`VOLCENGINE_TTS_SPEAKER`、`VOLCENGINE_TTS_SPEECH_RATE` 配置；密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重播单条回复。
 
 ## 数据与文档格式
 

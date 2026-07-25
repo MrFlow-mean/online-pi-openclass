@@ -91,7 +91,8 @@ function activityDetail(event: AgentActivityEvent): string {
 }
 
 function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEvent[]; isPending: boolean }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const isExpanded = expandedOverride ?? isPending;
   if (!events.length) {
     return null;
   }
@@ -109,7 +110,7 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
       <button
         type="button"
         aria-expanded={isExpanded}
-        onClick={() => setIsExpanded((current) => !current)}
+        onClick={() => setExpandedOverride(!isExpanded)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-gray-100"
       >
         <span className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-500">

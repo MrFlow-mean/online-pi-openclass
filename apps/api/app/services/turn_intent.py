@@ -120,14 +120,22 @@ def has_explicit_document_mutation_request(
         r"(?:生成|续写|补写|写入|写进|新增|添加|扩展|完善|修改|改写|重写|替换|删除|"
         r"generate|continue|extend|write|append|add|edit|rewrite|replace|delete)"
     )
-    target = r"(?:板书|文档|讲义|章节|小节|这段|选中内容|board|document|lesson|section)"
+    target = (
+        r"(?:板书|文档|讲义|章节|小节|标题|段落|表格|列表|公式|图片|这段|选中内容|"
+        r"board|document|lesson|section|heading|title|paragraph|table|list|formula|image)"
+    )
     if re.search(
         rf"(?:是否应该|要不要|需不需要|有没有必要).{{0,16}}(?:{action}|{target})",
         normalized,
     ):
         return False
-    if re.search(rf"{action}.{{0,16}}{target}", normalized) or re.search(
-        rf"{target}.{{0,16}}{action}", normalized
+    if re.search(
+        rf"(?:如何|怎么|怎样|为什么|how|why).{{0,32}}(?:{action}|{target})",
+        normalized,
+    ):
+        return False
+    if re.search(rf"{action}.{{0,256}}{target}", normalized) or re.search(
+        rf"{target}.{{0,256}}{action}", normalized
     ):
         return True
     return has_board_selection and bool(re.search(action, normalized))

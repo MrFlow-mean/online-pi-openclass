@@ -1178,6 +1178,7 @@ class SourceCatalogView(BaseModel):
     source_content_hash: str = ""
     catalog_schema_version: str = "legacy"
     catalog_model: str = ""
+    task_contract: str = ""
     chapter_count: int = Field(default=0, ge=0)
     verified_chapter_count: int = Field(default=0, ge=0)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -1322,7 +1323,17 @@ class AIServiceTierOption(BaseModel):
     description: str = ""
 
 
+class AIAgentBackendOption(BaseModel):
+    id: Literal["codex", "pi"]
+    label: str
+    description: str = ""
+    enabled: bool = False
+
+
 class AIModelSelection(BaseModel):
+    # Retain the legacy value for request and stored-metadata compatibility.
+    # Server-side runtime routing normalizes every text task to Pi.
+    agent_backend: Literal["codex", "pi"] = "pi"
     provider: AIProvider
     model: str
     reasoning_effort: str | None = None
@@ -1350,6 +1361,10 @@ class AIModelCatalog(BaseModel):
     text: list[AIModelOption] = Field(default_factory=list)
     realtime: list[AIModelOption] = Field(default_factory=list)
     defaults: dict[AIModelCapability, AIModelSelection]
+    agent_backends: dict[
+        Literal["teaching", "source"],
+        list[AIAgentBackendOption],
+    ] = Field(default_factory=dict)
 
 
 class CodexAccountView(BaseModel):

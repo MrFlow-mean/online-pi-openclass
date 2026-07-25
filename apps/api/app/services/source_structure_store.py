@@ -454,8 +454,14 @@ class SourceStructureStore:
                         "visual_count": 0,
                         "visual_index_status": "unsupported",
                         "visual_index_version": 0,
-                        "has_verified_toc": any(
-                            chapter.mapping_status == "verified" for chapter in published_chapters
+                        "has_verified_toc": (
+                            bool(published_chapters)
+                            if structure.metadata.get("catalog_task_contract")
+                            == "directory_pages_offset_tree_v1"
+                            else any(
+                                chapter.mapping_status == "verified"
+                                for chapter in published_chapters
+                            )
                         ),
                     }
                 )
@@ -975,6 +981,11 @@ class SourceStructureStore:
             source_content_hash=source_content_hash,
             catalog_schema_version=structure.catalog_schema_version if structure else "legacy",
             catalog_model=structure.catalog_model if structure else "",
+            task_contract=(
+                str(structure.metadata.get("catalog_task_contract") or "")
+                if structure
+                else ""
+            ),
             chapter_count=len(catalog_chapters),
             verified_chapter_count=verified_count,
             confidence=structure.confidence if structure else 0.0,

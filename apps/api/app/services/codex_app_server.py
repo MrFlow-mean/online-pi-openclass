@@ -201,6 +201,9 @@ def remove_codex_auth(user_id: str) -> None:
         auth_path.unlink(missing_ok=True)
     except OSError:
         return
+    from app.services.pi_agent_runtime import remove_pi_openai_codex_auth
+
+    remove_pi_openai_codex_auth(user_id)
     _invalidate_status(user_id)
 
 
@@ -216,28 +219,7 @@ def _codex_process_env(user_id: str) -> dict[str, str]:
     return {**os.environ, "CODEX_HOME": str(home)}
 
 
-def _codex_shell_path() -> str:
-    configured = (os.getenv("OPENCLASS_CODEX_SHELL") or "").strip()
-    candidates = (
-        configured,
-        (os.getenv("SHELL") or "").strip(),
-        "/bin/zsh",
-        "/bin/bash",
-        "/bin/sh",
-    )
-    for candidate in candidates:
-        if not candidate:
-            continue
-        resolved = candidate if Path(candidate).is_absolute() else shutil.which(candidate)
-        if resolved and Path(resolved).is_file() and os.access(resolved, os.X_OK):
-            return str(Path(resolved).resolve())
-    raise CodexAppServerError(
-        "No executable shell is available for the isolated Codex runtime"
-    )
-
-
 def _codex_permission_config_args() -> list[str]:
-    shell_path = json.dumps(_codex_shell_path())
     return [
         "-c",
         f'default_permissions="{CODEX_BOARD_PERMISSION_PROFILE}"',
@@ -268,7 +250,7 @@ def _codex_permission_config_args() -> list[str]:
         "-c",
         (
             'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin",'
-            f'LANG="en_US.UTF-8",SHELL={shell_path}}}'
+            'LANG="en_US.UTF-8",SHELL="/bin/zsh"}'
         ),
         "-c",
         "mcp_servers={}",
@@ -1241,7 +1223,33 @@ def logout_codex(user_id: str) -> None:
         return
     with _managed_session(user_id=user_id, timeout_seconds=30) as session:
         session.request("account/logout", {}, timeout_seconds=30)
+    from app.services.pi_agent_runtime import remove_pi_openai_codex_auth
+
+    remove_pi_openai_codex_auth(user_id)
     _invalidate_status(user_id)
+
+
+def _codex_model_provider(provider: str) -> str | None:
+    normalized = provider.strip()
+    if not normalized or normalized == "openai_codex":
+        return None
+    return normalized
+
+
+def _require_codex_model_access(user_id: str, provider: str) -> None:
+    if _codex_model_provider(provider) is not None:
+        if not codex_app_server_runtime_enabled():
+            raise CodexAppServerError("The Codex app-server runtime is disabled")
+        if not codex_app_server_available():
+            raise CodexAppServerError(
+                "Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid"
+            )
+        return
+    status = codex_provider_status(user_id, refresh=False)
+    if not status.configured:
+        raise CodexAppServerError(
+            status.message or "ChatGPT/Codex provider is not signed in"
+        )
 
 
 class CodexAppServerTextClient:
@@ -1251,6 +1259,7 @@ class CodexAppServerTextClient:
     def parse(
         self,
         *,
+        provider: str = "openai_codex",
         model: str,
         system_prompt: str,
         user_prompt: str,
@@ -1263,9 +1272,7 @@ class CodexAppServerTextClient:
         service_tier_is_set: bool = False,
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
-        status = codex_provider_status(self.user_id, refresh=False)
-        if not status.configured:
-            raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
+        _require_codex_model_access(self.user_id, provider)
         deadline_monotonic = (
             budget.deadline_monotonic
             if budget is not None
@@ -1279,6 +1286,7 @@ class CodexAppServerTextClient:
         ) as session:
             output_text, usage, activity = _run_structured_turn(
                 session=session,
+                provider=provider,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -1305,6 +1313,7 @@ class CodexAppServerTextClient:
         self,
         *,
         source_path: Path,
+        provider: str = "openai_codex",
         model: str,
         system_prompt: str,
         user_prompt: str,
@@ -1316,13 +1325,10 @@ class CodexAppServerTextClient:
         output_artifact_path: str | None = None,
         image_inputs: list[str] | None = None,
         artifact_validator: Callable[[object], None] | None = None,
+        inspection_scope: Literal["source", "directory_only"] = "source",
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
-        status = codex_provider_status(self.user_id, refresh=False)
-        if not status.configured:
-            raise CodexAppServerError(
-                status.message or "ChatGPT/Codex provider is not signed in"
-            )
+        _require_codex_model_access(self.user_id, provider)
         deadline_monotonic = (
             budget.deadline_monotonic
             if budget is not None
@@ -1337,6 +1343,7 @@ class CodexAppServerTextClient:
                 _run_source_file_structured_turn(
                     session=session,
                     source_path=source_path,
+                    provider=provider,
                     model=model,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
@@ -1349,6 +1356,7 @@ class CodexAppServerTextClient:
                     output_artifact_path=output_artifact_path,
                     image_inputs=image_inputs,
                     artifact_validator=artifact_validator,
+                    inspection_scope=inspection_scope,
                 )
             )
         if budget is not None:
@@ -1680,6 +1688,7 @@ def _run_conversation_turn(
 def _run_structured_turn(
     *,
     session: CodexAppServerSession,
+    provider: str = "openai_codex",
     model: str,
     system_prompt: str,
     user_prompt: str,
@@ -1724,6 +1733,7 @@ def _run_structured_turn(
         return _run_structured_workspace_turn(
             session=session,
             cwd=Path(cwd_text),
+            provider=provider,
             model=model,
             user_prompt=user_prompt,
             schema=schema,
@@ -1790,6 +1800,7 @@ def _run_source_file_structured_turn(
     *,
     session: CodexAppServerSession,
     source_path: Path,
+    provider: str = "openai_codex",
     model: str,
     system_prompt: str,
     user_prompt: str,
@@ -1802,6 +1813,7 @@ def _run_source_file_structured_turn(
     output_artifact_path: str | None = None,
     image_inputs: list[str] | None = None,
     artifact_validator: Callable[[object], None] | None = None,
+    inspection_scope: Literal["source", "directory_only"] = "source",
 ) -> tuple[str, Any, list[AgentActivityEvent], str, int]:
     source_path = Path(source_path)
     deadline = _deadline_for(
@@ -1824,6 +1836,7 @@ def _run_source_file_structured_turn(
                 cwd=cwd,
                 source_path=staged_path,
                 scratch_path=scratch_path,
+                inspection_scope=inspection_scope,
             )
         except source_document_toolchain.SourceDocumentToolchainError as exc:
             raise CodexAppServerError(str(exc)) from exc
@@ -1838,7 +1851,7 @@ def _run_source_file_structured_turn(
                 "set": {
                     "PATH": _source_document_tool_path(toolbox_path),
                     "LANG": "en_US.UTF-8",
-                    "SHELL": _codex_shell_path(),
+                    "SHELL": "/bin/zsh",
                 },
             },
         }
@@ -1854,6 +1867,18 @@ def _run_source_file_structured_turn(
                 "Artifact JSON schema:\n"
                 + json.dumps(strict_json_schema(schema), ensure_ascii=False, separators=(",", ":"))
                 + "\n\n"
+            )
+        inspection_instructions = ""
+        if inspection_scope == "directory_only":
+            inspection_instructions = (
+                "Directory-only hard boundary: never scan the entire source. For a PDF, inspect "
+                "only the front-matter pages required to find every genuine directory page, then "
+                "only the minimum widely separated printed-page anchors required to establish the "
+                "single exact page offset P. Do not extract the complete PDF text, scan body "
+                "headings, search every directory entry in the body, or derive body ranges. Stop "
+                "body inspection immediately after P is established. For a non-PDF source, inspect "
+                "only its authored navigation. The only semantic output is the directory tree and, "
+                "for PDF, the directory-page set and exact P evidence.\n\n"
             )
         developer_instructions = (
             "You are the isolated Source Codex for OpenClass. The only user source available to "
@@ -1874,6 +1899,7 @@ def _run_source_file_structured_turn(
             "search, apps, plugins, MCP servers, or external services. Keep command output bounded: "
             "never print an entire archive listing, source document, or complete catalog into the "
             "turn context. Return only a JSON object matching the supplied output schema.\n\n"
+            f"{inspection_instructions}"
             f"{artifact_instructions}"
             f"Role instructions:\n{system_prompt}"
         )
@@ -1898,6 +1924,7 @@ def _run_source_file_structured_turn(
             output_text, usage, activity = _run_structured_workspace_turn(
                 session=session,
                 cwd=cwd,
+                provider=provider,
                 model=model,
                 user_prompt=user_prompt,
                 schema=turn_schema,
@@ -2006,6 +2033,7 @@ def _run_structured_workspace_turn(
     *,
     session: CodexAppServerSession,
     cwd: Path,
+    provider: str = "openai_codex",
     model: str,
     user_prompt: str,
     schema: type[BaseModel],
@@ -2035,6 +2063,9 @@ def _run_structured_workspace_turn(
             include_effort=False,
         ),
     }
+    model_provider = _codex_model_provider(provider)
+    if model_provider is not None:
+        thread_params["modelProvider"] = model_provider
     thread_result = session.request(
         "thread/start",
         thread_params,
@@ -2147,8 +2178,9 @@ def _run_structured_workspace_turn(
                             "The OpenClass mechanical validator rejected the catalog artifact: "
                             f"{validation_error}\nContinue the same investigation. Use the available "
                             "document tools to resolve the rejected evidence, replace "
-                            "scratch/catalog.json, recheck all affected nodes, and return a new "
-                            "artifact receipt. Preserve already verified directory titles and ranges; "
+                            "scratch/catalog.json, recheck the rejected coordinates and tree, and "
+                            "return a new artifact receipt. Preserve already validated directory "
+                            "titles and stay within the current inspection contract; "
                             "do not terminate merely because the first hypothesis failed."
                         ),
                     }

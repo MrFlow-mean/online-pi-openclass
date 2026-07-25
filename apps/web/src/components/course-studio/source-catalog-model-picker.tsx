@@ -51,6 +51,7 @@ export function SourceCatalogModelPicker({
           testIdPrefix="source-catalog-model"
           preferredPlacement="below"
           preferredSubmenuSide="left"
+          allowSpeedSelection={false}
         />
         {!enabledOption ? (
           <p className="mt-1.5 text-[11px] leading-5 text-amber-700">

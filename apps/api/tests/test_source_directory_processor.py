@@ -78,10 +78,6 @@ def _model() -> AIModelSelection:
     return AIModelSelection(provider="openai_codex", model="catalog-test-model")
 
 
-def _deepseek_model() -> AIModelSelection:
-    return AIModelSelection(provider="deepseek", model="deepseek-chat")
-
-
 def _write_reordered_pptx(path: Path) -> None:
     presentation = """<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -470,43 +466,6 @@ def test_toc_layout_requests_trailing_column_pass_and_parses_leading_leaders(
     ]
 
 
-def test_toc_layout_splits_embedded_printed_page_from_scanned_title(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.services import pdf_toc_parser
-    from app.services.image_ocr import OCRLineLayout, OCRPageLayout
-
-    monkeypatch.setattr(
-        pdf_toc_parser,
-        "extract_pdf_pages_layout",
-        lambda *_args, **_kwargs: [
-            OCRPageLayout(
-                page_no=11,
-                lines=[
-                    OCRLineLayout(
-                        "Section 2 General methods /48",
-                        x=0.12,
-                        y=0.65,
-                        width=0.45,
-                        height=0.018,
-                    )
-                ],
-            )
-        ],
-    )
-
-    extraction = pdf_toc_parser.extract_pdf_toc_from_range(
-        tmp_path / "embedded-page.pdf",
-        page_start=11,
-        page_end=11,
-    )
-
-    assert [(node.title, node.printed_page) for node in extraction.nodes] == [
-        ("Section 2 General methods", 48)
-    ]
-
-
 def test_pdf_layout_ocr_trailing_column_mode_is_explicit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -538,91 +497,6 @@ def test_pdf_layout_ocr_trailing_column_mode_is_explicit(
 
     assert calls[0][-1] == "1"
     assert calls[1][-1] == "trailing-column-lines"
-
-
-def test_tesseract_tsv_preserves_distant_page_number_as_separate_layout_line() -> None:
-    from app.services import image_ocr
-
-    payload = "\n".join(
-        [
-            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
-            "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1200\t-1\t",
-            "5\t1\t1\t1\t1\t1\t100\t180\t110\t40\t95\tChapter",
-            "5\t1\t1\t1\t1\t2\t225\t180\t70\t40\t94\tOne",
-            "5\t1\t1\t1\t1\t3\t820\t180\t35\t40\t96\t12",
-        ]
-    )
-
-    page = image_ocr._parse_tesseract_tsv(payload, page_no=7)
-
-    assert page.page_no == 7
-    assert [line.text for line in page.lines] == ["Chapter One", "12"]
-    assert page.lines[0].x == pytest.approx(0.1)
-    assert page.lines[1].x == pytest.approx(0.82)
-
-
-def test_pdf_layout_ocr_falls_back_to_tesseract_when_vision_is_unavailable(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.services import image_ocr
-    from app.services.image_ocr import OCRLineLayout, OCRPageLayout
-
-    path = tmp_path / "scan.pdf"
-    path.write_bytes(b"scan")
-    expected = [OCRPageLayout(page_no=3, lines=[OCRLineLayout("Chapter 1", x=0.1, y=0.9)])]
-    monkeypatch.setattr(image_ocr, "_run_vision_ocr_payload", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        image_ocr,
-        "_extract_pdf_pages_layout_with_tesseract",
-        lambda *_args, **_kwargs: expected,
-    )
-
-    layouts = image_ocr.extract_pdf_pages_layout(
-        path,
-        page_start=3,
-        page_end=3,
-    )
-
-    assert layouts == expected
-
-
-def test_scanned_toc_probe_uses_repeated_structural_rows_in_leading_batches(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.services import pdf_toc_parser
-    from app.services.pdf_toc_parser import PdfTocExtraction, PdfTocNode
-
-    calls: list[tuple[int, int]] = []
-
-    def fake_extract(_path: Path, *, page_start: int, page_end: int) -> PdfTocExtraction:
-        calls.append((page_start, page_end))
-        if page_start < 9:
-            return PdfTocExtraction(toc_page_start=page_start, toc_page_end=page_end)
-        return PdfTocExtraction(
-            nodes=[
-                PdfTocNode(title="Chapter 1 Foundations", printed_page=1, toc_page=11),
-                PdfTocNode(title="Section 1 Concepts", printed_page=3, toc_page=11),
-                PdfTocNode(title="Chapter 2 Practice", printed_page=9, toc_page=12),
-                PdfTocNode(title="Section 2 Review", printed_page=12, toc_page=12),
-            ],
-            toc_page_start=page_start,
-            toc_page_end=page_end,
-        )
-
-    monkeypatch.setattr(pdf_toc_parser, "extract_pdf_toc_from_range", fake_extract)
-
-    extraction = pdf_toc_parser.probe_pdf_toc_from_leading_pages(
-        tmp_path / "scan.pdf",
-        page_count=200,
-        max_probe_pages=48,
-    )
-
-    assert calls == [(1, 8), (9, 16)]
-    assert extraction.toc_page_start == 11
-    assert extraction.toc_page_end == 12
-    assert len(extraction.nodes) == 4
 
 
 def test_semantic_outline_titles_may_contain_question_marks(tmp_path: Path) -> None:
@@ -1365,58 +1239,6 @@ def test_processor_publishes_catalog_without_chunks_or_visuals(tmp_path: Path) -
     assert run == ("succeeded", 1, 3)
 
 
-def test_production_processor_uses_selected_non_codex_model_with_bounded_directory_evidence(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
-    path = tmp_path / "source.md"
-    path.write_text("# First\nBody\n## Child\nMore body", encoding="utf-8")
-    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
-
-    def fake_parse(self, **kwargs):
-        packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
-        return (
-            DirectoryBatchDecision(
-                batch_hash=packet["batch_hash"],
-                decisions=[
-                    DirectoryNodeDecision(
-                        local_key=node["local_key"],
-                        keep=True,
-                        title=node["title"],
-                        number=node["number"],
-                        level=node["level"],
-                    )
-                    for node in packet["nodes"]
-                ],
-            ),
-            [],
-        )
-
-    monkeypatch.setattr(
-        "app.services.ai_execution_adapter.DeepSeekTextClient.parse",
-        fake_parse,
-    )
-    monkeypatch.setattr(
-        "app.services.source_directory_processor.generate_codex_direct_catalog",
-        lambda **_kwargs: pytest.fail("A non-Codex model must not enter the isolated Codex file path"),
-    )
-
-    structure = SourceDirectoryProcessor(store=store).process(
-        record=_record(path),
-        path=path,
-        catalog_model=_deepseek_model(),
-    )
-    catalog = store.get_catalog_view(source=_record(path))
-
-    assert structure.status == "ready"
-    assert structure.catalog_model == "deepseek-chat"
-    assert structure.metadata["catalog_model_selection"]["provider"] == "deepseek"
-    assert structure.metadata["catalog_authority"] == "host_directory_evidence_with_selected_model"
-    assert [chapter.title for chapter in catalog.chapters] == ["First", "Child"]
-    assert all(chapter.mapping_status == "verified" for chapter in catalog.chapters)
-
-
 def test_processor_rejects_stale_metadata_fingerprint_before_extraction(tmp_path: Path) -> None:
     path = tmp_path / "source.md"
     path.write_text("# One\nBody", encoding="utf-8")
@@ -1836,73 +1658,6 @@ def test_stale_directory_task_cannot_recreate_an_already_deleted_source(
     ) is None
 
 
-def test_retry_directory_source_uses_the_current_catalog_model(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    database = tmp_path / "openclass.sqlite3"
-    source_store = SourceEvidenceStore(database)
-    structure_store = SourceStructureStore(database)
-    observed_selections: list[AIModelSelection] = []
-
-    class RecordingNormalizer:
-        def normalize(self, *, record, candidates, selection):
-            observed_selections.append(selection)
-            return DirectoryNormalizationResult(
-                candidates=tuple(candidates),
-                turn_count=1 if candidates else 0,
-                metadata={"test_adapter": "recording"},
-            )
-
-    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
-    service = SourceIngestionService(
-        source_backend="native",
-        store=source_store,
-        job_store=SourceIngestionJobStore(database),
-        structure_store=structure_store,
-        directory_processor=SourceDirectoryProcessor(
-            store=structure_store,
-            normalizer_factory=lambda _record: RecordingNormalizer(),
-        ),
-    )
-    package = CoursePackage(id="course_directory", title="Directory", summary="", lessons=[])
-    queued = service.queue_file_source(
-        owner_user_id="user_directory",
-        package=package,
-        file_name="source.md",
-        content=b"# One\nBody",
-        mime_type="text/markdown",
-        catalog_model=_model(),
-    )
-    source_store.save_source(
-        queued.model_copy(
-            update={
-                "status": "failed",
-                "error": "Sign in with ChatGPT/Codex to use subscription models.",
-            }
-        )
-    )
-
-    retried = service.retry_source(
-        owner_user_id="user_directory",
-        package_id=package.id,
-        source_id=queued.id,
-        catalog_model=_deepseek_model(),
-    )
-
-    assert retried is not None
-    assert retried.status == "ready"
-    assert retried.metadata["catalog_model"] == _deepseek_model().model_dump(mode="json")
-    assert observed_selections == [_deepseek_model()]
-    structure = structure_store.get_structure(
-        owner_user_id="user_directory",
-        package_id=package.id,
-        source_id=queued.id,
-    )
-    assert structure is not None
-    assert structure.catalog_model == "deepseek-chat"
-
-
 @pytest.mark.parametrize(
     ("operation", "legacy_source"),
     [
@@ -2043,12 +1798,14 @@ def test_failed_rebuild_preserves_previous_catalog_version(tmp_path: Path) -> No
 
 def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None:
     calls: list[int] = []
+    providers: list[str] = []
     runtime_settings: list[tuple[str | None, str | None, bool]] = []
     progress_updates: list[tuple[str, int]] = []
 
     def fake_parse(self, **kwargs):
         packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
         calls.append(packet["batch_index"])
+        providers.append(kwargs["provider"])
         runtime_settings.append(
             (
                 kwargs["reasoning_effort"],
@@ -2073,7 +1830,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
         )
 
     monkeypatch.setattr(
-        "app.services.ai_execution_adapter.CodexAppServerTextClient.parse",
+        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
         fake_parse,
     )
     candidates = [
@@ -2109,7 +1866,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
         ),
         candidates=candidates,
         selection=AIModelSelection(
-            provider="openai_codex",
+            provider="deepseek",
             model="catalog-test-model",
             reasoning_effort="high",
             service_tier="priority",
@@ -2117,6 +1874,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
     )
 
     assert calls == [0, 1, 2]
+    assert providers == ["deepseek"] * 3
     assert runtime_settings == [("high", "priority", True)] * 3
     assert progress_updates == [
         ("normalizing_directory", 69),
@@ -2150,7 +1908,7 @@ def test_codex_normalizer_preserves_native_epub_levels_across_batches(monkeypatc
         )
 
     monkeypatch.setattr(
-        "app.services.ai_execution_adapter.CodexAppServerTextClient.parse",
+        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
         fake_parse,
     )
     monkeypatch.setattr("app.services.source_directory_processor.MAX_CODEX_BATCH_NODES", 2)

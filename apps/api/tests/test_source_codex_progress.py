@@ -153,7 +153,7 @@ def test_catalog_write_activity_moves_to_final_investigation_band(monkeypatch, t
     progress = observation.event.metadata["source_progress"]
     assert observation.progress == 89
     assert observation.phase == "source_codex_writing_catalog"
-    assert progress["label"] == "Codex 已写入目录，正在自检"
+    assert progress["label"] == "资料 Agent 已写入目录，正在自检"
 
 
 def test_explicit_progress_shell_output_is_accepted(monkeypatch, tmp_path: Path) -> None:

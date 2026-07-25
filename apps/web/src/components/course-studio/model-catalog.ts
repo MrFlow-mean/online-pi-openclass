@@ -32,8 +32,8 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   text: [
     {
       provider: "openai_codex",
-      model: "gpt-5.6-sol",
-      label: "OpenAI Codex GPT-5.6-Sol",
+      model: "gpt-5.5",
+      label: "GPT 5.5",
       capability: "text",
       enabled: false,
       configured: false,
@@ -53,7 +53,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
   ],
   defaults: {
-    text: { provider: "openai_codex", model: "gpt-5.6-sol" },
+    text: { agent_backend: "pi", provider: "openai_codex", model: "gpt-5.5" },
     realtime: { provider: "openai", model: "gpt-realtime-2.1" },
   },
 };
@@ -160,6 +160,7 @@ export function selectionForModelOption(
           (defaultServiceTier && supportedServiceTiers.has(defaultServiceTier) ? defaultServiceTier : null);
 
   return {
+    agent_backend: "pi",
     provider: option.provider,
     model: option.model,
     reasoning_effort: reasoningEffort,

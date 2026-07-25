@@ -469,6 +469,10 @@ export function useLessonChatAgent({
           onRequirementUpdate(payload) {
             if (payload.learning_clarification?.ready_for_board) {
               sawReadyForBoardRequirementUpdate = true;
+              updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
+                statusLabel:
+                  payload.requirement_phase === "frozen" ? "正在生成板书" : "学习需求已确认",
+              });
             }
             setCurrentNeedPending(false);
             setClarificationQuestions(payload.clarification_questions);

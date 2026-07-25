@@ -54,7 +54,7 @@ class SourceCodexProgressTracker:
         self.completed_tool_actions = 0
         self.progress = 30
         self.phase = "source_codex_investigation"
-        self.label = "Codex 正在读取文件结构"
+        self.label = "资料 Agent 正在读取文件结构"
 
     def observe(self, event: AgentActivityEvent) -> SourceCodexProgressObservation:
         if event.status == "completed" and str(event.metadata.get("kind") or "") in {
@@ -140,14 +140,14 @@ class SourceCodexProgressTracker:
 
     def _mechanical_label(self) -> str:
         if self.phase == "source_codex_writing_catalog":
-            return "Codex 已写入目录，正在自检"
+            return "资料 Agent 已写入目录，正在自检"
         if self.phase in {"source_codex_mapping_nodes", "source_codex_verifying_ranges"}:
             return self.label
         if self.total_pages and self.scanned_pages:
             return f"正在扫描并核对 PDF：{len(self.scanned_pages)}/{self.total_pages} 页"
         if self.completed_tool_actions:
-            return f"Codex 正在调查文件：已完成 {self.completed_tool_actions} 次工具检查"
-        return "Codex 正在读取文件结构"
+            return f"资料 Agent 正在调查文件：已完成 {self.completed_tool_actions} 次工具检查"
+        return "资料 Agent 正在读取文件结构"
 
 
 def _pdf_page_count(path: Path) -> int:

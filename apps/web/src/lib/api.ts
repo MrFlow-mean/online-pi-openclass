@@ -550,14 +550,9 @@ export const api = {
       body: JSON.stringify({ title }),
     });
   },
-  retryPackageSource(
-    packageId: string,
-    sourceId: string,
-    catalogModel: AIModelSelection | null = null
-  ) {
+  retryPackageSource(packageId: string, sourceId: string) {
     return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}/retry`, {
       method: "POST",
-      body: JSON.stringify({ catalog_model: catalogModel }),
     });
   },
   getPackageSourceContent(packageId: string, sourceId: string) {

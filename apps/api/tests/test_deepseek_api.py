@@ -7,6 +7,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from app.services.deepseek_api import DeepSeekConfig, DeepSeekTextClient
+from app.services.structured_output import json_object
 
 
 class _Reply(BaseModel):
@@ -45,6 +46,10 @@ def _config() -> DeepSeekConfig:
         timeout_seconds=30,
         max_tokens=None,
     )
+
+
+def test_json_object_accepts_a_fenced_object() -> None:
+    assert json_object('```json\n{"answer":"ok"}\n```') == {"answer": "ok"}
 
 
 def test_deepseek_client_uses_json_output_and_validates_the_schema() -> None:

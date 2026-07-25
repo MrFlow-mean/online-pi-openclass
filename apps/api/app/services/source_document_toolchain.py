@@ -4,12 +4,14 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 
 POPPLER_ROOT_ENV = "OPENCLASS_POPPLER_ROOT"
 REQUIRED_PDF_TOOLS = ("pdfinfo", "pdftotext", "pdftoppm")
 SYSTEM_TOOL_DIRECTORIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 PREFLIGHT_TIMEOUT_SECONDS = 45
+DIRECTORY_ONLY_MAX_PDF_TOOL_PAGE_SPAN = 32
 BROAD_SYSTEM_PREFIXES = frozenset(
     {
         Path("/"),
@@ -39,6 +41,7 @@ def prepare_source_document_toolbox(
     cwd: Path,
     source_path: Path,
     scratch_path: Path,
+    inspection_scope: Literal["source", "directory_only"] = "source",
 ) -> Path:
     toolbox = cwd / "toolbox"
     toolbox_bin = toolbox / "bin"
@@ -49,7 +52,13 @@ def prepare_source_document_toolbox(
     poppler_root = resolve_poppler_root()
     source_bin = poppler_root / "bin"
     for tool in REQUIRED_PDF_TOOLS:
-        _link_or_copy_read_only(source_bin / tool, toolbox_bin / tool)
+        if inspection_scope == "directory_only" and tool in {"pdftotext", "pdftoppm"}:
+            real_tool = toolbox / "libexec" / tool
+            real_tool.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            _link_or_copy_read_only(source_bin / tool, real_tool)
+            _write_bounded_pdf_tool_wrapper(real_tool=real_tool, wrapper=toolbox_bin / tool)
+        else:
+            _link_or_copy_read_only(source_bin / tool, toolbox_bin / tool)
     if poppler_root not in BROAD_SYSTEM_PREFIXES:
         for relative_directory in ("lib", "share"):
             source_directory = poppler_root / relative_directory
@@ -62,6 +71,36 @@ def prepare_source_document_toolbox(
         scratch_path=scratch_path,
     )
     return toolbox
+
+
+def _write_bounded_pdf_tool_wrapper(*, real_tool: Path, wrapper: Path) -> None:
+    maximum_span = DIRECTORY_ONLY_MAX_PDF_TOOL_PAGE_SPAN
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "first=\n"
+        "last=\n"
+        "expect=\n"
+        "for argument in \"$@\"; do\n"
+        "  if [ \"$expect\" = first ]; then first=$argument; expect=; continue; fi\n"
+        "  if [ \"$expect\" = last ]; then last=$argument; expect=; continue; fi\n"
+        "  case \"$argument\" in\n"
+        "    -f) expect=first ;;\n"
+        "    -l) expect=last ;;\n"
+        "  esac\n"
+        "done\n"
+        "case \"$first:$last\" in\n"
+        "  *[!0-9:]*|:*|*:) echo 'directory-only PDF inspection requires numeric -f and -l page bounds' >&2; exit 64 ;;\n"
+        "esac\n"
+        "if [ \"$first\" -lt 1 ] || [ \"$last\" -lt \"$first\" ]; then\n"
+        "  echo 'directory-only PDF inspection received invalid page bounds' >&2; exit 64\n"
+        "fi\n"
+        f"if [ $((last - first + 1)) -gt {maximum_span} ]; then\n"
+        f"  echo 'directory-only PDF inspection is limited to {maximum_span} pages per command' >&2; exit 64\n"
+        "fi\n"
+        f"exec {str(real_tool)!r} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o555)
 
 
 def resolve_poppler_root() -> Path:

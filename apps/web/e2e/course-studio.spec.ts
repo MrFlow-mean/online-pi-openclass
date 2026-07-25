@@ -211,6 +211,7 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
     source_content_hash: "",
     catalog_schema_version: "legacy",
     catalog_model: "",
+    task_contract: "",
     chapter_count: 0,
     verified_chapter_count: 0,
     confidence: 0,
@@ -362,18 +363,11 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     default_reasoning_effort: null,
     supported_reasoning_efforts: [],
   };
-  const deepSeekModel = {
+  const deepseekModel = {
+    ...defaultOnlyModel,
     provider: "deepseek",
-    model: "deepseek-chat",
-    label: "DeepSeek V4 Flash",
-    capability: "text",
-    enabled: true,
-    configured: true,
-    default: false,
-    default_reasoning_effort: null,
-    supported_reasoning_efforts: [],
-    default_service_tier: null,
-    service_tiers: [],
+    model: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
   };
   await page.unroute("**/api/ai-models");
   await page.route("**/api/ai-models", async (route) => {
@@ -381,7 +375,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        text: [solModel, lunaModel, defaultOnlyModel, deepSeekModel],
+        text: [solModel, lunaModel, defaultOnlyModel, deepseekModel],
         realtime: [],
         defaults: {
           text: {
@@ -496,6 +490,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     source_content_hash: initialContentHash,
     catalog_schema_version: "codex_directory_v1",
     catalog_model: "openai_codex:test-model",
+    task_contract: "",
     chapter_count: 2,
     verified_chapter_count: 1,
     confidence: 0.98,
@@ -641,6 +636,20 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(chatMenuBox.y + chatMenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
   expect(chatSubmenuBox.y + chatSubmenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
   expect(chatSubmenuBox.x + chatSubmenuBox.width).toBeLessThanOrEqual(viewport.width);
+  await chatModelSubmenu.getByRole("button", { name: "选择模型 5.6 Sol" }).click();
+  await page.getByTestId("codex-model-reasoning-row").click();
+  await page
+    .getByTestId("codex-model-reasoning-menu")
+    .getByRole("button", { name: "推理强度 高" })
+    .click();
+  await page.getByTestId("codex-model-speed-row").click();
+  await page
+    .getByTestId("codex-model-speed-menu")
+    .getByRole("button", { name: "速度 快速" })
+    .click();
+  await expect(chatModelButton).toHaveAccessibleName(
+    /模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+  );
   await chatModelButton.click();
   await expect(chatModelMenu).toBeHidden();
 
@@ -675,13 +684,9 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(reasoningMenuBox.x).toBeGreaterThanOrEqual(0);
   expect(reasoningMenuBox.y + reasoningMenuBox.height).toBeLessThanOrEqual(viewport.height);
   await reasoningMenu.getByRole("button", { name: "推理强度 高" }).click();
-  await page.getByTestId("source-catalog-model-speed-row").click();
-  await page
-    .getByTestId("source-catalog-model-speed-menu")
-    .getByRole("button", { name: "速度 快速" })
-    .click();
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 标准/
   );
   await catalogModelButton.click();
   await expect(catalogModelMenu).toBeHidden();
@@ -698,7 +703,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByRole("button", { name: "History" }).click();
   await page.getByRole("button", { name: "Sources" }).click();
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 标准/
   );
   await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
@@ -746,7 +751,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(rebuildPostData).toContain('"provider":"openai_codex"');
   expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
   expect(rebuildPostData).toContain('"reasoning_effort":"high"');
-  expect(rebuildPostData).toContain('"service_tier":"priority"');
+  expect(rebuildPostData).toContain('"service_tier":null');
   releaseDelayedSingleCatalog();
   await expect.poll(() => completedSingleCatalogResponses).toBe(2);
   await expect(page.getByRole("button", { name: new RegExp(`^1 重建后章节 ${unique}`) })).toBeVisible();
@@ -780,20 +785,15 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByTestId("source-catalog-model-model-row").click();
   await page
     .getByTestId("source-catalog-model-model-menu")
-    .getByRole("button", { name: "选择模型 DeepSeek V4 Flash" })
+    .getByRole("button", { name: "选择模型 DeepSeek V4 Pro" })
     .click();
-  await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 DeepSeek V4 Flash，推理强度 默认，速度 标准/
-  );
-  uploadPostData = "";
   await page.getByTestId("source-file-input").setInputFiles({
-    name: `catalog-deepseek-model-${unique}.pdf`,
+    name: `catalog-provider-${unique}.pdf`,
     mimeType: "application/pdf",
-    buffer: Buffer.from("deepseek catalog model upload"),
+    buffer: Buffer.from("catalog provider upload"),
   });
-  await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
-  expect(uploadPostData).toContain('"provider":"deepseek"');
-  expect(uploadPostData).toContain('"model":"deepseek-chat"');
+  await expect.poll(() => uploadPostData).toContain('"provider":"deepseek"');
+  expect(uploadPostData).toContain('"model":"deepseek-v4-pro"');
 
   await catalogModelButton.click();
   await page.getByTestId("source-catalog-model-model-row").click();

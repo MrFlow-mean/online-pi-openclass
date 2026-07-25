@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import ipaddress
 import os
 import re
@@ -76,6 +77,7 @@ SUPPORTED_FILE_MIME_PREFIXES = (
 
 _DIRECTORY_CATALOG_LOCKS_GUARD = threading.Lock()
 _DIRECTORY_CATALOG_LOCKS: dict[tuple[str, str, str, str], threading.RLock] = {}
+_DIRECTORY_CATALOG_LOCK_DEPTH = threading.local()
 
 
 @contextmanager
@@ -93,7 +95,28 @@ def _directory_catalog_processing_slot(
     with _DIRECTORY_CATALOG_LOCKS_GUARD:
         lock = _DIRECTORY_CATALOG_LOCKS.setdefault(key, threading.RLock())
     with lock:
-        yield
+        depths = getattr(_DIRECTORY_CATALOG_LOCK_DEPTH, "values", None)
+        if depths is None:
+            depths = {}
+            _DIRECTORY_CATALOG_LOCK_DEPTH.values = depths
+        if depths.get(key, 0):
+            depths[key] += 1
+            try:
+                yield
+            finally:
+                depths[key] -= 1
+            return
+        lock_directory = database_path.parent / "source-ingestion-locks"
+        lock_directory.mkdir(parents=True, exist_ok=True)
+        lock_name = hashlib.sha256("\0".join(key).encode("utf-8")).hexdigest()
+        with (lock_directory / f"{lock_name}.lock").open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            depths[key] = 1
+            try:
+                yield
+            finally:
+                depths.pop(key, None)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class SourceIngestionError(RuntimeError):
@@ -342,20 +365,20 @@ class SourceIngestionService:
         )
         if record is None:
             raise SourceIngestionError("Source not found.")
-        if supports_directory_catalog(record):
-            with _directory_catalog_processing_slot(
-                database_path=self.store.path,
-                record=record,
-            ):
-                current = self.store.get_source(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    source_id=source_id,
-                )
-                if current is None:
-                    raise SourceIngestionError("Source not found.")
-                return self._process_file_source_unlocked(current)
-        return self._process_file_source_unlocked(record)
+        with _directory_catalog_processing_slot(
+            database_path=self.store.path,
+            record=record,
+        ):
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if current is None:
+                raise SourceIngestionError("Source not found.")
+            if current.status in {"ready", "failed"}:
+                return self._attach_job(self.structure_store.attach_summary(current))
+            return self._process_file_source_unlocked(current)
 
     def _process_file_source_unlocked(
         self,
@@ -720,32 +743,24 @@ class SourceIngestionService:
         owner_user_id: str,
         package_id: str,
         source_id: str,
-        catalog_model: AIModelSelection | None = None,
     ) -> SourceIngestionRecord | None:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
-        if supports_directory_catalog(record):
-            with _directory_catalog_processing_slot(
-                database_path=self.store.path,
-                record=record,
-            ):
-                current = self.store.get_source(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    source_id=source_id,
-                )
-                if current is None:
-                    return None
-                return self._retry_source_unlocked(current, catalog_model=catalog_model)
-        return self._retry_source_unlocked(record, catalog_model=catalog_model)
+        with _directory_catalog_processing_slot(
+            database_path=self.store.path,
+            record=record,
+        ):
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if current is None:
+                return None
+            return self._retry_source_unlocked(current)
 
-    def _retry_source_unlocked(
-        self,
-        record: SourceIngestionRecord,
-        *,
-        catalog_model: AIModelSelection | None,
-    ) -> SourceIngestionRecord | None:
+    def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
         record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
@@ -754,15 +769,6 @@ class SourceIngestionService:
         use_directory_catalog = _uses_directory_catalog(retrying)
         if use_directory_catalog:
             retrying = _as_directory_catalog_record(retrying)
-            if catalog_model is not None:
-                retrying = retrying.model_copy(
-                    update={
-                        "metadata": {
-                            **retrying.metadata,
-                            "catalog_model": catalog_model.model_dump(mode="json"),
-                        }
-                    }
-                )
         elif self.source_backend == "native":
             retrying = _detach_open_notebook_state(retrying)
         self.store.save_source(retrying)
@@ -1216,7 +1222,7 @@ class SourceIngestionService:
         )
         activity_by_id: dict[str, AgentActivityEvent] = {}
         activity_order: list[str] = []
-        source_codex_progress_tracker: SourceCodexProgressTracker | None = None
+        codex_progress_tracker: SourceCodexProgressTracker | None = None
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -1231,12 +1237,12 @@ class SourceIngestionService:
                 phase=phase,
             )
 
-        def report_model_activity(event: AgentActivityEvent) -> None:
+        def report_codex_activity(event: AgentActivityEvent) -> None:
             nonlocal saved, indexing_job
             progress = indexing_job.progress
             phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
-            if source_codex_progress_tracker is not None:
-                observation = source_codex_progress_tracker.observe(event)
+            if codex_progress_tracker is not None:
+                observation = codex_progress_tracker.observe(event)
                 event = observation.event
                 progress = observation.progress
                 phase = observation.phase
@@ -1274,19 +1280,18 @@ class SourceIngestionService:
                 local_path = source_local_path(saved)
                 if local_path is None:
                     raise SourceIngestionError("Source file is unavailable for directory cataloging.")
+                codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 raw_catalog_model = saved.metadata.get("catalog_model")
                 try:
                     catalog_model = AIModelSelection.model_validate(raw_catalog_model)
                 except Exception as exc:
                     raise SourceIngestionError("The selected catalog model is invalid.") from exc
-                if catalog_model.provider == "openai_codex":
-                    source_codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 structure = self.directory_processor.process(
                     record=saved,
                     path=local_path,
                     catalog_model=catalog_model,
                     progress_callback=report_progress,
-                    activity_callback=report_model_activity,
+                    activity_callback=report_codex_activity,
                 )
             else:
                 structure = (

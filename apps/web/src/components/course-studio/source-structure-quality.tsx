@@ -95,7 +95,7 @@ export function sourceStructureQualityNote(
   }
   if (level === "fully_verified") {
     if (isDirectoryOnlyCatalog(source)) {
-      return "目录节点与资料范围已验证；正文将在引用章节后按需读取。";
+      return "资料目录定位与层级已校验；当前仅显示目录列表。";
     }
     return "目录节点、正文边界与整体覆盖已通过验证，可以按章节引用。";
   }

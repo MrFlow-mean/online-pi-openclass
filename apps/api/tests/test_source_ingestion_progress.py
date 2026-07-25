@@ -6,7 +6,6 @@ from pathlib import Path
 
 from app.models import (
     AgentActivityEvent,
-    AIModelSelection,
     CoursePackage,
     SourceIngestionJob,
     SourceIngestionRecord,
@@ -525,98 +524,6 @@ def test_directory_ingestion_persists_real_codex_work_progress(tmp_path, monkeyp
     assert completed.status == "ready"
     assert completed.ingestion_job is not None
     assert completed.ingestion_job.progress == 100
-
-
-def test_non_codex_directory_activity_keeps_generic_model_progress(tmp_path, monkeypatch) -> None:
-    database = tmp_path / "openclass.sqlite3"
-    source_store = SourceEvidenceStore(database)
-    structure_store = SourceStructureStore(database)
-    job_store = SourceIngestionJobStore(database)
-    reached_model = threading.Event()
-    allow_completion = threading.Event()
-
-    class BlockingDirectoryProcessor:
-        def process(
-            self,
-            *,
-            record,
-            path,
-            catalog_model,
-            progress_callback=None,
-            activity_callback=None,
-        ):
-            del path
-            assert catalog_model.provider == "deepseek"
-            assert progress_callback is not None
-            assert activity_callback is not None
-            progress_callback("normalizing_directory", 64)
-            activity_callback(
-                AgentActivityEvent(
-                    id="deepseek_directory",
-                    turn_id="turn_deepseek",
-                    stage="execute_role",
-                    label="DeepSeek completed the model request",
-                    status="completed",
-                    role="deepseek",
-                    metadata={"provider": "deepseek", "model": catalog_model.model},
-                )
-            )
-            reached_model.set()
-            assert allow_completion.wait(timeout=5)
-            return structure_store.save_structure_bundle(
-                structure=SourceStructure(
-                    owner_user_id=record.owner_user_id,
-                    package_id=record.package_id,
-                    source_ingestion_id=record.id,
-                    status="ready",
-                    strategy="codex_directory_v1",
-                ),
-                chapters=[],
-                chunks=[],
-            )
-
-    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
-    service = SourceIngestionService(
-        source_backend="native",
-        store=source_store,
-        job_store=job_store,
-        structure_store=structure_store,
-        directory_processor=BlockingDirectoryProcessor(),
-    )
-    package = CoursePackage(id="course_model_progress", title="Progress", summary="", lessons=[])
-    queued = service.queue_file_source(
-        owner_user_id="user_model_progress",
-        package=package,
-        file_name="source.md",
-        content=b"# Source\n\nBody",
-        mime_type="text/markdown",
-        catalog_model=AIModelSelection(provider="deepseek", model="deepseek-chat"),
-    )
-
-    worker = threading.Thread(
-        target=service.process_file_source,
-        kwargs={
-            "owner_user_id": queued.owner_user_id,
-            "package_id": queued.package_id,
-            "source_id": queued.id,
-        },
-    )
-    worker.start()
-    assert reached_model.wait(timeout=5)
-
-    processing = service.list_sources(
-        owner_user_id=queued.owner_user_id,
-        package_id=queued.package_id,
-    )[0]
-    assert processing.status == "indexing"
-    assert processing.ingestion_job is not None
-    assert processing.ingestion_job.progress == 64
-    assert processing.ingestion_job.phase_history[-1] == "normalizing_directory"
-    assert "source_progress" not in processing.ingestion_job.agent_activity[-1].metadata
-
-    allow_completion.set()
-    worker.join(timeout=5)
-    assert not worker.is_alive()
 
 
 def test_open_notebook_mode_skips_local_structure_pipeline(tmp_path, monkeypatch) -> None:

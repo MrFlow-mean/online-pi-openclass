@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,52 @@ def test_prepare_pdf_toolbox_stages_and_executes_every_required_tool(
     )
     assert isolated_path[0] == str(toolbox / "bin")
     assert all("installed-poppler" not in entry for entry in isolated_path)
+
+
+def test_directory_only_pdf_toolbox_rejects_unbounded_or_large_extraction(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = _write_fake_poppler(tmp_path / "poppler")
+    monkeypatch.setenv(source_document_toolchain.POPPLER_ROOT_ENV, str(root))
+    cwd = tmp_path / "workspace"
+    scratch = cwd / "scratch"
+    cwd.mkdir()
+    source = cwd / "source.pdf"
+    source.write_bytes(b"%PDF-1.7\nfixture")
+
+    toolbox = source_document_toolchain.prepare_source_document_toolbox(
+        cwd=cwd,
+        source_path=source,
+        scratch_path=scratch,
+        inspection_scope="directory_only",
+    )
+    pdftotext = toolbox / "bin" / "pdftotext"
+
+    unbounded = subprocess.run(
+        [str(pdftotext), str(source), "-"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    oversized = subprocess.run(
+        [str(pdftotext), "-f", "1", "-l", "33", str(source), "-"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    bounded = subprocess.run(
+        [str(pdftotext), "-f", "2", "-l", "4", str(source), "-"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert unbounded.returncode == 64
+    assert "requires numeric -f and -l" in unbounded.stderr
+    assert oversized.returncode == 64
+    assert "limited to 32 pages" in oversized.stderr
+    assert bounded.returncode == 0
 
 
 def test_prepare_pdf_toolbox_rejects_a_tool_that_cannot_process_the_source(

@@ -22,13 +22,11 @@ from app.models import (
     SourceStructureQuality,
     now_iso,
 )
-from app.services.ai_execution_adapter import build_ai_execution_adapter
+from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_catalog import (
     SourceCodexCatalogError,
-    SourceCodexCatalogResult,
     generate_codex_direct_catalog,
-    materialize_stored_codex_catalog,
 )
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
@@ -90,8 +88,8 @@ class DirectoryNormalizer(Protocol):
     ) -> DirectoryNormalizationResult: ...
 
 
-class TextModelDirectoryNormalizer:
-    """Run bounded directory-only model turns serially.
+class CodexDirectoryNormalizer:
+    """Run bounded directory-only Codex turns serially.
 
     The model receives headings and locators only. It never receives the source
     file path or extracted body text, and it cannot alter authoritative ranges.
@@ -102,11 +100,9 @@ class TextModelDirectoryNormalizer:
         *,
         user_id: str,
         progress_callback: CatalogProgressCallback | None = None,
-        activity_callback: Callable[[AgentActivityEvent], None] | None = None,
     ) -> None:
         self.user_id = user_id
         self.progress_callback = progress_callback
-        self.activity_callback = activity_callback
 
     def normalize(
         self,
@@ -123,13 +119,7 @@ class TextModelDirectoryNormalizer:
         batches = _bounded_candidate_batches(candidates)
         normalized: list[DirectoryCandidate] = []
         batch_hashes: list[str] = []
-        try:
-            adapter = build_ai_execution_adapter(
-                selection,
-                owner_user_id=self.user_id,
-            )
-        except RuntimeError as exc:
-            raise SourceDirectoryProcessingError(str(exc)) from exc
+        client = CodexAppServerTextClient(self.user_id)
         for batch_index, batch in enumerate(batches):
             packet = {
                 "schema": CATALOG_SCHEMA_VERSION,
@@ -145,7 +135,9 @@ class TextModelDirectoryNormalizer:
             }
             batch_hash = _hash_json(packet)
             batch_hashes.append(batch_hash)
-            response = adapter.parse_structured(
+            response = client.parse(
+                provider=selection.provider,
+                model=selection.model,
                 system_prompt=_directory_system_prompt(),
                 user_prompt=(
                     "Review this bounded directory-evidence packet. Copy batch_hash exactly and "
@@ -154,7 +146,9 @@ class TextModelDirectoryNormalizer:
                 ),
                 schema=DirectoryBatchDecision,
                 allow_live_web_search=False,
-                on_activity=self.activity_callback,
+                reasoning_effort=selection.reasoning_effort,
+                service_tier=selection.service_tier,
+                service_tier_is_set="service_tier" in selection.model_fields_set,
             )
             decision = DirectoryBatchDecision.model_validate(response.output_parsed)
             normalized.extend(_apply_batch_decision(batch, decision, expected_hash=batch_hash))
@@ -175,10 +169,6 @@ class TextModelDirectoryNormalizer:
                 "execution": "serial_bounded_turns",
             },
         )
-
-
-# Backward-compatible import name for existing integrations and tests.
-CodexDirectoryNormalizer = TextModelDirectoryNormalizer
 
 
 class SourceDirectoryProcessor:
@@ -233,15 +223,10 @@ class SourceDirectoryProcessor:
             turn_count: int
             has_authoritative_ranges = False
 
-            uses_direct_source_codex = (
-                self.normalizer_factory is None
-                and catalog_model.provider == "openai_codex"
-            )
-            if uses_direct_source_codex:
+            if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
-                # Source Codex owns both directory semantics and range
-                # investigation. The host validates and persists its exact
-                # authored result without deriving page offsets or parent ranges.
+                # Pi owns directory and bounded range investigation. The host
+                # mechanically validates and persists its exact typed artifact.
                 _report(progress_callback, "source_codex_investigation", 30)
                 direct_catalog = generate_codex_direct_catalog(
                     record=record,
@@ -254,40 +239,24 @@ class SourceDirectoryProcessor:
                 execution_metadata = dict(direct_catalog.audit_metadata)
                 stage_history = [*run.stage_history, "source_codex_investigation"]
                 has_authoritative_ranges = any(
-                    chapter.mapping_status == "verified" and chapter.range is not None
+                    chapter.mapping_status == "verified"
+                    and chapter.range is not None
+                    and chapter.catalog_evidence
                     for chapter in chapters
                 )
-                inspected_pdf_pages = {
-                    page
-                    for chapter in chapters
-                    for evidence in chapter.catalog_evidence
-                    for page in (evidence.page_start, evidence.page_end)
-                    if isinstance(page, int)
-                }
-                if has_authoritative_ranges:
-                    stage_history.append("source_codex_ranges_authored")
+                stage_history.append("directory_and_ranges_verified")
                 run = self.store.save_catalog_run(
                     run.model_copy(
                         update={
                             "stage_history": stage_history,
                             "metadata": {**run.metadata, **execution_metadata},
-                            "inspected_page_count": len(inspected_pdf_pages),
                         }
                     )
                 )
                 turn_count = direct_catalog.turn_count
-                unmapped_count = sum(
-                    chapter.mapping_status != "verified" for chapter in chapters
-                )
-                warnings = (
-                    [
-                        f"Source Codex left {unmapped_count} directory nodes unmapped after investigation."
-                    ]
-                    if unmapped_count
-                    else []
-                )
+                warnings = []
                 if not chapters:
-                    warnings.append("Source Codex returned an empty directory list.")
+                    warnings.append("The source agent returned an empty directory list.")
                 catalog_complete = True
                 structure_execution_metadata = {
                     key: value
@@ -307,10 +276,9 @@ class SourceDirectoryProcessor:
                     )
                 )
             else:
-                # Non-Codex providers receive only bounded directory evidence
-                # extracted by the host. Codex keeps the richer isolated-file
-                # path above, while all providers share the same validated
-                # chapter and source-range persistence contract.
+                # Compatibility seam for legacy unit tests that explicitly
+                # inject a host normalizer. Production construction never sets
+                # this factory and therefore cannot enter this branch.
                 extraction = extract_directory(
                     record,
                     path,
@@ -328,16 +296,7 @@ class SourceDirectoryProcessor:
                     )
                 )
                 _report(progress_callback, "normalizing_directory", 64)
-                normalizer = (
-                    self.normalizer_factory(record)
-                    if self.normalizer_factory is not None
-                    else TextModelDirectoryNormalizer(
-                        user_id=record.owner_user_id,
-                        progress_callback=progress_callback,
-                        activity_callback=activity_callback,
-                    )
-                )
-                normalization = normalizer.normalize(
+                normalization = self.normalizer_factory(record).normalize(
                     record=record,
                     candidates=extraction.candidates,
                     selection=catalog_model,
@@ -362,12 +321,7 @@ class SourceDirectoryProcessor:
                     )
                 catalog_complete = not bool(extraction.metadata.get("navigation_truncated"))
                 execution_metadata = {
-                    "catalog_authority": (
-                        "legacy_explicit_test_injection"
-                        if self.normalizer_factory is not None
-                        else "host_directory_evidence_with_selected_model"
-                    ),
-                    "catalog_model_provider": catalog_model.provider,
+                    "catalog_authority": "legacy_explicit_test_injection",
                     "extraction": extraction.metadata,
                     "normalization": normalization.metadata,
                 }
@@ -376,7 +330,7 @@ class SourceDirectoryProcessor:
 
             validation_stage = (
                 "validating_directory_ranges"
-                if not uses_direct_source_codex or has_authoritative_ranges
+                if self.normalizer_factory is not None or has_authoritative_ranges
                 else "validating_directory"
             )
             _report(progress_callback, validation_stage, 92)
@@ -385,6 +339,10 @@ class SourceDirectoryProcessor:
             quality = _catalog_quality(
                 chapters,
                 catalog_complete=catalog_complete,
+                directory_only_complete=(
+                    execution_metadata.get("catalog_task_contract")
+                    == "directory_pages_offset_tree_v1"
+                ),
             )
             status = "ready" if chapters else "linear_only"
             structure = SourceStructure(
@@ -393,7 +351,7 @@ class SourceDirectoryProcessor:
                 source_ingestion_id=record.id,
                 status=status,
                 strategy="codex_directory_v1",
-                has_verified_toc=verified_count > 0,
+                has_verified_toc=bool(chapters) and catalog_complete,
                 quality=quality,
                 chapter_count=len(chapters),
                 chunk_count=0,
@@ -916,95 +874,6 @@ def _materialize_chapters(
     return chapters
 
 
-def _preserve_verified_ranges(
-    chapters: Sequence[SourceChapter],
-    *,
-    previous_chapters: Sequence[SourceChapter],
-    source_content_hash: str,
-) -> tuple[list[SourceChapter], int]:
-    previous_by_id = {
-        chapter.id: chapter
-        for chapter in previous_chapters
-        if chapter.mapping_status == "verified"
-        and chapter.anchor_status == "verified"
-        and chapter.range is not None
-        and chapter.source_content_hash == source_content_hash
-    }
-    preserved = 0
-    result: list[SourceChapter] = []
-    for chapter in chapters:
-        previous = previous_by_id.get(chapter.id)
-        if chapter.mapping_status == "verified" or previous is None:
-            result.append(chapter)
-            continue
-        preserved += 1
-        result.append(
-            chapter.model_copy(
-                update={
-                    "body_start_offset": previous.body_start_offset,
-                    "body_end_offset": previous.body_end_offset,
-                    "page_start": previous.page_start,
-                    "page_end": previous.page_end,
-                    "anchor_status": previous.anchor_status,
-                    "range": previous.range,
-                    "mapping_status": previous.mapping_status,
-                    "catalog_evidence": previous.catalog_evidence,
-                    "confidence": previous.confidence,
-                    "metadata": {
-                        **chapter.metadata,
-                        "source_range_mapped": True,
-                        "range_preserved_from_catalog_version": previous.catalog_version,
-                    },
-                }
-            )
-        )
-    return result, preserved
-
-
-def _reusable_failed_pdf_catalog(
-    *,
-    store: SourceStructureStore,
-    record: SourceIngestionRecord,
-    source_content_hash: str,
-) -> SourceCodexCatalogResult | None:
-    if Path(record.file_name).suffix.lower() != ".pdf":
-        return None
-    for previous_run in store.list_catalog_runs(
-        owner_user_id=record.owner_user_id,
-        package_id=record.package_id,
-        source_id=record.id,
-        limit=20,
-    ):
-        payload = previous_run.metadata.get("codex_directory_payload")
-        payload_sha256 = str(
-            previous_run.metadata.get("codex_directory_payload_sha256") or ""
-        )
-        if (
-            previous_run.status != "failed"
-            or previous_run.metadata.get("source_content_hash") != source_content_hash
-            or not isinstance(payload, dict)
-            or not payload_sha256
-        ):
-            continue
-        try:
-            reusable = materialize_stored_codex_catalog(
-                record=record,
-                payload=payload,
-                source_content_hash=source_content_hash,
-                expected_payload_sha256=payload_sha256,
-            )
-        except SourceCodexCatalogError:
-            continue
-        return replace(
-            reusable,
-            audit_metadata={
-                **reusable.audit_metadata,
-                "directory_reused_from_catalog_run": previous_run.id,
-            },
-        )
-    return None
-
-
 def _validate_chapters(chapters: Sequence[SourceChapter]) -> None:
     seen_ids: set[str] = set()
     known_chapters: dict[str, SourceChapter] = {}
@@ -1045,23 +914,24 @@ def _catalog_quality(
     chapters: Sequence[SourceChapter],
     *,
     catalog_complete: bool = True,
+    directory_only_complete: bool = False,
 ) -> SourceStructureQuality:
     total = len(chapters)
     verified = sum(chapter.mapping_status == "verified" for chapter in chapters)
     unverified = total - verified
     ratio = verified / total if total else 0.0
-    level = (
-        "fully_verified"
-        if total and verified == total and catalog_complete
-        else "partially_verified"
-        if verified
-        else "unverified"
-    )
-    diagnostics = (
-        ["目录结构已识别；正文范围尚未映射。"]
-        if total and not verified
-        else ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
-    )
+    if total and catalog_complete and (directory_only_complete or verified == total):
+        level = "fully_verified"
+    elif verified:
+        level = "partially_verified"
+    else:
+        level = "unverified"
+    if total and directory_only_complete:
+        diagnostics = ["目录页、PDF 页码偏移 P 与目录层级已通过目录任务合同校验。"]
+    elif total and not verified:
+        diagnostics = ["目录结构已识别；正文范围尚未映射。"]
+    else:
+        diagnostics = ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
     if not catalog_complete:
         diagnostics.append(
             "目录超过结构节点上限，当前只发布部分导航；已验证节点仍可单独引用。"
@@ -1072,9 +942,13 @@ def _catalog_quality(
         evaluator_version=2,
         level=level,
         text_readiness="unknown",
-        confidence=(1.0 if total and catalog_complete and not verified else ratio)
-        if catalog_complete
-        else min(ratio, 0.9),
+        confidence=(
+            1.0
+            if total and catalog_complete and (directory_only_complete or not verified)
+            else ratio
+            if catalog_complete
+            else min(ratio, 0.9)
+        ),
         total_chapter_count=total,
         verified_chapter_count=verified,
         unverified_chapter_count=unverified,
@@ -1093,7 +967,7 @@ def _catalog_quality(
 
 def _directory_system_prompt() -> str:
     return """
-You are the OpenClass file-directory normalization model. You review only bounded
+You are the single OpenClass file-directory Codex. You review only bounded
 navigation evidence prepared by the host. Never infer subject knowledge or add
 headings that are absent from the packet. Keep a node only when it is a genuine
 document navigation unit; remove repeated running headers, page numbers, and

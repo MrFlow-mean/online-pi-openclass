@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from app.models import CodexAccountView
-from app.services import codex_app_server
+from app.services import codex_app_server, pi_agent_runtime
 from app.services.ai_call_budget import AICallBudget, bind_ai_call_budget
 
 
@@ -46,8 +47,14 @@ def _source_thread_result(cwd: Path) -> dict:
 
 @pytest.fixture
 def prepared_source_toolbox(monkeypatch):
-    def prepare(*, cwd: Path, source_path: Path, scratch_path: Path) -> Path:
-        del source_path, scratch_path
+    def prepare(
+        *,
+        cwd: Path,
+        source_path: Path,
+        scratch_path: Path,
+        inspection_scope: str = "source",
+    ) -> Path:
+        del source_path, scratch_path, inspection_scope
         toolbox = cwd / "toolbox"
         (toolbox / "bin").mkdir(parents=True)
         return toolbox
@@ -214,6 +221,74 @@ def test_structured_turn_sends_provider_strict_output_schema(
     assert "Role instructions:\nsystem" in session.thread_params["developerInstructions"]
 
 
+def test_structured_turn_forwards_a_custom_model_provider() -> None:
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+            self.thread_params: dict[str, object] = {}
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": '{"value":"ok"}',
+                        }
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def request(self, method, params, *, timeout_seconds):
+            assert method == "thread/start"
+            assert timeout_seconds > 0
+            self.thread_params = params
+            return {
+                "thread": {"id": "thread-id"},
+                "activePermissionProfile": {"id": "openclass_chat"},
+                "sandbox": {"type": "readOnly", "networkAccess": False},
+            }
+
+        def _write(self, _payload):
+            return None
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    session = _Session()
+
+    codex_app_server._run_structured_turn(
+        session=session,  # type: ignore[arg-type]
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        system_prompt="system",
+        user_prompt="user",
+        schema=_Payload,
+    )
+
+    assert session.thread_params["modelProvider"] == "deepseek"
+
+
+def test_custom_model_provider_does_not_require_chatgpt_sign_in(monkeypatch) -> None:
+    monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
+    monkeypatch.setattr(codex_app_server, "codex_app_server_available", lambda: True)
+    monkeypatch.setattr(
+        codex_app_server,
+        "codex_provider_status",
+        lambda *_args, **_kwargs: pytest.fail("custom providers must not require ChatGPT status"),
+    )
+
+    codex_app_server._require_codex_model_access("user_a", "deepseek")
+
+
 def test_codex_command_defines_an_isolated_source_permission_profile() -> None:
     rendered = "\n".join(
         codex_app_server._codex_app_server_command("/usr/local/bin/codex")
@@ -378,6 +453,7 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
             system_prompt="return a directory",
             user_prompt="inspect the source",
             schema=_StructuredPayload,
+            inspection_scope="directory_only",
         )
     )
 
@@ -397,6 +473,8 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
     assert "scratch" in thread_params["developerInstructions"]
     assert "prefer one bounded pdftotext extraction" in thread_params["developerInstructions"]
     assert "do not assume that Python" in thread_params["developerInstructions"]
+    assert "Directory-only hard boundary" in thread_params["developerInstructions"]
+    assert "never scan the entire source" in thread_params["developerInstructions"]
     assert source_path.name not in thread_params["developerInstructions"]
     turn_payload = captured["turn_payload"]
     assert turn_payload["params"]["outputSchema"]["additionalProperties"] is False
@@ -838,15 +916,64 @@ def test_copy_codex_auth_preserves_existing_target_runtime(monkeypatch, tmp_path
 
 def test_remove_codex_auth_preserves_source_runtime(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("OPENCLASS_CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("OPENCLASS_PI_RUNTIME_ROOT", str(tmp_path / "pi"))
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
     source_home = codex_app_server.codex_home_path("guest_a")
     source_home.mkdir(parents=True)
     (source_home / "auth.json").write_text('{"refresh": "credential"}', encoding="utf-8")
     (source_home / "state_5.sqlite").write_text("guest runtime", encoding="utf-8")
+    pi_home = pi_agent_runtime.pi_agent_directory(
+        owner_user_id="guest_a",
+        runtime_root=tmp_path / "pi",
+    )
+    (pi_home / "auth.json").write_text(
+        '{"openai-codex": {"type": "oauth"}, "other": {"type": "api_key"}}',
+        encoding="utf-8",
+    )
+    (pi_home / pi_agent_runtime.PI_CODEX_AUTH_FINGERPRINT_FILE).write_text(
+        "fingerprint",
+        encoding="utf-8",
+    )
 
     codex_app_server.remove_codex_auth("guest_a")
 
     assert (source_home / "auth.json").exists() is False
     assert (source_home / "state_5.sqlite").read_text(encoding="utf-8") == "guest runtime"
+    pi_auth = json.loads((pi_home / "auth.json").read_text(encoding="utf-8"))
+    assert "openai-codex" not in pi_auth
+    assert "other" in pi_auth
+    assert not (pi_home / pi_agent_runtime.PI_CODEX_AUTH_FINGERPRINT_FILE).exists()
+
+
+def test_codex_logout_removes_the_matching_pi_credential(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENCLASS_PI_RUNTIME_ROOT", str(tmp_path / "pi"))
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
+    monkeypatch.setattr(codex_app_server, "codex_app_server_available", lambda: True)
+    requests: list[tuple[str, dict, int]] = []
+
+    class Session:
+        def request(self, method, params, *, timeout_seconds):
+            requests.append((method, params, timeout_seconds))
+
+    @contextmanager
+    def managed_session(**_kwargs):
+        yield Session()
+
+    monkeypatch.setattr(codex_app_server, "_managed_session", managed_session)
+    pi_home = pi_agent_runtime.pi_agent_directory(
+        owner_user_id="user_a",
+        runtime_root=tmp_path / "pi",
+    )
+    (pi_home / "auth.json").write_text(
+        '{"openai-codex": {"type": "oauth"}}',
+        encoding="utf-8",
+    )
+
+    codex_app_server.logout_codex("user_a")
+
+    assert requests == [("account/logout", {}, 30)]
+    assert json.loads((pi_home / "auth.json").read_text(encoding="utf-8")) == {}
 
 
 def test_codex_status_cache_is_isolated_per_openclass_user(monkeypatch) -> None:

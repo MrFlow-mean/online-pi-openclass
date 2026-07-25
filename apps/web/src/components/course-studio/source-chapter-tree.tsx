@@ -69,9 +69,10 @@ function SourceChapterNode({
 }) {
   const hasChildren = node.children.length > 0;
   const isExpanded = expandedIds.has(node.chapter.id);
-  const isVerified = hasVerifiedChapterRange(node.chapter, catalog);
+  const directoryOnly = catalog.task_contract === "directory_pages_offset_tree_v1";
+  const isVerified = !directoryOnly && hasVerifiedChapterRange(node.chapter, catalog);
   const title = sourceChapterLabel(node.chapter);
-  const rangeLabel = sourceChapterRangeLabel(node.chapter);
+  const rangeLabel = directoryOnly ? "" : sourceChapterRangeLabel(node.chapter);
   return (
     <div>
       <div
@@ -98,12 +99,12 @@ function SourceChapterNode({
             <span className="shrink-0 text-[10px] tabular-nums text-gray-400">{rangeLabel}</span>
           ) : null}
         </button>
-        {!isVerified ? (
+        {!directoryOnly && !isVerified ? (
           <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录已识别，正文范围未映射">
             范围未映射
           </span>
         ) : null}
-        {onSourceReference && isVerified ? (
+        {onSourceReference && !directoryOnly && isVerified ? (
           <button
             type="button"
             onClick={() => onSourceReference(createSourceChapterSelection(source, node.chapter, catalog))}

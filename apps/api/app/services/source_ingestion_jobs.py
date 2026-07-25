@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -14,6 +15,8 @@ from app.services import workspace_state
 
 
 WriteResult = TypeVar("WriteResult")
+SourceTaskKey = tuple[str, str, str]
+logger = logging.getLogger(__name__)
 
 
 class SourceIngestionCoordinator:
@@ -217,6 +220,31 @@ class SourceIngestionJobStore:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def list_active_scopes(self) -> list[SourceTaskKey]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT owner_user_id, package_id, source_ingestion_id
+                FROM source_ingestion_jobs AS candidate
+                WHERE candidate.id = (
+                    SELECT latest.id
+                    FROM source_ingestion_jobs AS latest
+                    WHERE latest.owner_user_id = candidate.owner_user_id
+                      AND latest.package_id = candidate.package_id
+                      AND latest.source_ingestion_id = candidate.source_ingestion_id
+                    ORDER BY latest.updated_at DESC, latest.id DESC
+                    LIMIT 1
+                )
+                  AND candidate.status IN ('queued', 'fetching', 'parsing', 'indexing')
+                ORDER BY candidate.updated_at ASC
+                """
+            ).fetchall()
+        return [
+            (str(row["owner_user_id"]), str(row["package_id"]), str(row["source_ingestion_id"]))
+            for row in rows
+            if str(row["source_ingestion_id"] or "").strip()
+        ]
+
     def latest_for_source(
         self,
         *,
@@ -272,3 +300,83 @@ class SourceIngestionJobStore:
 
 
 source_ingestion_job_store = SourceIngestionJobStore()
+
+
+class SourceIngestionTaskManager:
+    """Run persisted source work outside an individual HTTP request lifecycle."""
+
+    def __init__(self, job_store: SourceIngestionJobStore = source_ingestion_job_store) -> None:
+        self.job_store = job_store
+        self._active: set[SourceTaskKey] = set()
+        self._lock = threading.Lock()
+
+    def submit(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        retry: bool = False,
+    ) -> bool:
+        key = (owner_user_id, package_id, source_id)
+        with self._lock:
+            if key in self._active:
+                return False
+            self._active.add(key)
+        threading.Thread(
+            target=self._run,
+            kwargs={"key": key, "retry": retry},
+            daemon=True,
+            name=f"source-ingestion-{source_id}",
+        ).start()
+        return True
+
+    def recover_active(self) -> int:
+        return sum(
+            self.submit(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            for owner_user_id, package_id, source_id in self.job_store.list_active_scopes()
+        )
+
+    def is_active(self, key: SourceTaskKey) -> bool:
+        with self._lock:
+            return key in self._active
+
+    def _run(self, *, key: SourceTaskKey, retry: bool) -> None:
+        owner_user_id, package_id, source_id = key
+        try:
+            from app.services.source_ingestion_service import source_ingestion_service
+
+            record = source_ingestion_service.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            weight = self.job_store.coordinator.processing_capacity
+            if record is not None:
+                weight = self.job_store.coordinator.processing_weight(
+                    size_bytes=record.size_bytes,
+                    source_type=record.source_type,
+                )
+            operation = (
+                source_ingestion_service.retry_source
+                if retry
+                else source_ingestion_service.process_file_source
+            )
+            with self.job_store.coordinator.processing_slot(weight=weight):
+                operation(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+        except Exception:
+            logger.exception("Source ingestion task failed for %s", source_id)
+        finally:
+            with self._lock:
+                self._active.discard(key)
+
+
+source_ingestion_task_manager = SourceIngestionTaskManager()
