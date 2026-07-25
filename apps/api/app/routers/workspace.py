@@ -13,8 +13,11 @@ from app.models import (
     CreatePackageRequest,
     GenerateLessonRequest,
     MoveLessonRequest,
+    PublicCoursePackageView,
+    PublicLessonView,
     ReorderTabsRequest,
     UpdatePackageRequest,
+    UpdateVisibilityRequest,
     UserView,
     WorkspaceStateView,
 )
@@ -34,6 +37,7 @@ from app.services.workspace_state import (
     find_lesson_package,
     get_package,
     get_standalone_package,
+    get_course_store,
     load_workspace_for_user,
     load_workspace_for_user_with_revision,
     load_workspace_package_for_user,
@@ -46,6 +50,17 @@ from app.services.workspace_state import (
 )
 
 router = APIRouter()
+
+
+def _public_lesson_view(lesson) -> PublicLessonView:
+    return PublicLessonView(
+        id=lesson.id,
+        title=lesson.title,
+        summary=lesson.summary,
+        tags=lesson.tags,
+        board_document=lesson.board_document,
+        updated_at=lesson.updated_at,
+    )
 
 
 @router.post("/api/workspace/import-ridoc", response_model=CoursePackageView)
@@ -142,8 +157,49 @@ def update_package(
     if request.summary is not None:
         package.summary = request.summary.strip()
 
+    if request.visibility is not None:
+        if workspace.packages and package.id == workspace.packages[0].id:
+            raise HTTPException(status_code=400, detail="Standalone lessons manage visibility individually")
+        package.visibility = request.visibility
+
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
+
+
+@router.post("/api/lessons/{lesson_id}/visibility", response_model=WorkspaceStateView)
+def update_lesson_visibility(
+    lesson_id: str,
+    request: UpdateVisibilityRequest,
+    user: UserView = Depends(current_user),
+) -> WorkspaceStateView:
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    if not workspace.packages or package.id != workspace.packages[0].id:
+        raise HTTPException(status_code=400, detail="Packaged lessons inherit their package visibility")
+    lesson.visibility = request.visibility
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+    return workspace_view(workspace)
+
+
+@router.get("/api/public/lessons/{lesson_id}", response_model=PublicLessonView)
+def get_public_lesson(lesson_id: str) -> PublicLessonView:
+    lesson = get_course_store().load_public_lesson(lesson_id)
+    if lesson is None:
+        raise HTTPException(status_code=404, detail="Public lesson not found")
+    return _public_lesson_view(lesson)
+
+
+@router.get("/api/public/packages/{package_id}", response_model=PublicCoursePackageView)
+def get_public_package(package_id: str) -> PublicCoursePackageView:
+    package = get_course_store().load_public_package(package_id)
+    if package is None:
+        raise HTTPException(status_code=404, detail="Public package not found")
+    return PublicCoursePackageView(
+        id=package.id,
+        title=package.title,
+        summary=package.summary,
+        lessons=[_public_lesson_view(lesson) for lesson in package.lessons],
+    )
 
 
 @router.post("/api/packages/{package_id}/delete", response_model=WorkspaceStateView)

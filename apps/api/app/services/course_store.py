@@ -30,7 +30,7 @@ from app.models import (
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -74,6 +74,38 @@ class SqliteCourseStore:
     def load_for_user(self, owner_user_id: str) -> WorkspaceState:
         workspace, _ = self.load_for_user_with_revision(owner_user_id)
         return workspace
+
+    def load_public_package(self, package_id: str) -> CoursePackage | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM course_packages
+                    WHERE id = ? AND visibility = 'public' AND sort_order > 0
+                    """,
+                    (package_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return self._read_package(conn, row, owner_user_id=row["owner_user_id"])
+
+    def load_public_lesson(self, lesson_id: str) -> Lesson | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT lessons.*
+                    FROM lessons
+                    JOIN course_packages ON course_packages.id = lessons.package_id
+                    WHERE lessons.id = ?
+                      AND lessons.visibility = 'public'
+                      AND course_packages.sort_order = 0
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return self._read_lesson(conn, row)
 
     def load_for_user_with_revision(self, owner_user_id: str) -> tuple[WorkspaceState, int]:
         with self._lock:
@@ -442,6 +474,7 @@ class SqliteCourseStore:
                 owner_user_id TEXT,
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
+                visibility TEXT NOT NULL DEFAULT 'private',
                 sort_order INTEGER NOT NULL,
                 active_lesson_id TEXT
             );
@@ -454,6 +487,7 @@ class SqliteCourseStore:
                 slug TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
+                visibility TEXT NOT NULL DEFAULT 'private',
                 board_document_id TEXT NOT NULL,
                 board_document_title TEXT NOT NULL,
                 board_content_json TEXT NOT NULL,
@@ -723,6 +757,10 @@ class SqliteCourseStore:
         }
         if "owner_user_id" not in package_columns:
             conn.execute("ALTER TABLE course_packages ADD COLUMN owner_user_id TEXT")
+        if "visibility" not in package_columns:
+            conn.execute("ALTER TABLE course_packages ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'")
+        if "visibility" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'")
 
     def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
@@ -870,6 +908,7 @@ class SqliteCourseStore:
             id=package_id,
             title=row["title"],
             summary=row["summary"],
+            visibility=row["visibility"],
             lessons=lessons,
             course_graph=course_graph,
             resources=resources,
@@ -924,6 +963,7 @@ class SqliteCourseStore:
             slug=row["slug"],
             summary=row["summary"],
             tags=_loads(row["tags_json"], []),
+            visibility=row["visibility"],
             board_document=_document_from_row(row, "board"),
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
             board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
@@ -1074,10 +1114,18 @@ class SqliteCourseStore:
         conn.execute(
             """
             INSERT INTO course_packages(
-                id, owner_user_id, title, summary, sort_order, active_lesson_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                id, owner_user_id, title, summary, visibility, sort_order, active_lesson_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (package.id, owner_user_id, package.title, package.summary, package_index, package.active_lesson_id),
+            (
+                package.id,
+                owner_user_id,
+                package.title,
+                package.summary,
+                package.visibility,
+                package_index,
+                package.active_lesson_id,
+            ),
         )
         for index, lesson_id in enumerate(package.open_lesson_ids):
             conn.execute(
@@ -1127,13 +1175,13 @@ class SqliteCourseStore:
         conn.execute(
             """
             INSERT INTO lessons(
-                id, package_id, sort_order, title, slug, summary, tags_json,
+                id, package_id, sort_order, title, slug, summary, tags_json, visibility,
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json,
                 board_task_requirements_json, teaching_guide_json,
                 current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -1143,6 +1191,7 @@ class SqliteCourseStore:
                 lesson.slug,
                 lesson.summary,
                 _dumps(lesson.tags),
+                lesson.visibility,
                 document.id,
                 document.title,
                 _dumps(document.content_json),

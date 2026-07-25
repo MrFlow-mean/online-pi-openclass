@@ -163,6 +163,90 @@ def test_health_reports_provider_neutral_board_and_realtime_status(
     assert evidence_routes == []
 
 
+def test_standalone_lessons_and_packages_have_revocable_public_visibility(
+    api_client: TestClient,
+) -> None:
+    workspace = api_client.get("/api/workspace").json()
+    standalone_package = workspace["packages"][0]
+    assert standalone_package["visibility"] == "private"
+
+    standalone_lesson_response = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Standalone project", "start_blank": True},
+    )
+    assert standalone_lesson_response.status_code == 200
+    standalone_lesson = standalone_lesson_response.json()["lessons"][0]
+    assert standalone_lesson["visibility"] == "private"
+    assert api_client.get(f"/api/public/lessons/{standalone_lesson['id']}").status_code == 404
+
+    published_lesson = api_client.post(
+        f"/api/lessons/{standalone_lesson['id']}/visibility",
+        json={"visibility": "public"},
+    )
+    assert published_lesson.status_code == 200
+    published_lesson_data = next(
+        lesson
+        for package in published_lesson.json()["packages"]
+        for lesson in package["lessons"]
+        if lesson["id"] == standalone_lesson["id"]
+    )
+    assert published_lesson_data["visibility"] == "public"
+
+    public_lesson = api_client.get(f"/api/public/lessons/{standalone_lesson['id']}")
+    assert public_lesson.status_code == 200
+    assert public_lesson.json()["title"] == "Standalone project"
+    assert "history_graph" not in public_lesson.json()
+
+    private_lesson = api_client.post(
+        f"/api/lessons/{standalone_lesson['id']}/visibility",
+        json={"visibility": "private"},
+    )
+    assert private_lesson.status_code == 200
+    assert api_client.get(f"/api/public/lessons/{standalone_lesson['id']}").status_code == 404
+
+    created_package = api_client.post(
+        "/api/packages",
+        json={"title": "Public package", "summary": "Package summary"},
+    )
+    assert created_package.status_code == 200
+    package_id = created_package.json()["active_package_id"]
+    package_data = next(item for item in created_package.json()["packages"] if item["id"] == package_id)
+    assert package_data["visibility"] == "private"
+
+    packaged_lesson_response = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Packaged lesson", "target_package_id": package_id, "start_blank": True},
+    )
+    assert packaged_lesson_response.status_code == 200
+    packaged_lesson = packaged_lesson_response.json()["lessons"][0]
+    assert (
+        api_client.post(
+            f"/api/lessons/{packaged_lesson['id']}/visibility",
+            json={"visibility": "public"},
+        ).status_code
+        == 400
+    )
+    assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
+
+    published_package = api_client.post(
+        f"/api/packages/{package_id}",
+        json={"visibility": "public"},
+    )
+    assert published_package.status_code == 200
+    public_package = api_client.get(f"/api/public/packages/{package_id}")
+    assert public_package.status_code == 200
+    assert public_package.json()["title"] == "Public package"
+    assert [lesson["title"] for lesson in public_package.json()["lessons"]] == ["Packaged lesson"]
+    assert "history_graph" not in public_package.json()["lessons"][0]
+
+    private_package = api_client.post(
+        f"/api/packages/{package_id}",
+        json={"visibility": "private"},
+    )
+    assert private_package.status_code == 200
+    assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
+
+
 def _docx_text_nodes(content: bytes) -> list[str]:
     with ZipFile(BytesIO(content)) as archive:
         document_xml = archive.read("word/document.xml")

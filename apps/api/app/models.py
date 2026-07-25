@@ -43,6 +43,7 @@ CourseEdgeType = Literal[
     "alternate_path",
     "derived_from",
 ]
+PublicationVisibility = Literal["private", "public"]
 
 TeachingMode = Literal["definition", "intuition", "analogy", "example", "dialogue"]
 BoardAction = Literal["no_change", "edit_board"]
@@ -563,6 +564,7 @@ class Lesson(BaseModel):
     slug: str
     summary: str
     tags: list[str] = Field(default_factory=list)
+    visibility: PublicationVisibility = "private"
     board_document: BoardDocument
     board_teaching_guide: BoardTeachingGuide | None = None
     board_teaching_progress: BoardTeachingProgress | None = None
@@ -1249,6 +1251,7 @@ class CoursePackage(BaseModel):
     id: str = Field(default_factory=lambda: new_id("course"))
     title: str
     summary: str
+    visibility: PublicationVisibility = "private"
     lessons: list[Lesson]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
     resources: list[ResourceLibraryItem] = Field(default_factory=list)
@@ -1538,6 +1541,7 @@ class LessonView(BaseModel):
     slug: str
     summary: str
     tags: list[str] = Field(default_factory=list)
+    visibility: PublicationVisibility = "private"
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
     board_task_requirements: BoardTaskRequirementSheet | None = None
@@ -1550,6 +1554,7 @@ class CoursePackageView(BaseModel):
     id: str
     title: str
     summary: str
+    visibility: PublicationVisibility = "private"
     is_standalone: bool = False
     lessons: list[LessonView]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
@@ -1557,6 +1562,22 @@ class CoursePackageView(BaseModel):
     open_lesson_ids: list[str] = Field(default_factory=list)
     active_lesson_id: str | None = None
     workspace_tab_order: list[str] = Field(default_factory=list)
+
+
+class PublicLessonView(BaseModel):
+    id: str
+    title: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    board_document: BoardDocument
+    updated_at: str
+
+
+class PublicCoursePackageView(BaseModel):
+    id: str
+    title: str
+    summary: str
+    lessons: list[PublicLessonView] = Field(default_factory=list)
 
 
 class WorkspaceStateView(BaseModel):
@@ -1868,6 +1889,11 @@ class CreatePackageRequest(BaseModel):
 class UpdatePackageRequest(BaseModel):
     title: str | None = None
     summary: str | None = None
+    visibility: PublicationVisibility | None = None
+
+
+class UpdateVisibilityRequest(BaseModel):
+    visibility: PublicationVisibility
 
 
 class MoveLessonRequest(BaseModel):
