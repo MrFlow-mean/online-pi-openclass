@@ -388,6 +388,7 @@ export interface Lesson {
   slug: string;
   summary: string;
   tags: string[];
+  visibility: "private" | "public";
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
   board_task_requirements?: BoardTaskRequirementSheet | null;
@@ -863,6 +864,7 @@ export interface CoursePackage {
   id: string;
   title: string;
   summary: string;
+  visibility: "private" | "public";
   is_standalone: boolean;
   lessons: Lesson[];
   course_graph: CourseGraphEdge[];

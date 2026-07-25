@@ -21,10 +21,12 @@ import {
   Flame,
   FolderClosed,
   GitFork,
+  Globe2,
   GraduationCap,
   Languages,
   Layers,
   LoaderCircle,
+  LockKeyhole,
   MessageCircle,
   MoreHorizontal,
   PencilLine,
@@ -46,8 +48,15 @@ import {
 import { InlineNameForm } from "@/components/inline-name-form";
 import { LearningActivityCalendar } from "@/components/learning-activity-calendar";
 import { RecentFeedCard } from "@/components/recent-feed-card";
+import { ProjectVisibilityControl } from "@/components/project-visibility-control";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
+import {
+  publicProjectHref,
+  updateLessonVisibility,
+  updatePackageVisibility,
+  type ProjectVisibility,
+} from "@/lib/project-visibility";
 import { homeRelativeFormat } from "@/lib/i18n/product-ui";
 import { downloadRidoc, RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
 import { useHomeLessonBatch } from "@/hooks/use-home-lesson-batch";
@@ -513,6 +522,37 @@ export function LearningHome() {
     }
   }
 
+  async function handleSetLessonVisibility(lesson: Lesson, visibility: ProjectVisibility) {
+    setBusyKey(`visibility:lesson:${lesson.id}`);
+    try {
+      const payload = await updateLessonVisibility(lesson.id, visibility);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "更新课程可见权限失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleShareLesson(lesson: Lesson) {
+    if (typeof window === "undefined" || lesson.visibility !== "public") {
+      return;
+    }
+    const url = new URL(publicProjectHref("lesson", lesson.id), window.location.origin).toString();
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share({ title: lesson.title, text: `分享课程：${lesson.title}`, url });
+        return;
+      }
+      window.prompt("复制公开课程链接", url);
+    } catch (shareError) {
+      if (!(shareError instanceof DOMException && shareError.name === "AbortError")) {
+        setError(shareError instanceof Error ? shareError.message : errMsgs.current.sharePackageFail);
+      }
+    }
+  }
+
   async function handleLoadLessonPackage(file: File) {
     setBusyKey("ridoc:import");
     setStandaloneCreateMenuOpen(false);
@@ -635,13 +675,28 @@ export function LearningHome() {
     }
   }
 
+  async function handleSetSelectedPackageVisibility(visibility: ProjectVisibility) {
+    if (!selectedCoursePackage) {
+      return;
+    }
+    setBusyKey(`visibility:package:${selectedCoursePackage.id}`);
+    try {
+      const payload = await updatePackageVisibility(selectedCoursePackage.id, visibility);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "更新课程包可见权限失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   async function handleShareSelectedPackage() {
-    if (!selectedCoursePackage || typeof window === "undefined") {
+    if (!selectedCoursePackage || selectedCoursePackage.visibility !== "public" || typeof window === "undefined") {
       return;
     }
 
-    const shareUrl = new URL(window.location.href);
-    shareUrl.searchParams.set("package", selectedCoursePackage.id);
+    const shareUrl = new URL(publicProjectHref("package", selectedCoursePackage.id), window.location.origin);
     const shareData = {
       title: selectedCoursePackage.title,
       text: `分享课程包：${selectedCoursePackage.title}`,
@@ -1023,7 +1078,7 @@ export function LearningHome() {
                                     : {
                                         lessonId: lesson.id,
                                         top: rect.bottom + 6,
-                                        left: Math.max(16, rect.right - 192),
+                                        left: Math.max(16, rect.right - 224),
                                       }
                                 );
                               }}
@@ -1072,7 +1127,12 @@ export function LearningHome() {
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-3">
                                 <p className="truncate text-sm font-medium text-stone-950">{lesson.title}</p>
-                                <span className="shrink-0 text-[10px] text-stone-400">
+                                <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-stone-400">
+                                  {lesson.visibility === "public" ? (
+                                    <Globe2 className="h-3 w-3 text-emerald-600" aria-label="Public" />
+                                  ) : (
+                                    <LockKeyhole className="h-3 w-3" aria-label="Private" />
+                                  )}
                                   {homeRelFmt(lesson.updated_at)}
                                 </span>
                               </div>
@@ -1248,12 +1308,22 @@ export function LearningHome() {
           className="fixed z-[140]"
           style={{ top: lessonMenuState.top, left: lessonMenuState.left }}
         >
-          <div className="w-48 rounded-[22px] border border-stone-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+          <div className="w-56 rounded-[22px] border border-stone-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+            <ProjectVisibilityControl
+              visibility={lessonMenuLesson.visibility}
+              onChange={(visibility) => void handleSetLessonVisibility(lessonMenuLesson, visibility)}
+              disabled={busyKey !== null}
+              label={language === "en" ? "Visibility" : "可见权限"}
+            />
+
+            <div className="my-1 h-px bg-stone-100" />
+
             <button
               type="button"
-              disabled
-              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-300"
-              title={h.shareLater}
+              onClick={() => void handleShareLesson(lessonMenuLesson)}
+              disabled={lessonMenuLesson.visibility !== "public" || busyKey !== null}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
+              title={lessonMenuLesson.visibility === "public" ? h.sharePackageTitle : "设为 Public 后可分享"}
             >
               <Share2 className="h-4 w-4" />
               {h.share}
@@ -1659,7 +1729,8 @@ export function LearningHome() {
     }
     const isDeletingPackage = busyKey === `package:delete:${selectedCoursePackage.id}`;
     const isRenamingPackage = busyKey === `package:rename:${selectedCoursePackage.id}`;
-    const packageActionBusy = isDeletingPackage || isRenamingPackage;
+    const isUpdatingVisibility = busyKey === `visibility:package:${selectedCoursePackage.id}`;
+    const packageActionBusy = isDeletingPackage || isRenamingPackage || isUpdatingVisibility;
 
     return (
       <div className="w-full rounded-[28px] border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.1)] backdrop-blur">
@@ -1670,6 +1741,13 @@ export function LearningHome() {
             </p>
             <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{selectedCoursePackage.title}</h4>
             <div className="mt-2 flex h-3.5 origin-left scale-[0.82] flex-nowrap items-center gap-0.5">
+              <ProjectVisibilityControl
+                compact
+                visibility={selectedCoursePackage.visibility}
+                onChange={(visibility) => void handleSetSelectedPackageVisibility(visibility)}
+                disabled={packageActionBusy}
+                ariaLabelPrefix="课程包设为"
+              />
               <button
                 type="button"
                 onClick={() => void handleDeleteSelectedPackage()}
@@ -1683,9 +1761,9 @@ export function LearningHome() {
               <button
                 type="button"
                 onClick={() => void handleShareSelectedPackage()}
-                disabled={packageActionBusy}
+                disabled={packageActionBusy || selectedCoursePackage.visibility !== "public"}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title={h.sharePackageTitle}
+                title={selectedCoursePackage.visibility === "public" ? h.sharePackageTitle : "设为 Public 后可分享"}
               >
                 <Share2 className="h-2 w-2" />
                 {h.share}
