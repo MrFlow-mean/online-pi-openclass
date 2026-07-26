@@ -1,4 +1,20 @@
+import { createHash } from "node:crypto";
+
 import { expect, test } from "@playwright/test";
+
+test("serves the exact Apple Pay production domain association", async ({ request }) => {
+  const response = await request.get(
+    "/.well-known/apple-developer-merchantid-domain-association",
+    { maxRedirects: 0 }
+  );
+
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toBe("application/octet-stream");
+  expect(response.headers().location).toBeUndefined();
+  expect(createHash("sha256").update(await response.body()).digest("hex")).toBe(
+    "cdb19c18ab558f50994fb98413eaad9d495b552a2fdf07505e4fb4f5777e4969"
+  );
+});
 
 test("shows PayPal points at face value without exposing the internal cost value", async ({ context, page }) => {
   await context.addCookies([
