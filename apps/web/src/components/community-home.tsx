@@ -11,6 +11,27 @@ import { communityApi } from "@/lib/community-api";
 import type { CommunityIntegration, UserView } from "@/types";
 
 
+function publicCommunityDestination(publicUrl: string) {
+  try {
+    const current = new URL(window.location.href);
+    const destination = new URL(publicUrl, current);
+    const normalizedCurrentPath = current.pathname.replace(/\/+$/, "") || "/";
+    const normalizedDestinationPath = destination.pathname.replace(/\/+$/, "") || "/";
+    if (
+      destination.origin === current.origin &&
+      normalizedDestinationPath === normalizedCurrentPath &&
+      !destination.pathname.endsWith("/")
+    ) {
+      destination.pathname = `${destination.pathname}/`;
+      return destination.toString();
+    }
+  } catch {
+    // Let the browser handle adapter-provided URLs that are not URL-parseable here.
+  }
+  return publicUrl;
+}
+
+
 function CommunityStatusPage({
   integration,
   error,
@@ -102,7 +123,7 @@ export function CommunityHome() {
     const destination = registeredUser && ssoReady
       ? integration.entry_url
       : integration.available
-        ? integration.public_url
+        ? integration.public_url && publicCommunityDestination(integration.public_url)
         : null;
     if (destination) {
       window.location.replace(destination);

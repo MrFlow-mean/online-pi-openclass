@@ -18,6 +18,10 @@ OpenClass origin without taking over unrelated root routes, build with
 the existing HTTPS server block, and set `OPENCLASS_COMMUNITY_PUBLIC_URL` plus
 `OPENCLASS_ANSWER_SITE_URL` to `https://open-classes.com/community`. The Answer
 API and uploaded files keep their native `/answer/` and `/uploads/` paths.
+Keep the exact `/community` request on the OpenClass Web upstream: it is the
+identity-aware entry that sends registered users through SSO. The supplied
+snippet owns only `/community/` and below, where Answer serves the forum. An
+anonymous visitor is redirected from the entry to that trailing-slash mount.
 The image build defaults to a 1536 MB Node.js heap; constrained builders can
 override it with `OPENCLASS_ANSWER_NODE_OPTIONS`.
 

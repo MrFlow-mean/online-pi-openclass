@@ -72,6 +72,32 @@ test("sends an anonymous reader to the public Answer site", async ({ page }) => 
 });
 
 
+test("keeps a same-origin OpenClass entry separate from the public Answer mount", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const publicUrl = `${baseURL}/community`;
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 401,
+    contentType: "application/json",
+    body: JSON.stringify({ detail: "未登录" }),
+  }));
+  await page.route("**/api/community/integration", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ...readyIntegration, public_url: publicUrl }),
+  }));
+  await page.route(`${publicUrl}/`, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: "<title>OpenClass Community</title><h1>Public Answer</h1>",
+  }));
+
+  await page.goto("/community");
+
+  await expect(page).toHaveURL(`${publicUrl}/`);
+  await expect(page.getByRole("heading", { name: "Public Answer" })).toBeVisible();
+});
+
+
 test("reports an unavailable Answer service without exposing a second forum", async ({ page }) => {
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 401,
