@@ -67,7 +67,7 @@ test("shows PayPal points at face value without exposing the internal cost value
   await expect(page.getByText("75 美元", { exact: false })).toHaveCount(0);
 });
 
-test("shows PayPal, eligible cards, Apple Pay, and Google Pay for the selected package", async ({
+test("opens a standalone checkout with eligible PayPal payment methods", async ({
   context,
   page,
 }) => {
@@ -145,14 +145,24 @@ test("shows PayPal, eligible cards, Apple Pay, and Google Pay for the selected p
               document.querySelector(target).appendChild(button);
             },
           }),
-          CardFields: () => ({
-            isEligible: () => true,
-            NameField: () => ({ render: async () => {} }),
-            NumberField: () => ({ render: async () => {} }),
-            ExpiryField: () => ({ render: async () => {} }),
-            CVVField: () => ({ render: async () => {} }),
-            submit: async () => {},
-          }),
+          CardFields: () => {
+            const field = (options) => ({
+              render: async (target) => {
+                const element = document.querySelector(target);
+                element.textContent = options.placeholder;
+                element.style.padding = "14px 12px";
+                element.style.color = "#78716c";
+              },
+            });
+            return {
+              isEligible: () => true,
+              NameField: field,
+              NumberField: field,
+              ExpiryField: field,
+              CVVField: field,
+              submit: async () => {},
+            };
+          },
           Applepay: () => ({
             config: async () => ({
               isEligible: true,
@@ -200,10 +210,15 @@ test("shows PayPal, eligible cards, Apple Pay, and Google Pay for the selected p
   );
 
   await page.goto("/wallet");
+  await expect(page.getByTestId("paypal-checkout-panel")).toHaveCount(0);
   await page.getByRole("button", { name: /\$100\.00/ }).click();
 
+  await expect(page).toHaveURL(/\/wallet\/checkout\?package=usd_10000$/);
+  await expect(page.getByRole("heading", { name: "完成支付" })).toBeVisible();
+  await expect(page.getByTestId("paypal-checkout-panel")).toBeVisible();
   await expect(page.getByRole("button", { name: "PayPal", exact: true })).toBeVisible();
   await expect(page.getByTestId("paypal-card-fields")).toBeVisible();
   await expect(page.locator("apple-pay-button")).toBeVisible();
   await expect(page.getByRole("button", { name: "Google Pay", exact: true })).toBeVisible();
+  await page.screenshot({ path: "/tmp/openclass-wallet-redesign.png", fullPage: true });
 });

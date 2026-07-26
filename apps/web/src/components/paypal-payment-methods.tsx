@@ -217,7 +217,7 @@ export function PayPalPaymentMethods({
           onApprove: (data: PayPalOrderData) => captureOrder(data.orderID),
           onCancel: () => onNotice("你已取消本次付款，没有产生扣款。"),
           onError: (error: unknown) => onError(errorMessage(error, "PayPal 付款失败")),
-          style: { layout: "vertical", shape: "rect", label: "paypal", height: 45 },
+          style: { layout: "vertical", shape: "rect", color: "black", label: "paypal", height: 48 },
         });
         if (buttons.isEligible()) {
           await buttons.render("#paypal-button-container");
@@ -233,6 +233,10 @@ export function PayPalPaymentMethods({
                 "font-size": "16px",
                 "font-family": "system-ui, sans-serif",
                 color: "#1c1917",
+                border: "none",
+                outline: "none",
+                padding: "14px 12px",
+                "background-color": "#ffffff",
               },
               ".invalid": { color: "#b91c1c" },
             },
@@ -322,63 +326,94 @@ export function PayPalPaymentMethods({
   }
 
   return (
-    <section className="mt-5 rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-      <div className="flex items-center justify-between gap-3">
+    <section className="mx-auto mt-8 max-w-md" data-testid="paypal-checkout-panel">
+      <div className="flex items-start justify-between gap-5 border-b border-stone-200 pb-5">
         <div>
-          <h3 className="font-semibold">选择付款方式</h3>
-          <p className="mt-1 text-sm text-stone-600">
-            本次充值 ${paymentPackage.amount_usd}，获得 {paymentPackage.credits.toLocaleString()} 点数。
+          <p className="text-sm font-semibold text-stone-950">付款</p>
+          <p className="mt-1 text-sm text-stone-500">
+            购买 {paymentPackage.credits.toLocaleString()} 点数
           </p>
         </div>
-        {sdkLoading ? <LoaderCircle className="h-5 w-5 animate-spin text-blue-700" /> : null}
+        <div className="flex items-center gap-2">
+          <span className="text-lg font-semibold text-stone-950">${paymentPackage.amount_usd}</span>
+          {sdkLoading ? <LoaderCircle className="h-4 w-4 animate-spin text-stone-400" /> : null}
+        </div>
       </div>
 
-      <div className="mt-4 max-w-md" id="paypal-button-container" />
+      <div className="mt-6">
+        <p className="text-sm font-semibold text-stone-950">快捷付款</p>
+        <div
+          className={`mt-3 grid gap-3 ${applePayEligible || googlePayEligible ? "sm:grid-cols-2" : ""}`}
+        >
+          <div className="min-h-12 overflow-hidden rounded-lg" id="paypal-button-container" />
+          <div id="apple-pay-button-container" className={applePayEligible ? "min-h-12" : "hidden"} />
+          <div id="google-pay-button-container" className={googlePayEligible ? "min-h-12" : "hidden"} />
+        </div>
+      </div>
 
-      <div className={cardEligible ? "mt-4" : "hidden"} data-testid="paypal-card-fields">
-        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-stone-800">
-          <CreditCard className="h-4 w-4" /> Visa / Mastercard
+      <div className={cardEligible ? "my-6 flex items-center gap-3" : "hidden"} aria-hidden="true">
+        <span className="h-px flex-1 bg-stone-200" />
+        <span className="text-xs text-stone-400">或使用银行卡</span>
+        <span className="h-px flex-1 bg-stone-200" />
+      </div>
+
+      <div className={cardEligible ? "block" : "hidden"} data-testid="paypal-card-fields">
+        <div className="rounded-xl border border-stone-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-stone-200 px-4 py-4">
+            <span className="flex items-center gap-2 text-sm font-semibold text-stone-900">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full border-[5px] border-stone-950" />
+              <CreditCard className="h-4 w-4" />
+              银行卡
+            </span>
+            <span className="text-xs font-medium tracking-wide text-stone-400">VISA · MASTERCARD</span>
+          </div>
+
+          <div className="p-4">
+            <label className="mb-2 block text-xs font-medium text-stone-500">银行卡信息</label>
+            <div className="overflow-hidden rounded-lg border border-stone-300 bg-white shadow-sm">
+              <div id="paypal-card-number" className="h-[52px] overflow-hidden" />
+              <div className="grid grid-cols-2 border-t border-stone-300">
+                <div id="paypal-card-expiry" className="h-[52px] overflow-hidden" />
+                <div id="paypal-card-cvv" className="h-[52px] overflow-hidden border-l border-stone-300" />
+              </div>
+            </div>
+
+            <label className="mb-2 mt-4 block text-xs font-medium text-stone-500">持卡人姓名</label>
+            <div
+              id="paypal-card-name"
+              className="h-[52px] overflow-hidden rounded-lg border border-stone-300 bg-white shadow-sm"
+            />
+          </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div id="paypal-card-name" className="h-12 rounded-lg border border-stone-300 bg-white px-3" />
-          <div id="paypal-card-number" className="h-12 rounded-lg border border-stone-300 bg-white px-3" />
-          <div id="paypal-card-expiry" className="h-12 rounded-lg border border-stone-300 bg-white px-3" />
-          <div id="paypal-card-cvv" className="h-12 rounded-lg border border-stone-300 bg-white px-3" />
-        </div>
+
         <button
           type="button"
           onClick={() => void submitCard()}
           disabled={disabled || cardSubmitting}
-          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-stone-950 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-6 inline-flex h-14 w-full items-center justify-center gap-2 rounded-lg bg-[#0878d1] px-4 text-base font-semibold text-white shadow-sm transition hover:bg-[#066ab9] disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {cardSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
-          使用银行卡付款
+          {cardSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+          {cardSubmitting ? "正在确认付款" : `支付 $${paymentPackage.amount_usd}`}
         </button>
-      </div>
-
-      <div className={applePayEligible || googlePayEligible ? "mt-4 grid gap-3 sm:grid-cols-2" : "hidden"}>
-        <div id="apple-pay-button-container" className={applePayEligible ? "min-h-12" : "hidden"} />
-        <div id="google-pay-button-container" className={googlePayEligible ? "min-h-12" : "hidden"} />
       </div>
 
       <button
         type="button"
         onClick={() => void redirectToPayPal()}
         disabled={disabled || redirecting}
-        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-blue-800 transition hover:border-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+        className="mx-auto mt-5 flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {redirecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
-        {redirecting ? "正在前往 PayPal" : "前往 PayPal 安全页面付款"}
+        {redirecting ? "正在前往 PayPal" : "在 PayPal 安全页面付款"}
       </button>
 
-      <p className="mt-3 text-xs leading-5 text-stone-500">
-        银行卡、Apple Pay 和 Google Pay 仅在 PayPal 确认当前账户、地区和设备符合条件时显示。
-        使用银行卡付款即表示你了解支付数据将由 PayPal 按其
+      <p className="mt-5 text-center text-xs leading-5 text-stone-400">
+        付款方式由 PayPal 根据账户、地区和设备资格提供。支付数据由 PayPal 按其
         <a
           href="https://www.paypal.com/c2/legalhub/paypal/privacy-full"
           target="_blank"
           rel="noreferrer"
-          className="underline underline-offset-2"
+          className="ml-1 underline underline-offset-2 hover:text-stone-600"
         >
           隐私声明
         </a>
