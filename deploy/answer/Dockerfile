@@ -6,7 +6,12 @@ COPY --from=answer-base /usr/bin/answer /usr/bin/answer
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG BASE_PATH=
+ARG NODE_OPTIONS=--max-old-space-size=1536
 ENV GOPROXY=${GOPROXY}
+ENV NODE_OPTIONS=${NODE_OPTIONS}
+ENV PUBLIC_URL=${BASE_PATH}
+ENV REACT_APP_BASE_URL=${BASE_PATH}
 
 RUN apk add --no-cache bash build-base git nodejs npm
 

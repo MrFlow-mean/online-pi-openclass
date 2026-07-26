@@ -96,4 +96,113 @@ SQL
     ;;
 esac
 
+oauth_client_id="${OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID:-}"
+oauth_client_secret="${OPENCLASS_COMMUNITY_OAUTH_CLIENT_SECRET:-}"
+if [ -n "$oauth_client_id" ] || [ -n "$oauth_client_secret" ]; then
+  if [ -z "$oauth_client_id" ] || [ -z "$oauth_client_secret" ]; then
+    echo "OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID and OPENCLASS_COMMUNITY_OAUTH_CLIENT_SECRET must be configured together" >&2
+    exit 1
+  fi
+
+  community_public_url="${OPENCLASS_COMMUNITY_PUBLIC_URL:-${OPENCLASS_ANSWER_SITE_URL:-}}"
+  case "$community_public_url" in
+    http://*|https://*) ;;
+    *)
+      echo "OPENCLASS_COMMUNITY_PUBLIC_URL must use http:// or https:// when Answer SSO is configured" >&2
+      exit 1
+      ;;
+  esac
+  case "$community_public_url$oauth_client_id" in
+    *\"*|*\'*|*\<*|*\>*|*\\*|*" "*)
+      echo "Answer SSO URLs and client ID contain unsupported characters" >&2
+      exit 1
+      ;;
+  esac
+
+  case "${OPENCLASS_HOME_URL:-}" in
+    */home) openclass_origin="${OPENCLASS_HOME_URL%/home}" ;;
+    */home/) openclass_origin="${OPENCLASS_HOME_URL%/home/}" ;;
+    http://*|https://*) openclass_origin="${OPENCLASS_HOME_URL%/}" ;;
+    *) openclass_origin="${community_public_url%/}" ;;
+  esac
+  oauth_authorize_url="${OPENCLASS_COMMUNITY_OAUTH_AUTHORIZE_URL:-$openclass_origin/api/auth/community/authorize}"
+  oauth_token_url="${OPENCLASS_COMMUNITY_OAUTH_TOKEN_URL:-$openclass_origin/api/auth/community/token}"
+  oauth_userinfo_url="${OPENCLASS_COMMUNITY_OAUTH_USERINFO_URL:-$openclass_origin/api/auth/community/userinfo}"
+  for oauth_url in "$oauth_authorize_url" "$oauth_token_url" "$oauth_userinfo_url"; do
+    case "$oauth_url" in
+      http://*|https://*) ;;
+      *)
+        echo "Answer SSO endpoint URLs must use http:// or https://" >&2
+        exit 1
+        ;;
+    esac
+    case "$oauth_url" in
+      *\"*|*\'*|*\<*|*\>*|*\\*|*" "*)
+        echo "Answer SSO endpoint URLs contain unsupported characters" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  umask 077
+  oauth_secret_file="/tmp/openclass-answer-oauth-secret.$$"
+  printf '%s' "$oauth_client_secret" > "$oauth_secret_file"
+  trap 'rm -f "$oauth_secret_file"' EXIT INT TERM
+  sqlite3 /data/answer.db \
+    -cmd ".parameter init" \
+    -cmd ".parameter set @community_public_url \"$community_public_url\"" \
+    -cmd ".parameter set @oauth_client_id \"$oauth_client_id\"" \
+    -cmd ".parameter set @oauth_secret_file \"$oauth_secret_file\"" \
+    -cmd ".parameter set @oauth_authorize_url \"$oauth_authorize_url\"" \
+    -cmd ".parameter set @oauth_token_url \"$oauth_token_url\"" \
+    -cmd ".parameter set @oauth_userinfo_url \"$oauth_userinfo_url\"" <<'SQL'
+BEGIN IMMEDIATE;
+INSERT INTO plugin_config (plugin_slug_name, value)
+VALUES (
+  'basic_connector',
+  json_object(
+    'authorize_url', @oauth_authorize_url,
+    'check_email_verified', json('false'),
+    'client_id', @oauth_client_id,
+    'client_secret', CAST(readfile(@oauth_secret_file) AS TEXT),
+    'email_verified_json_path', 'email_verified',
+    'logo_svg', '',
+    'name', 'OpenClass',
+    'scope', '',
+    'token_url', @oauth_token_url,
+    'user_avatar_json_path', 'avatar_url',
+    'user_display_name_json_path', 'name',
+    'user_email_json_path', 'email',
+    'user_id_json_path', 'id',
+    'user_json_url', @oauth_userinfo_url,
+    'user_username_json_path', 'username'
+  )
+)
+ON CONFLICT(plugin_slug_name) DO UPDATE SET value = excluded.value;
+INSERT INTO config (key, value)
+VALUES ('plugin.status', json_object('basic_connector', json('true')))
+ON CONFLICT(key) DO UPDATE SET value = json_set(
+  CASE WHEN json_valid(config.value) THEN config.value ELSE '{}' END,
+  '$.basic_connector',
+  json('true')
+);
+UPDATE site_info
+SET content = json_set(content, '$.site_url', @community_public_url),
+    updated_at = datetime('now')
+WHERE type = 'general';
+UPDATE site_info
+SET content = json_set(
+      content,
+      '$.allow_new_registrations', json('true'),
+      '$.allow_email_registrations', json('false'),
+      '$.allow_password_login', json('false')
+    ),
+    updated_at = datetime('now')
+WHERE type = 'login';
+COMMIT;
+SQL
+  rm -f "$oauth_secret_file" /data/cache/cache.db
+  trap - EXIT INT TERM
+fi
+
 exec /usr/bin/answer run -C /data/

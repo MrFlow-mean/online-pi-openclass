@@ -12,6 +12,15 @@ docker compose --env-file ../../.env -f deploy/answer/docker-compose.yml up -d -
 
 Open `http://127.0.0.1:9080` and complete Answer's first-run site and administrator setup.
 
+The production sidecar remains bound to loopback. To expose it on the main
+OpenClass origin without taking over unrelated root routes, build with
+`OPENCLASS_ANSWER_BASE_PATH=/community`, include `nginx-locations.conf` inside
+the existing HTTPS server block, and set `OPENCLASS_COMMUNITY_PUBLIC_URL` plus
+`OPENCLASS_ANSWER_SITE_URL` to `https://open-classes.com/community`. The Answer
+API and uploaded files keep their native `/answer/` and `/uploads/` paths.
+The image build defaults to a 1536 MB Node.js heap; constrained builders can
+override it with `OPENCLASS_ANSWER_NODE_OPTIONS`.
+
 The image applies `openclass-theme.css` through Answer's supported custom CSS
 surface after each database upgrade. The theme keeps Answer's forum behavior and
 responsive layout while matching the warm OpenClass visual system. Set
@@ -25,6 +34,8 @@ that URL. Set `OPENCLASS_FAVICON_URL` only when the favicon is served elsewhere.
 For unattended first-run setup, pass `OPENCLASS_ANSWER_AUTO_INSTALL=true`,
 `OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_EMAIL`, and a temporary
 `OPENCLASS_ANSWER_BOOTSTRAP_ADMIN_PASSWORD` to the first `docker compose up`.
+Answer administrator usernames must use its lowercase username format; the
+default service account username is `openclassadmin`.
 The bootstrap administrator is a service account: its email must never be reused
 by an OpenClass user. Answer matches an incoming external identity by email, so an
 email collision prevents the user's first SSO account from being created. The
@@ -39,7 +50,10 @@ the Dockerfile.
 
 ## Configure the OAuth2 Basic connector
 
-In Answer administration, enable `basic_connector` and configure:
+Set `OPENCLASS_COMMUNITY_OAUTH_CLIENT_ID` and
+`OPENCLASS_COMMUNITY_OAUTH_CLIENT_SECRET` before starting the container. The
+entrypoint enables `basic_connector`, disables Answer email/password login, and
+configures the following values automatically:
 
 | Field | Value |
 | --- | --- |
@@ -56,11 +70,17 @@ In Answer administration, enable `basic_connector` and configure:
 | User avatar JSON path | `avatar_url` |
 | Check email verified | Off |
 
+The authorize, token, and user-info URLs default to the OpenClass origin derived
+from `OPENCLASS_HOME_URL`. Deployments with different internal routing can
+override them with `OPENCLASS_COMMUNITY_OAUTH_AUTHORIZE_URL`,
+`OPENCLASS_COMMUNITY_OAUTH_TOKEN_URL`, and
+`OPENCLASS_COMMUNITY_OAUTH_USERINFO_URL`.
+
 Set Answer's site URL to the same origin used by `OPENCLASS_COMMUNITY_PUBLIC_URL`. Its generated callback must exactly equal `OPENCLASS_COMMUNITY_OAUTH_REDIRECT_URI`.
 
-Keep external registration enabled so a first OpenClass login can create the
-matching Answer account, but disable Answer's email registration and password
-login. This leaves OpenClass as the only account entry point.
+External registration remains enabled so a first OpenClass login can create the
+matching Answer account. Answer email registration and password login remain
+disabled, leaving OpenClass as the only account entry point.
 
 After a successful login test, restart OpenClass API and Web services so the integration readiness check is refreshed.
 
