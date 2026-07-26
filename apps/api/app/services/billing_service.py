@@ -15,6 +15,8 @@ from typing import Any, Iterator
 
 import httpx
 
+from app.services.config import env_setting
+
 
 class BillingError(RuntimeError):
     def __init__(self, status_code: int, detail: str) -> None:
@@ -46,19 +48,19 @@ class BillingConfig:
 
     @classmethod
     def from_env(cls) -> BillingConfig:
-        mode = os.getenv("OPENCLASS_PAYPAL_MODE", "sandbox").strip().lower()
+        mode = env_setting("OPENCLASS_PAYPAL_MODE", "sandbox").lower()
         if mode not in {"sandbox", "live"}:
             raise RuntimeError("OPENCLASS_PAYPAL_MODE must be sandbox or live")
-        currency = os.getenv("OPENCLASS_PAYPAL_CURRENCY", "USD").strip().upper()
+        currency = env_setting("OPENCLASS_PAYPAL_CURRENCY", "USD").upper()
         if currency != "USD":
             raise RuntimeError("OpenClass credit top-ups currently require USD")
         try:
-            credit_value_percent = int(os.getenv("OPENCLASS_CREDIT_VALUE_PERCENT", "75"))
+            credit_value_percent = int(env_setting("OPENCLASS_CREDIT_VALUE_PERCENT", "75"))
         except ValueError as exc:
             raise RuntimeError("OPENCLASS_CREDIT_VALUE_PERCENT must be an integer") from exc
         if not 1 <= credit_value_percent <= 100:
             raise RuntimeError("OPENCLASS_CREDIT_VALUE_PERCENT must be between 1 and 100")
-        raw_amounts = os.getenv("OPENCLASS_PAYPAL_TOP_UP_USD", "5,10,20,50,100")
+        raw_amounts = env_setting("OPENCLASS_PAYPAL_TOP_UP_USD", "5,10,20,50,100")
         amounts: list[int] = []
         for raw_amount in raw_amounts.split(","):
             try:
@@ -720,7 +722,7 @@ class BillingService:
         return amount_cents * self.config.credit_value_percent // 100
 
     def _model_call_reserve_credits(self) -> int:
-        raw_value = os.getenv("OPENCLASS_MODEL_CALL_RESERVE_CREDITS", "25").strip()
+        raw_value = env_setting("OPENCLASS_MODEL_CALL_RESERVE_CREDITS", "25")
         try:
             reserve_credits = int(raw_value)
         except ValueError as exc:

@@ -21,6 +21,7 @@ from app.models import (
     SourceIngestionRecord,
 )
 from app.services.ai_model_catalog import default_text_selection
+from app.services.config import env_setting
 from app.services.open_notebook_adapter import (
     OpenNotebookAdapter,
     OpenNotebookAdapterError,
@@ -153,7 +154,13 @@ class SourceIngestionService:
             store=store,
             local_path=source_local_path,
         )
-        self.source_backend = (source_backend or os.getenv("OPENCLASS_SOURCE_BACKEND", "native")).strip().lower()
+        # A blank value is how a `.env` spells "unset", so it selects the default
+        # rather than failing the import of every module that builds a service.
+        self.source_backend = (
+            source_backend.strip().lower()
+            if source_backend
+            else env_setting("OPENCLASS_SOURCE_BACKEND", "native").lower()
+        )
         if self.source_backend not in {"open_notebook", "native"}:
             raise ValueError("OPENCLASS_SOURCE_BACKEND must be open_notebook or native")
         self.youtube_adapter = youtube_adapter

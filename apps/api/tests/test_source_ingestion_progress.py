@@ -592,3 +592,13 @@ def test_open_notebook_mode_skips_local_structure_pipeline(tmp_path, monkeypatch
     assert completed.ingestion_job is not None
     assert completed.ingestion_job.progress == 100
     assert completed.ingestion_job.phase_history[-1] == "ready"
+
+
+def test_blank_source_backend_env_selects_the_native_default(monkeypatch) -> None:
+    # `.env` ships OPENCLASS_SOURCE_BACKEND, and a blank value must not make
+    # constructing the service — and therefore importing its callers — explode.
+    monkeypatch.setenv("OPENCLASS_SOURCE_BACKEND", "")
+
+    service = SourceIngestionService()
+
+    assert service.source_backend == "native"

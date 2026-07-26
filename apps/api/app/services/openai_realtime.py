@@ -24,7 +24,7 @@ from app.services.ai_model_catalog import (
     default_realtime_selection,
     realtime_runtime_enabled,
 )
-from app.services.config import load_root_dotenv
+from app.services.config import env_setting, load_root_dotenv
 from app.services.history import current_head_commit, snapshot_lesson_runtime
 from app.services.realtime_tool_bridge import realtime_tool_schemas
 
@@ -72,7 +72,12 @@ def _openai_api_key() -> str | None:
 
 
 def _openai_realtime_base_url() -> str:
-    return os.getenv("OPENAI_REALTIME_BASE_URL", os.getenv("OPENAI_BASE_URL", OPENAI_OFFICIAL_BASE_URL)).rstrip("/")
+    # A blank override is how a `.env` spells "unset", so fall through to the
+    # next candidate instead of building requests against a relative URL.
+    return env_setting(
+        "OPENAI_REALTIME_BASE_URL",
+        env_setting("OPENAI_BASE_URL", OPENAI_OFFICIAL_BASE_URL),
+    ).rstrip("/")
 
 
 def _realtime_reasoning_effort() -> str:
@@ -142,7 +147,7 @@ def build_openai_realtime_session_config(
         "audio": {
             "input": {
                 "transcription": {
-                    "model": os.getenv("OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"),
+                    "model": env_setting("OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"),
                 },
                 "noise_reduction": {"type": "near_field"},
                 "turn_detection": {
