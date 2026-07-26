@@ -18,6 +18,7 @@ from app.models import (
 )
 from app.services.ai_execution_adapter import AIExecutionAdapter, build_ai_execution_adapter
 from app.services.ai_model_catalog import resolve_text_model_selection
+from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
 from app.services.source_structure_store import source_structure_store
 
@@ -169,22 +170,56 @@ def review_project_publication(
     lesson_id: str | None = None,
     adapter: AIExecutionAdapter | None = None,
 ) -> PublicationReview:
-    sources = source_ingestion_service.list_sources(
+    all_sources = source_ingestion_service.list_sources(
         owner_user_id=owner_user_id,
         package_id=package.id,
     )
-    legacy_resources = _legacy_resources_for_project(package, lesson_id=lesson_id)
-    source_count = len(sources) + len(legacy_resources)
-    fingerprint = _source_fingerprint(sources, legacy_resources)
-    if source_count == 0:
+    all_legacy_resources = _legacy_resources_for_project(package, lesson_id=lesson_id)
+    referenced_source_ids, unresolved_references = _referenced_source_ids(
+        owner_user_id=owner_user_id,
+        package=package,
+        lesson_id=lesson_id,
+    )
+    if unresolved_references:
         stamp = now_iso()
         return PublicationReview(
-            status="approved",
-            source_fingerprint=fingerprint,
-            message="课程没有上传资料，可以公开。",
+            status="error",
+            message="课程存在无法追溯的资料引用记录，无法完成版权审核。",
             started_at=stamp,
             completed_at=stamp,
         )
+    if not referenced_source_ids:
+        stamp = now_iso()
+        message = (
+            "课程没有上传资料，可以公开。"
+            if not all_sources and not all_legacy_resources
+            else "课程没有引用上传资料，可以公开。"
+        )
+        return PublicationReview(
+            status="approved",
+            message=message,
+            started_at=stamp,
+            completed_at=stamp,
+        )
+
+    sources = [source for source in all_sources if source.id in referenced_source_ids]
+    legacy_resources = [
+        resource for resource in all_legacy_resources if resource.id in referenced_source_ids
+    ]
+    available_source_ids = {source.id for source in sources}
+    available_source_ids.update(resource.id for resource in legacy_resources)
+    if available_source_ids != referenced_source_ids:
+        stamp = now_iso()
+        return PublicationReview(
+            status="error",
+            scanned_source_count=len(available_source_ids),
+            message="课程存在无法追溯的资料引用记录，无法完成版权审核。",
+            started_at=stamp,
+            completed_at=stamp,
+        )
+
+    source_count = len(sources) + len(legacy_resources)
+    fingerprint = _source_fingerprint(sources, legacy_resources)
 
     pending_titles = [source.title for source in sources if source.status != "ready"]
     pending_titles.extend(
@@ -246,6 +281,9 @@ def review_project_publication(
         owner_user_id=owner_user_id,
         package_id=package.id,
     )
+    current_sources = [
+        source for source in current_sources if source.id in referenced_source_ids
+    ]
     if _source_fingerprint(current_sources, legacy_resources) != fingerprint:
         return review.model_copy(
             update={
@@ -256,6 +294,91 @@ def review_project_publication(
             }
         )
     return review
+
+
+def _referenced_source_ids(
+    *,
+    owner_user_id: str,
+    package: CoursePackage,
+    lesson_id: str | None,
+) -> tuple[set[str], list[str]]:
+    lessons = (
+        [lesson for lesson in package.lessons if lesson.id == lesson_id]
+        if lesson_id is not None
+        else package.lessons
+    )
+    source_ids: set[str] = set()
+    bundle_source_ids: dict[str, set[str]] = {}
+    bundle_ids: set[str] = set()
+    unresolved: list[str] = []
+
+    for lesson in lessons:
+        requirements = [lesson.learning_requirements]
+        requirements.extend(
+            commit.runtime_snapshot.learning_requirements
+            for commit in lesson.history_graph.commits
+            if commit.runtime_snapshot is not None
+        )
+        for requirement in requirements:
+            if requirement is None:
+                continue
+            grounding = requirement.source_grounding
+            for reference in grounding.confirmed_references:
+                source_id = reference.source_ingestion_id.strip()
+                bundle_id = reference.evidence_bundle_id.strip()
+                if not source_id:
+                    unresolved.append(bundle_id or f"lesson:{lesson.id}")
+                    continue
+                source_ids.add(source_id)
+                if bundle_id:
+                    bundle_source_ids.setdefault(bundle_id, set()).add(source_id)
+            confirmed_bundle_id = grounding.confirmed_bundle_id.strip()
+            if confirmed_bundle_id:
+                bundle_ids.add(confirmed_bundle_id)
+
+        for commit in lesson.history_graph.commits:
+            metadata_bundle_ids = commit.metadata.get("verified_source_bundle_ids")
+            commit_bundle_ids = {
+                value.strip()
+                for value in metadata_bundle_ids
+                if isinstance(value, str) and value.strip()
+            } if isinstance(metadata_bundle_ids, list) else set()
+            bundle_ids.update(commit_bundle_ids)
+            if commit.metadata.get("verified_source_reference_used") and not commit_bundle_ids:
+                runtime = commit.runtime_snapshot
+                runtime_references = (
+                    runtime.learning_requirements.source_grounding.confirmed_references
+                    if runtime is not None and runtime.learning_requirements is not None
+                    else []
+                )
+                if not runtime_references:
+                    unresolved.append(f"commit:{commit.id}")
+
+    for bundle_id in bundle_ids:
+        if bundle_id in bundle_source_ids:
+            continue
+        bundle = source_evidence_store.get_bundle(
+            owner_user_id=owner_user_id,
+            bundle_id=bundle_id,
+        )
+        if bundle is None:
+            unresolved.append(bundle_id)
+            continue
+        resolved = {
+            source_id
+            for source_id in [
+                bundle.metadata.get("source_ingestion_id"),
+                *(item.source_ingestion_id for item in bundle.evidence_items),
+                *(item.source_ingestion_id for item in bundle.visual_items),
+            ]
+            if isinstance(source_id, str) and source_id.strip()
+        }
+        if not resolved:
+            unresolved.append(bundle_id)
+            continue
+        source_ids.update(resolved)
+
+    return source_ids, unresolved
 
 
 def _source_ingestion_units(source: SourceIngestionRecord) -> list[PublicationSourceUnit]:

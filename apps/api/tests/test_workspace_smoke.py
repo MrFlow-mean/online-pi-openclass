@@ -14,6 +14,10 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.models import (
     BoardDocument,
+    CoursePackage,
+    EvidenceBundle,
+    LearningSourceGrounding,
+    LearningSourceReference,
     PublicationReview,
     SourceIngestionJob,
     SourceIngestionRecord,
@@ -25,7 +29,13 @@ from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
-from app.services.publication_review import PublicationSourceUnit, scan_publication_units
+from app.services.lesson_factory import build_requirements, create_empty_lesson
+from app.services import publication_review as publication_review_service
+from app.services.publication_review import (
+    PublicationSourceUnit,
+    review_project_publication,
+    scan_publication_units,
+)
 from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
@@ -153,6 +163,185 @@ def test_publication_scan_does_not_block_body_discussion_or_non_body_without_dec
 
     assert review.status == "approved"
     assert review.findings == []
+
+
+def _publication_package_with_reference(source_id: str | None) -> CoursePackage:
+    lesson = create_empty_lesson("Reference-aware publication")
+    if source_id is not None:
+        requirement = build_requirements("Reference-aware publication")
+        requirement.source_grounding = LearningSourceGrounding(
+            requested_by_user=True,
+            confirmation_status="confirmed",
+            confirmed_references=[
+                LearningSourceReference(
+                    evidence_bundle_id="bundle_reference",
+                    source_ingestion_id=source_id,
+                )
+            ],
+        )
+        lesson.learning_requirements = requirement
+    return CoursePackage(
+        id="course_publication",
+        title="Reference-aware publication",
+        summary="",
+        lessons=[lesson],
+    )
+
+
+def _publication_source(*, source_id: str, status: str = "ready") -> SourceIngestionRecord:
+    return SourceIngestionRecord(
+        id=source_id,
+        owner_user_id=TEST_USER.id,
+        package_id="course_publication",
+        title=f"Source {source_id}",
+        source_type="pasted_text",
+        mime_type="text/plain",
+        size_bytes=20,
+        status=status,
+    )
+
+
+def test_publication_review_allows_uploaded_but_unreferenced_sources_without_ai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _publication_package_with_reference(None)
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [_publication_source(source_id="unused", status="failed")],
+    )
+
+    class _UnexpectedAdapter:
+        def parse_structured(self, **_kwargs):
+            raise AssertionError("Unreferenced sources must not be sent to the publication AI.")
+
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=_UnexpectedAdapter(),
+    )
+
+    assert review.status == "approved"
+    assert review.scanned_source_count == 0
+    assert review.message == "课程没有引用上传资料，可以公开。"
+
+
+def test_publication_review_scans_only_sources_referenced_by_the_lesson(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _publication_package_with_reference("used")
+    used = _publication_source(source_id="used")
+    unused = _publication_source(source_id="unused", status="failed")
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [used, unused],
+    )
+    scanned_source_ids: list[str] = []
+
+    def fake_units(source: SourceIngestionRecord) -> list[PublicationSourceUnit]:
+        scanned_source_ids.append(source.id)
+        return [_publication_unit(unit_id=f"{source.id}-body", text="Referenced body text.")]
+
+    monkeypatch.setattr(publication_review_service, "_source_ingestion_units", fake_units)
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=_PublicationReviewAdapter(
+            [
+                {
+                    "unit_id": "used-body",
+                    "region": "body",
+                    "copyright_declaration": False,
+                    "evidence_excerpt": "",
+                    "reason": "Main content.",
+                }
+            ]
+        ),
+    )
+
+    assert review.status == "approved"
+    assert review.scanned_source_count == 1
+    assert scanned_source_ids == ["used"]
+
+
+def test_publication_review_resolves_historical_source_bundle_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _publication_package_with_reference(None)
+    package.lessons[0].history_graph.commits[0].metadata.update(
+        {
+            "verified_source_reference_used": True,
+            "verified_source_bundle_ids": ["bundle_history"],
+        }
+    )
+    used = _publication_source(source_id="used")
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [used],
+    )
+    monkeypatch.setattr(
+        publication_review_service.source_evidence_store,
+        "get_bundle",
+        lambda **_kwargs: EvidenceBundle(
+            id="bundle_history",
+            owner_user_id=TEST_USER.id,
+            package_id=package.id,
+            lesson_id=package.lessons[0].id,
+            status="consumed",
+            metadata={"source_ingestion_id": "used"},
+        ),
+    )
+    monkeypatch.setattr(
+        publication_review_service,
+        "_source_ingestion_units",
+        lambda source: [_publication_unit(unit_id=f"{source.id}-body", text="Referenced text.")],
+    )
+
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=_PublicationReviewAdapter(
+            [
+                {
+                    "unit_id": "used-body",
+                    "region": "body",
+                    "copyright_declaration": False,
+                    "evidence_excerpt": "",
+                    "reason": "Main content.",
+                }
+            ]
+        ),
+    )
+
+    assert review.status == "approved"
+    assert review.scanned_source_count == 1
+
+
+def test_publication_review_fails_closed_when_a_reference_cannot_be_traced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _publication_package_with_reference("missing")
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [_publication_source(source_id="unused")],
+    )
+
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=_PublicationReviewAdapter([]),
+    )
+
+    assert review.status == "error"
+    assert "引用记录" in review.message
+    assert "无法追溯" in review.message
 
 
 def _document_with_text(document: dict, text: str) -> dict:
@@ -441,6 +630,23 @@ def test_source_upload_revokes_publication_and_requires_a_fresh_review(api_clien
     assert updated_lesson["visibility"] == "private"
     assert updated_lesson["publication_review"]["status"] == "not_started"
     assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 404
+
+    republished = api_client.post(
+        f"/api/lessons/{lesson['id']}/visibility",
+        json={"visibility": "public"},
+    )
+    assert republished.status_code == 200
+    republished_lesson = next(
+        item
+        for package in republished.json()["packages"]
+        for item in package["lessons"]
+        if item["id"] == lesson["id"]
+    )
+    assert republished_lesson["visibility"] == "public"
+    assert republished_lesson["publication_review"]["status"] == "approved"
+    assert republished_lesson["publication_review"]["scanned_source_count"] == 0
+    assert republished_lesson["publication_review"]["message"] == "课程没有引用上传资料，可以公开。"
+    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 200
 
 
 def _docx_text_nodes(content: bytes) -> list[str]:
