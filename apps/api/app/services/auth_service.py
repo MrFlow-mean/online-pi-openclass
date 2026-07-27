@@ -778,6 +778,23 @@ class AuthService:
             self.store.touch_session(conn, token_hash, _now_iso())
             return _user_view(row, self._identities_for_user(conn, row["id"]))
 
+    def community_avatar_url(self, user_id: str) -> str:
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id or len(normalized_user_id) > 128:
+            raise HTTPException(status_code=404, detail="用户头像不存在")
+        with self.store.connection() as conn:
+            row = self.store.find_user_by_id(conn, normalized_user_id)
+        avatar_url = str(row["avatar_url"] or "").strip() if row is not None else ""
+        parsed_avatar = parse.urlparse(avatar_url)
+        if (
+            parsed_avatar.scheme not in {"http", "https"}
+            or not parsed_avatar.hostname
+            or parsed_avatar.username
+            or parsed_avatar.password
+        ):
+            raise HTTPException(status_code=404, detail="用户头像不存在")
+        return avatar_url
+
     def start_guest_session(self) -> tuple[str, UserView]:
         now = _now_iso()
         with self.store.transaction() as conn:

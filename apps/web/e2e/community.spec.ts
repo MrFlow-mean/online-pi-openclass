@@ -178,6 +178,25 @@ test("replaces a blocked external Answer avatar with a local fallback", async ({
 });
 
 
+test("syncs an Answer profile avatar through the same-origin OpenClass endpoint", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  const avatarBaseUrl = `${baseURL}/api/auth/community/avatar/`;
+  await page.route(/\/community\/users\/user_answer$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)},avatarBaseUrl:${JSON.stringify(avatarBaseUrl)}};</script><script>${answerSsoBridge}</script><img class="rounded-circle" src="https://images.example.com/avatar.png" width="96" height="96" alt="OpenClass Learner">`,
+  }));
+
+  await page.goto("/community/users/user_answer");
+
+  const avatar = page.getByRole("img", { name: "OpenClass Learner" });
+  await expect(avatar).toHaveAttribute("src", `${avatarBaseUrl}user_answer`);
+  await expect(avatar).toHaveAttribute("data-openclass-avatar-synced", "true");
+  await expect(avatar).not.toHaveAttribute("data-openclass-avatar-fallback", /.+/);
+});
+
+
 test("reports an unavailable Answer service without exposing a second forum", async ({ page }) => {
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 401,

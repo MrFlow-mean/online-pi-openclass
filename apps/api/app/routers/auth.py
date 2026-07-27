@@ -102,6 +102,15 @@ def me(user: UserView = Depends(current_user)) -> UserView:
     return user
 
 
+@router.get("/auth/community/avatar/{user_id}")
+def community_avatar(user_id: str) -> RedirectResponse:
+    return RedirectResponse(
+        auth_service.community_avatar_url(user_id),
+        status_code=302,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
 @router.get("/auth/community/authorize")
 def authorize_community_login(
     client_id: str,

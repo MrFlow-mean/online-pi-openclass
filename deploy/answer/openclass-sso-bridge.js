@@ -52,9 +52,12 @@
   }).then(function readAnswerUser(response) {
     return response.ok ? response.json() : null;
   }).then(function reconcileAnswerUser(payload) {
-    if (!payload || !payload.data) {
-      resumeOpenClassSession();
+    if (payload && payload.data) {
+      config.currentAnswerUsername = payload.data.username || "";
+      window.dispatchEvent(new Event("openclass:answer-user"));
+      return;
     }
+    resumeOpenClassSession();
   }).catch(function ignoreUnavailableAnswerSession() {});
 })();
 
@@ -103,11 +106,62 @@
     return canvas.toDataURL("image/png");
   }
 
+  function userIdFromAvatar(image) {
+    var link = image.closest("a[href]");
+    if (link) {
+      try {
+        var linkMatch = new URL(link.href, window.location.href).pathname.match(/\/users\/([^/]+)\/?$/);
+        if (linkMatch) {
+          return decodeURIComponent(linkMatch[1]);
+        }
+      } catch (_error) {
+        // Continue with page or logged-user context.
+      }
+    }
+    var pageMatch = window.location.pathname.match(/\/users\/([^/]+)\/?$/);
+    if (pageMatch && !image.closest("#header")) {
+      return decodeURIComponent(pageMatch[1]);
+    }
+    var config = window.__OPENCLASS_COMMUNITY_BRIDGE__;
+    if (image.closest("#header") && config && config.currentAnswerUsername) {
+      return config.currentAnswerUsername;
+    }
+    return "";
+  }
+
+  function synchronizedAvatarUrl(image) {
+    var config = window.__OPENCLASS_COMMUNITY_BRIDGE__;
+    var userId = userIdFromAvatar(image);
+    if (!config || !config.avatarBaseUrl || !userId) {
+      return "";
+    }
+    try {
+      var avatarUrl = new URL(config.avatarBaseUrl + encodeURIComponent(userId), window.location.href);
+      return avatarUrl.origin === window.location.origin ? avatarUrl.toString() : "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
   function replaceAvatar(image) {
-    if (!(image instanceof HTMLImageElement) || image.dataset.openclassAvatarFallback === "true") {
+    if (!(image instanceof HTMLImageElement)) {
+      return;
+    }
+    var synchronizedAvatar = synchronizedAvatarUrl(image);
+    if (image.dataset.openclassAvatarFallback === "true" && synchronizedAvatar) {
+      image.dataset.openclassAvatarSynced = "true";
+      image.removeAttribute("data-openclass-avatar-fallback");
+      image.src = synchronizedAvatar;
       return;
     }
     if (!isExternalAvatar(image)) {
+      return;
+    }
+    if (synchronizedAvatar) {
+      image.dataset.openclassAvatarSynced = "true";
+      image.removeAttribute("data-src");
+      image.classList.remove("broken");
+      image.src = synchronizedAvatar;
       return;
     }
     var fallback = avatarDataUrl(image.alt, image.getAttribute("width") || image.width);
@@ -151,4 +205,7 @@
   } else {
     scanAvatars(document);
   }
+  window.addEventListener("openclass:answer-user", function rescanCurrentUserAvatar() {
+    scanAvatars(document);
+  });
 })();

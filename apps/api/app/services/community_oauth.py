@@ -89,7 +89,7 @@ class CommunityOAuthService:
                 "sub": user.id,
                 "email": user.email,
                 "name": user.display_name or user.email.partition("@")[0],
-                "avatar": user.avatar_url or "",
+                "has_avatar": bool(user.avatar_url),
                 "exp": int(time.time()) + AUTHORIZATION_CODE_TTL_SECONDS,
                 "jti": secrets.token_urlsafe(18),
             },
@@ -139,7 +139,7 @@ class CommunityOAuthService:
                 "sub": payload["sub"],
                 "email": payload["email"],
                 "name": payload["name"],
-                "avatar": payload["avatar"],
+                "has_avatar": bool(payload.get("has_avatar")),
                 "exp": int(time.time()) + ACCESS_TOKEN_TTL_SECONDS,
                 "jti": secrets.token_urlsafe(18),
             },
@@ -161,6 +161,17 @@ class CommunityOAuthService:
         if payload.get("client_id") != config.client_id:
             raise HTTPException(status_code=401, detail="invalid_token")
         subject = str(payload["sub"])
+        avatar_url = ""
+        if payload.get("has_avatar"):
+            redirect = parse.urlparse(config.redirect_uri)
+            avatar_url = parse.urlunparse((
+                redirect.scheme,
+                redirect.netloc,
+                f"/api/auth/community/avatar/{parse.quote(subject, safe='')}",
+                "",
+                "",
+                "",
+            ))
         return {
             "id": subject,
             "sub": subject,
@@ -168,7 +179,7 @@ class CommunityOAuthService:
             "username": subject[:30],
             "email": str(payload.get("email") or ""),
             "email_verified": False,
-            "avatar_url": str(payload.get("avatar") or ""),
+            "avatar_url": avatar_url,
         }
 
     def _configured(self) -> CommunityOAuthConfig:

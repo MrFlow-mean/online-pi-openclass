@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from urllib import parse
 
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.models import UserView
 from app.routers import auth
+from app.services.auth_service import AuthService
 from app.services.community_oauth import CommunityOAuthService
 
 
@@ -79,7 +81,7 @@ def test_answer_oauth_authorization_code_flow_is_one_time(monkeypatch) -> None:
         "username": "user_answer",
         "email": "learner@example.com",
         "email_verified": False,
-        "avatar_url": "https://example.com/avatar.png",
+        "avatar_url": "https://community.example.com/api/auth/community/avatar/user_answer",
     }
 
     replay = client.post(
@@ -139,3 +141,46 @@ def test_answer_oauth_rejects_guest_accounts(monkeypatch) -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"] == "请先注册或登录 OpenClass"
+
+
+def test_answer_avatar_endpoint_redirects_to_the_stored_openclass_avatar(monkeypatch) -> None:
+    client = _client(monkeypatch)
+
+    class AvatarAuthService:
+        @staticmethod
+        def community_avatar_url(user_id: str) -> str:
+            assert user_id == "user_answer"
+            return "https://images.example.com/openclass-avatar.png"
+
+    monkeypatch.setattr(auth, "auth_service", AvatarAuthService())
+
+    response = client.get("/api/auth/community/avatar/user_answer", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://images.example.com/openclass-avatar.png"
+    assert response.headers["cache-control"] == "public, max-age=300"
+
+
+def test_community_avatar_url_accepts_only_stored_http_images(tmp_path) -> None:
+    service = AuthService(tmp_path / "openclass.sqlite3")
+    with service.store.transaction() as conn:
+        service.store.create_oauth_user(
+            conn,
+            user_id="user_avatar",
+            email="avatar@example.com",
+            password_salt="salt",
+            password_hash="hash",
+            role="user",
+            display_name="Avatar Learner",
+            avatar_url="https://images.example.com/openclass-avatar.png",
+            now="2026-07-27T00:00:00+00:00",
+        )
+
+    assert service.community_avatar_url("user_avatar") == "https://images.example.com/openclass-avatar.png"
+
+    with service.store.transaction() as conn:
+        conn.execute("UPDATE users SET avatar_url = ? WHERE id = ?", ("data:image/png;base64,AAAA", "user_avatar"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.community_avatar_url("user_avatar")
+    assert exc_info.value.status_code == 404
