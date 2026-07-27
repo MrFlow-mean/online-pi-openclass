@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from app.models import (
+    BoardDocument,
+    BranchRef,
+    CommitRecord,
     Lesson,
     LessonContribution,
     LessonContributionActor,
@@ -9,11 +12,15 @@ from app.models import (
     LessonContributionRevisionView,
     LessonContributionView,
     LessonContributionViewerPermissions,
+    LessonMergeSession,
     UserView,
+    WorkspaceState,
+    new_id,
     now_iso,
 )
 from app.services.course_store import SqliteCourseStore
 from app.services.history import current_head_commit, get_commit
+from app.services.lesson_merge import abandon_merge_session, create_merge_session
 from app.services.personal_lesson_copy import (
     PUBLIC_SOURCE_COMMIT_ID_KEY,
     PUBLIC_SOURCE_LESSON_ID_KEY,
@@ -288,6 +295,142 @@ def reopen_lesson_contribution(
     return contribution_view(store, (contribution, revision, [*events, event]), viewer=user)
 
 
+def start_lesson_contribution_merge(
+    store: SqliteCourseStore,
+    contribution_id: str,
+    *,
+    user: UserView,
+    workspace: WorkspaceState,
+    source_lesson: Lesson,
+    expected_workspace_revision: int,
+    expected_version: int,
+) -> LessonContributionView:
+    _require_registered(user)
+    contribution, revision, events = _required_visible_bundle(store, contribution_id, user)
+    if contribution.source_owner_user_id != user.id or contribution.source_lesson_id != source_lesson.id:
+        raise LessonContributionPermissionError("只有原课程作者可以开始合并。")
+    if contribution.status != "open":
+        raise LessonContributionConflictError("当前改进方案不能开始新的合并审查。")
+    _require_version(contribution, expected_version)
+    source_record = store.load_lesson_with_owner(source_lesson.id)
+    if source_record is None or source_record[0] != user.id or not source_record[2]:
+        raise LessonContributionConflictError("来源课程当前不可公开协作。")
+    if store.load_active_merge_session_for_user(user.id, source_lesson.id) is not None:
+        raise LessonContributionConflictError("这节课已有未结束的合并草案。")
+    try:
+        base_commit = get_commit(source_lesson, revision.source_commit_id)
+    except ValueError as exc:
+        raise LessonContributionConflictError("来源课程的派生基线已不可用。") from exc
+
+    branch_name = f"contribution/{contribution.id.removeprefix('contribution_')[:12]}/r{revision.revision_number}"
+    proposed_document = BoardDocument.model_validate(
+        revision.proposed_document.model_dump(mode="json")
+    ).model_copy(update={"id": new_id("document")})
+    synthetic_commit = CommitRecord(
+        label=f"贡献方案 #{revision.revision_number}",
+        message=f"导入 {contribution.contributor.display_name} 提交的课程改进版本",
+        branch_name=branch_name,
+        parent_ids=[base_commit.id],
+        snapshot=proposed_document,
+        runtime_snapshot=base_commit.runtime_snapshot,
+        metadata={
+            "kind": "lesson_contribution_revision",
+            "history_node_kind": "system",
+            "history_node_title": "课程改进方案",
+            "history_node_summary": contribution.title,
+            "lesson_contribution_id": contribution.id,
+            "lesson_contribution_revision": revision.revision_number,
+            "contributor_user_id": contribution.contributor_user_id,
+        },
+    )
+    source_lesson.history_graph.commits.append(synthetic_commit)
+    source_lesson.history_graph.branches[branch_name] = BranchRef(
+        name=branch_name,
+        head_commit_id=synthetic_commit.id,
+        base_commit_id=base_commit.id,
+    )
+    session = create_merge_session(
+        source_lesson,
+        owner_user_id=user.id,
+        source_branch_name=branch_name,
+    )
+    session.audit.update(
+        {
+            "lesson_contribution_id": contribution.id,
+            "lesson_contribution_revision": revision.revision_number,
+            "contributor_user_id": contribution.contributor_user_id,
+        }
+    )
+    previous_version = contribution.version
+    contribution.status = "merge_draft"
+    contribution.merge_session_id = session.id
+    contribution.version += 1
+    contribution.updated_at = now_iso()
+    event = LessonContributionEvent(
+        contribution_id=contribution.id,
+        kind="merge_started",
+        actor=_actor_for_user(user, fallback="课程作者"),
+        metadata={
+            "revision_number": revision.revision_number,
+            "merge_session_id": session.id,
+        },
+    )
+    saved = store.save_workspace_merge_session_and_contribution_if_revision(
+        user.id,
+        workspace,
+        session,
+        contribution,
+        expected_workspace_revision=expected_workspace_revision,
+        expected_contribution_version=previous_version,
+        events=[event],
+    )
+    if not saved:
+        raise LessonContributionConflictError("课程或改进方案已更新，请刷新后重试。")
+    return contribution_view(store, (contribution, revision, [*events, event]), viewer=user)
+
+
+def return_lesson_contribution_for_changes(
+    store: SqliteCourseStore,
+    contribution_id: str,
+    *,
+    user: UserView,
+    expected_version: int,
+) -> LessonContributionView:
+    _require_registered(user)
+    contribution, revision, events = _required_visible_bundle(store, contribution_id, user)
+    if contribution.source_owner_user_id != user.id:
+        raise LessonContributionPermissionError("只有原课程作者可以退回继续修改。")
+    if contribution.status != "merge_draft" or not contribution.merge_session_id:
+        raise LessonContributionConflictError("当前没有可以退回的合并草案。")
+    _require_version(contribution, expected_version)
+    session = store.load_merge_session_for_user(user.id, contribution.merge_session_id)
+    if session is None:
+        raise LessonContributionConflictError("关联的合并草案已不存在。")
+    previous_session_version = session.version
+    abandon_merge_session(session)
+    previous_version = contribution.version
+    contribution.status = "open"
+    contribution.merge_session_id = None
+    contribution.version += 1
+    contribution.updated_at = now_iso()
+    event = LessonContributionEvent(
+        contribution_id=contribution.id,
+        kind="returned_for_changes",
+        actor=_actor_for_user(user, fallback="课程作者"),
+        metadata={"merge_session_id": session.id},
+    )
+    saved = store.save_merge_session_and_contribution_if_versions(
+        session,
+        contribution,
+        expected_session_version=previous_session_version,
+        expected_contribution_version=previous_version,
+        events=[event],
+    )
+    if not saved:
+        raise LessonContributionConflictError("合并草案或改进方案已更新，请刷新后重试。")
+    return contribution_view(store, (contribution, revision, [*events, event]), viewer=user)
+
+
 def contribution_view(
     store: SqliteCourseStore,
     bundle: tuple[LessonContribution, LessonContributionRevision, list[LessonContributionEvent]],
@@ -487,6 +630,4 @@ def _save(
 
 
 def _new_contribution_id() -> str:
-    from app.models import new_id
-
     return new_id("contribution")

@@ -171,3 +171,46 @@ def test_guest_and_unrelated_lesson_cannot_submit(api_client: TestClient) -> Non
         json={"title": "Unrelated proposal"},
     )
     assert denied_unrelated.status_code == 403
+
+
+def test_author_starts_merge_without_changing_live_lesson_and_can_return(
+    api_client: TestClient,
+) -> None:
+    source, personal = _forked_lesson(api_client)
+    created = api_client.post(
+        f"/api/lessons/{personal['id']}/contributions",
+        json={"title": "Merge-ready proposal"},
+    ).json()
+
+    _as(AUTHOR)
+    started = api_client.post(
+        f"/api/contributions/{created['id']}/merge/start",
+        json={"expected_version": created["version"]},
+    )
+    assert started.status_code == 200
+    contribution = started.json()
+    assert contribution["status"] == "merge_draft"
+    assert contribution["merge_session_id"]
+
+    workspace = api_client.get("/api/workspace").json()
+    persisted_source = next(
+        lesson
+        for package in workspace["packages"]
+        for lesson in package["lessons"]
+        if lesson["id"] == source["id"]
+    )
+    assert persisted_source["board_document"]["content_text"] == "Public baseline"
+    active = api_client.get(f"/api/lessons/{source['id']}/merge-sessions/active")
+    assert active.status_code == 200
+    session = active.json()
+    assert session["id"] == contribution["merge_session_id"]
+    assert session["audit"]["lesson_contribution_id"] == contribution["id"]
+    assert session["source_branch_name"].startswith("contribution/")
+
+    returned = api_client.post(
+        f"/api/contributions/{contribution['id']}/merge/return",
+        json={"expected_version": contribution["version"]},
+    )
+    assert returned.status_code == 200
+    assert returned.json()["status"] == "open"
+    assert returned.json()["merge_session_id"] is None

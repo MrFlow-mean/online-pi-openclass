@@ -529,36 +529,87 @@ class SqliteCourseStore:
             with self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    updated = conn.execute(
-                        """
-                        UPDATE lesson_contributions SET
-                            title = ?, description = ?, status = ?, version = ?,
-                            current_revision = ?, current_revision_id = ?,
-                            merge_session_id = ?, merged_commit_id = ?,
-                            updated_at = ?, closed_at = ?
-                        WHERE id = ? AND version = ?
-                        """,
-                        (
-                            contribution.title,
-                            contribution.description,
-                            contribution.status,
-                            contribution.version,
-                            contribution.current_revision,
-                            contribution.current_revision_id,
-                            contribution.merge_session_id,
-                            contribution.merged_commit_id,
-                            contribution.updated_at,
-                            contribution.closed_at,
-                            contribution.id,
-                            expected_version,
-                        ),
-                    )
-                    if updated.rowcount != 1:
+                    if not _update_contribution_if_version(
+                        conn, contribution, expected_version=expected_version
+                    ):
                         conn.rollback()
                         return False
                     if revision is not None:
                         _insert_contribution_revision(conn, revision)
                     for event in events or []:
+                        _insert_contribution_event(conn, event)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def save_workspace_merge_session_and_contribution_if_revision(
+        self,
+        owner_user_id: str,
+        workspace: WorkspaceState,
+        session: LessonMergeSession,
+        contribution: LessonContribution,
+        *,
+        expected_workspace_revision: int,
+        expected_contribution_version: int,
+        events: list[LessonContributionEvent],
+    ) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if self._workspace_revision(conn, owner_user_id) != expected_workspace_revision:
+                        conn.rollback()
+                        return False
+                    if not _update_contribution_if_version(
+                        conn,
+                        contribution,
+                        expected_version=expected_contribution_version,
+                    ):
+                        conn.rollback()
+                        return False
+                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    _upsert_merge_session(conn, session)
+                    for event in events:
+                        _insert_contribution_event(conn, event)
+                    self._advance_workspace_revision(conn, owner_user_id)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def save_merge_session_and_contribution_if_versions(
+        self,
+        session: LessonMergeSession,
+        contribution: LessonContribution,
+        *,
+        expected_session_version: int,
+        expected_contribution_version: int,
+        events: list[LessonContributionEvent],
+    ) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    stored_session = conn.execute(
+                        "SELECT version FROM lesson_merge_sessions WHERE id = ? AND owner_user_id = ?",
+                        (session.id, session.owner_user_id),
+                    ).fetchone()
+                    if (
+                        stored_session is None
+                        or int(stored_session["version"]) != expected_session_version
+                        or not _update_contribution_if_version(
+                            conn,
+                            contribution,
+                            expected_version=expected_contribution_version,
+                        )
+                    ):
+                        conn.rollback()
+                        return False
+                    _upsert_merge_session(conn, session)
+                    for event in events:
                         _insert_contribution_event(conn, event)
                     conn.commit()
                     return True
@@ -1749,6 +1800,39 @@ def _insert_contribution(conn: sqlite3.Connection, contribution: LessonContribut
             contribution.closed_at,
         ),
     )
+
+
+def _update_contribution_if_version(
+    conn: sqlite3.Connection,
+    contribution: LessonContribution,
+    *,
+    expected_version: int,
+) -> bool:
+    updated = conn.execute(
+        """
+        UPDATE lesson_contributions SET
+            title = ?, description = ?, status = ?, version = ?,
+            current_revision = ?, current_revision_id = ?,
+            merge_session_id = ?, merged_commit_id = ?,
+            updated_at = ?, closed_at = ?
+        WHERE id = ? AND version = ?
+        """,
+        (
+            contribution.title,
+            contribution.description,
+            contribution.status,
+            contribution.version,
+            contribution.current_revision,
+            contribution.current_revision_id,
+            contribution.merge_session_id,
+            contribution.merged_commit_id,
+            contribution.updated_at,
+            contribution.closed_at,
+            contribution.id,
+            expected_version,
+        ),
+    )
+    return updated.rowcount == 1
 
 
 def _insert_contribution_revision(conn: sqlite3.Connection, revision: LessonContributionRevision) -> None:

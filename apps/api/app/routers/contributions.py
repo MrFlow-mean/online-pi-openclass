@@ -25,9 +25,16 @@ from app.services.lesson_contribution import (
     delete_lesson_contribution_comment,
     edit_lesson_contribution_comment,
     reopen_lesson_contribution,
+    return_lesson_contribution_for_changes,
+    start_lesson_contribution_merge,
     update_lesson_contribution_revision,
 )
-from app.services.workspace_state import find_lesson_package, get_store, load_workspace_for_user
+from app.services.workspace_state import (
+    find_lesson_package,
+    get_store,
+    load_workspace_for_user,
+    load_workspace_for_user_with_revision,
+)
 
 
 router = APIRouter()
@@ -219,6 +226,51 @@ def reopen_contribution(
 ) -> LessonContributionView:
     try:
         return reopen_lesson_contribution(
+            get_store(), contribution_id, user=user, expected_version=request.expected_version
+        )
+    except LessonContributionError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post(
+    "/api/contributions/{contribution_id}/merge/start",
+    response_model=LessonContributionView,
+)
+def start_contribution_merge(
+    contribution_id: str,
+    request: LessonContributionVersionRequest,
+    user: UserView = Depends(current_user),
+) -> LessonContributionView:
+    bundle = get_store().load_lesson_contribution(contribution_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="改进方案不存在。")
+    workspace, workspace_revision = load_workspace_for_user_with_revision(user.id)
+    _, source_lesson = find_lesson_package(workspace, bundle[0].source_lesson_id)
+    try:
+        return start_lesson_contribution_merge(
+            get_store(),
+            contribution_id,
+            user=user,
+            workspace=workspace,
+            source_lesson=source_lesson,
+            expected_workspace_revision=workspace_revision,
+            expected_version=request.expected_version,
+        )
+    except LessonContributionError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post(
+    "/api/contributions/{contribution_id}/merge/return",
+    response_model=LessonContributionView,
+)
+def return_contribution_merge(
+    contribution_id: str,
+    request: LessonContributionVersionRequest,
+    user: UserView = Depends(current_user),
+) -> LessonContributionView:
+    try:
+        return return_lesson_contribution_for_changes(
             get_store(), contribution_id, user=user, expected_version=request.expected_version
         )
     except LessonContributionError as exc:
