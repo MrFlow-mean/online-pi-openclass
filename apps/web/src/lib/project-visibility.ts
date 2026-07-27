@@ -52,8 +52,9 @@ export function updatePackageVisibility(packageId: string, visibility: ProjectVi
   });
 }
 
-export function getPublicLesson(lessonId: string) {
-  return visibilityRequest<PublicLesson>(`/api/public/lessons/${lessonId}`);
+export function getPublicLesson(lessonId: string, historyNodeId?: string) {
+  const query = historyNodeId ? `?history_node=${encodeURIComponent(historyNodeId)}` : "";
+  return visibilityRequest<PublicLesson>(`/api/public/lessons/${lessonId}${query}`);
 }
 
 export function getPublicPackage(packageId: string) {

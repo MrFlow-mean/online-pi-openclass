@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, BookOpen, Globe2, LoaderCircle } from "lucide-react";
 
@@ -43,6 +43,8 @@ function PublicLessonArticle({ lesson }: { lesson: PublicLesson }) {
 
 export default function SharedCoursePage() {
   const params = useParams<{ kind: string; id: string }>();
+  const searchParams = useSearchParams();
+  const historyNodeId = searchParams.get("history_node")?.trim() ?? "";
   const [project, setProject] = useState<PublicProject | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +53,7 @@ export default function SharedCoursePage() {
     const load = async () => {
       try {
         if (params.kind === "lesson") {
-          const lesson = await getPublicLesson(params.id);
+          const lesson = await getPublicLesson(params.id, historyNodeId);
           if (active) setProject({ kind: "lesson", lesson });
           return;
         }
@@ -69,7 +71,7 @@ export default function SharedCoursePage() {
     return () => {
       active = false;
     };
-  }, [params.id, params.kind]);
+  }, [historyNodeId, params.id, params.kind]);
 
   const title =
     project?.kind === "lesson"
@@ -101,6 +103,12 @@ export default function SharedCoursePage() {
             {summary ? <p className="mt-3 max-w-3xl text-base leading-7 text-stone-600">{summary}</p> : null}
           </div>
         </section>
+
+        {project?.kind === "lesson" && historyNodeId ? (
+          <div className="mb-5 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+            当前展示的是该课程被引用的历史节点。
+          </div>
+        ) : null}
 
         {!project && !error ? (
           <div className="flex items-center justify-center gap-3 rounded-[28px] border border-stone-200 bg-white py-16 text-sm text-stone-500">

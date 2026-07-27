@@ -99,8 +99,10 @@ class SqliteCourseStore:
                     FROM lessons
                     JOIN course_packages ON course_packages.id = lessons.package_id
                     WHERE lessons.id = ?
-                      AND lessons.visibility = 'public'
-                      AND course_packages.sort_order = 0
+                      AND (
+                        (lessons.visibility = 'public' AND course_packages.sort_order = 0)
+                        OR course_packages.visibility = 'public'
+                      )
                     """,
                     (lesson_id,),
                 ).fetchone()

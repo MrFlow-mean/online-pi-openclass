@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.models import (
     BatchLessonActionRequest,
@@ -222,10 +222,26 @@ def update_lesson(
 
 
 @router.get("/api/public/lessons/{lesson_id}", response_model=PublicLessonView)
-def get_public_lesson(lesson_id: str) -> PublicLessonView:
+def get_public_lesson(
+    lesson_id: str,
+    history_node: str | None = Query(default=None),
+) -> PublicLessonView:
     lesson = get_course_store().load_public_lesson(lesson_id)
     if lesson is None:
         raise HTTPException(status_code=404, detail="Public lesson not found")
+    if history_node:
+        commit = next(
+            (item for item in lesson.history_graph.commits if item.id == history_node),
+            None,
+        )
+        if commit is None:
+            raise HTTPException(status_code=404, detail="Public history node not found")
+        lesson = lesson.model_copy(
+            update={
+                "board_document": commit.snapshot,
+                "updated_at": commit.created_at,
+            }
+        )
     return _public_lesson_view(lesson)
 
 
