@@ -1850,6 +1850,30 @@ class EmailCodeVerifyRequest(BaseModel):
     guest_token: str | None = None
 
 
+class EmailRegistrationRequest(BaseModel):
+    email: str
+    username: str = Field(min_length=2, max_length=50)
+    password: str = Field(min_length=8, max_length=256)
+    password_confirmation: str = Field(min_length=8, max_length=256)
+    challenge_id: str
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    guest_token: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        username = value.strip()
+        if len(username) < 2:
+            raise ValueError("用户名至少需要 2 个字符")
+        return username
+
+    @model_validator(mode="after")
+    def passwords_must_match(self) -> EmailRegistrationRequest:
+        if self.password != self.password_confirmation:
+            raise ValueError("两次输入的密码不一致")
+        return self
+
+
 class AuthProviderView(BaseModel):
     id: str
     label: str

@@ -134,6 +134,7 @@ class AuthStore:
                 CREATE TABLE IF NOT EXISTS auth_email_challenges (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT 'login',
                     code_salt TEXT NOT NULL,
                     code_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -155,6 +156,7 @@ class AuthStore:
             self._ensure_table_column(conn, "auth_oauth_states", "frontend_origin", "TEXT")
             self._ensure_table_column(conn, "auth_oauth_states", "guest_user_id", "TEXT")
             self._ensure_table_column(conn, "auth_oauth_states", "code_verifier", "TEXT")
+            self._ensure_table_column(conn, "auth_email_challenges", "purpose", "TEXT NOT NULL DEFAULT 'login'")
             self.ensure_email_identities(conn)
 
     def _ensure_user_column(self, conn: sqlite3.Connection, name: str, definition: str) -> None:
@@ -848,10 +850,16 @@ class AuthStore:
             (token_hash, user_id, now, now),
         )
 
-    def latest_email_challenge(self, conn: sqlite3.Connection, *, email: str) -> sqlite3.Row | None:
+    def latest_email_challenge(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        email: str,
+        purpose: str,
+    ) -> sqlite3.Row | None:
         return conn.execute(
-            "SELECT * FROM auth_email_challenges WHERE email = ? ORDER BY created_at DESC LIMIT 1",
-            (email,),
+            "SELECT * FROM auth_email_challenges WHERE email = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1",
+            (email, purpose),
         ).fetchone()
 
     def create_email_challenge(
@@ -860,6 +868,7 @@ class AuthStore:
         *,
         challenge_id: str,
         email: str,
+        purpose: str,
         code_salt: str,
         code_hash: str,
         created_at: str,
@@ -867,10 +876,10 @@ class AuthStore:
     ) -> None:
         conn.execute(
             """
-            INSERT INTO auth_email_challenges(id, email, code_salt, code_hash, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO auth_email_challenges(id, email, purpose, code_salt, code_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (challenge_id, email, code_salt, code_hash, created_at, expires_at),
+            (challenge_id, email, purpose, code_salt, code_hash, created_at, expires_at),
         )
 
     def find_email_challenge(self, conn: sqlite3.Connection, challenge_id: str) -> sqlite3.Row | None:

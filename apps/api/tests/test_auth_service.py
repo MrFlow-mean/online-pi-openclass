@@ -150,27 +150,114 @@ def test_login_rejects_wrong_password(tmp_path) -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_email_code_login_creates_account_and_consumes_code(tmp_path, monkeypatch) -> None:
+def test_email_code_login_requires_existing_account_and_consumes_code(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     SqliteCourseStore(db_path, legacy_json_path=None)
     auth = AuthService(db_path)
+    _, existing_user = auth.register("student@example.com", "correct-password")
     sent: dict[str, str] = {}
 
-    def capture_email(*, email: str, code: str) -> None:
-        sent.update(email=email, code=code)
+    def capture_email(*, email: str, code: str, purpose: str) -> None:
+        sent.update(email=email, code=code, purpose=purpose)
 
-    monkeypatch.setattr("app.services.auth_service.send_login_code", capture_email)
+    monkeypatch.setattr("app.services.auth_service.send_email_code", capture_email)
 
     challenge_id, expires_in = auth.request_email_code("Student@Example.com")
     token, user = auth.verify_email_code(challenge_id, sent["code"])
 
     assert sent["email"] == "student@example.com"
+    assert sent["purpose"] == "login"
     assert expires_in == 600
-    assert user.email == "student@example.com"
+    assert user.id == existing_user.id
     assert auth.get_user_by_token(token).id == user.id
     with pytest.raises(HTTPException) as exc_info:
         auth.verify_email_code(challenge_id, sent["code"])
     assert exc_info.value.status_code == 401
+
+
+def test_email_code_login_rejects_unregistered_email(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    monkeypatch.setattr("app.services.auth_service.send_email_code", lambda **_: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.request_email_code("new-student@example.com")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "该邮箱尚未注册，请先注册"
+
+
+def test_email_registration_requires_code_and_preserves_username(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    sent: dict[str, str] = {}
+
+    def capture_email(*, email: str, code: str, purpose: str) -> None:
+        sent.update(email=email, code=code, purpose=purpose)
+
+    monkeypatch.setattr("app.services.auth_service.send_email_code", capture_email)
+
+    challenge_id, expires_in = auth.request_registration_email_code("New.Student@Example.com")
+    token, user = auth.register_email(
+        email="new.student@example.com",
+        username="新同学",
+        password="correct-password",
+        challenge_id=challenge_id,
+        code=sent["code"],
+    )
+
+    assert sent == {
+        "email": "new.student@example.com",
+        "code": sent["code"],
+        "purpose": "register",
+    }
+    assert expires_in == 600
+    assert user.email == "new.student@example.com"
+    assert user.display_name == "新同学"
+    assert auth.get_user_by_token(token).id == user.id
+    login_token, logged_in = auth.login("new.student@example.com", "correct-password")
+    assert logged_in.id == user.id
+    assert auth.get_user_by_token(login_token).id == user.id
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.register_email(
+            email="new.student@example.com",
+            username="新同学",
+            password="correct-password",
+            challenge_id=challenge_id,
+            code=sent["code"],
+        )
+    assert exc_info.value.status_code in {401, 409}
+
+
+def test_email_registration_rejects_wrong_code_without_creating_account(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    sent: dict[str, str] = {}
+    monkeypatch.setattr(
+        "app.services.auth_service.send_email_code",
+        lambda **values: sent.update(code=values["code"]),
+    )
+
+    challenge_id, _ = auth.request_registration_email_code("new-student@example.com")
+    wrong_code = "000000" if sent["code"] != "000000" else "000001"
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.register_email(
+            email="new-student@example.com",
+            username="New Student",
+            password="correct-password",
+            challenge_id=challenge_id,
+            code=wrong_code,
+        )
+
+    assert exc_info.value.status_code == 401
+    with auth.store.connection() as conn:
+        assert auth.store.find_user_by_email(conn, "new-student@example.com") is None
+        assert auth.store.find_email_challenge(conn, challenge_id)["attempts"] == 1
 
 
 def test_email_code_login_rejects_bad_code_and_rate_limits_resend(tmp_path, monkeypatch) -> None:
@@ -178,8 +265,9 @@ def test_email_code_login_rejects_bad_code_and_rate_limits_resend(tmp_path, monk
     SqliteCourseStore(db_path, legacy_json_path=None)
     auth = AuthService(db_path)
     sent: dict[str, str] = {}
+    auth.register("student@example.com", "correct-password")
     monkeypatch.setattr(
-        "app.services.auth_service.send_login_code",
+        "app.services.auth_service.send_email_code",
         lambda **values: sent.update(code=values["code"]),
     )
 
@@ -201,7 +289,8 @@ def test_email_challenge_consumption_is_atomic(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     SqliteCourseStore(db_path, legacy_json_path=None)
     auth = AuthService(db_path)
-    monkeypatch.setattr("app.services.auth_service.send_login_code", lambda **_: None)
+    auth.register("student@example.com", "correct-password")
+    monkeypatch.setattr("app.services.auth_service.send_email_code", lambda **_: None)
 
     challenge_id, _ = auth.request_email_code("student@example.com")
 

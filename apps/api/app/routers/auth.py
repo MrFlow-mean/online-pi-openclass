@@ -13,6 +13,7 @@ from app.models import (
     AuthSessionResponse,
     EmailCodeRequest,
     EmailCodeRequestResponse,
+    EmailRegistrationRequest,
     EmailCodeVerifyRequest,
     UserView,
 )
@@ -42,8 +43,15 @@ def current_admin(user: UserView = Depends(current_user)) -> UserView:
 
 
 @router.post("/auth/register", response_model=AuthSessionResponse)
-def register(payload: AuthRequest) -> AuthSessionResponse:
-    token, user = auth_service.register(payload.account_identifier(), payload.password, guest_token=payload.guest_token)
+def register(payload: EmailRegistrationRequest) -> AuthSessionResponse:
+    token, user = auth_service.register_email(
+        email=payload.email,
+        username=payload.username,
+        password=payload.password,
+        challenge_id=payload.challenge_id,
+        code=payload.code,
+        guest_token=payload.guest_token,
+    )
     return AuthSessionResponse(token=token, user=user)
 
 
@@ -56,6 +64,16 @@ def login(payload: AuthRequest) -> AuthSessionResponse:
 @router.post("/auth/email/code", response_model=EmailCodeRequestResponse)
 def request_email_code(payload: EmailCodeRequest) -> EmailCodeRequestResponse:
     challenge_id, expires_in_seconds = auth_service.request_email_code(payload.email)
+    return EmailCodeRequestResponse(
+        challenge_id=challenge_id,
+        expires_in_seconds=expires_in_seconds,
+        message="验证码已发送，请检查邮箱",
+    )
+
+
+@router.post("/auth/register/email/code", response_model=EmailCodeRequestResponse)
+def request_registration_email_code(payload: EmailCodeRequest) -> EmailCodeRequestResponse:
+    challenge_id, expires_in_seconds = auth_service.request_registration_email_code(payload.email)
     return EmailCodeRequestResponse(
         challenge_id=challenge_id,
         expires_in_seconds=expires_in_seconds,

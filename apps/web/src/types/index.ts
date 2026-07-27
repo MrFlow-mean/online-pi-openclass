@@ -932,6 +932,15 @@ export interface EmailCodeRequestResponse {
   message: string;
 }
 
+export interface EmailRegistrationRequest {
+  email: string;
+  username: string;
+  password: string;
+  password_confirmation: string;
+  challenge_id: string;
+  code: string;
+}
+
 export interface AuthIdentityView {
   provider: string;
   provider_label: string;

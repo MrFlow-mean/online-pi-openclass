@@ -16,6 +16,7 @@ import type {
   DocumentAIEditPayload,
   DocumentSavePayload,
   EmailCodeRequestResponse,
+  EmailRegistrationRequest,
   GoogleRealtimeSessionPayload,
   GoogleRealtimeSessionResponse,
   LessonMergeResolution,
@@ -481,10 +482,10 @@ async function streamRequest(
 }
 
 export const api = {
-  register(identifier: string, password: string) {
+  registerEmail(payload: EmailRegistrationRequest) {
     return request<AuthSessionResponse>("/api/auth/register", {
       method: "POST",
-      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
+      body: JSON.stringify({ ...payload, guest_token: readGuestAuthToken() }),
     });
   },
   login(identifier: string, password: string) {
@@ -495,6 +496,12 @@ export const api = {
   },
   requestEmailCode(email: string) {
     return request<EmailCodeRequestResponse>("/api/auth/email/code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+  requestRegistrationEmailCode(email: string) {
+    return request<EmailCodeRequestResponse>("/api/auth/register/email/code", {
       method: "POST",
       body: JSON.stringify({ email }),
     });

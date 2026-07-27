@@ -20,7 +20,7 @@ from fastapi import HTTPException, Request, WebSocket
 
 from app.models import AdminOverview, AdminStats, AuthIdentityView, AuthProviderView, UserView, new_id
 from app.services.auth_store import AuthStore
-from app.services.email_sender import send_login_code
+from app.services.email_sender import send_email_code
 
 
 PBKDF2_ITERATIONS = 210_000
@@ -452,6 +452,87 @@ class AuthService:
             self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
             return self._issue_session_for_user_id(conn, user_id)
 
+    def register_email(
+        self,
+        *,
+        email: str,
+        username: str,
+        password: str,
+        challenge_id: str,
+        code: str,
+        guest_token: str | None = None,
+    ) -> tuple[str, UserView]:
+        account = _normalize_account_identifier(email)
+        if account.kind != "email" or not account.email:
+            raise HTTPException(status_code=422, detail="请输入有效邮箱")
+        display_name = username.strip()
+        if len(display_name) < 2 or len(display_name) > 50:
+            raise HTTPException(status_code=422, detail="用户名需要 2 到 50 个字符")
+        password_salt, password_hash = _hash_password(password)
+        now = datetime.now(timezone.utc)
+
+        with self.store.transaction() as conn:
+            challenge = self.store.find_email_challenge(conn, challenge_id)
+            expires_at = _parse_iso(challenge["expires_at"]) if challenge is not None else None
+            is_valid_challenge = (
+                challenge is not None
+                and challenge["purpose"] == "register"
+                and challenge["email"] == account.email
+                and challenge["consumed_at"] is None
+                and expires_at is not None
+                and expires_at > now
+                and int(challenge["attempts"]) < EMAIL_CODE_MAX_ATTEMPTS
+            )
+            if is_valid_challenge:
+                candidate_hash = hashlib.sha256(
+                    f"{challenge['code_salt']}:{code}".encode("utf-8")
+                ).hexdigest()
+                if not hmac.compare_digest(candidate_hash, challenge["code_hash"]):
+                    self.store.increment_email_challenge_attempts(conn, challenge_id)
+                else:
+                    if self.store.find_user_by_email(conn, account.email) is not None:
+                        raise HTTPException(status_code=409, detail="该邮箱已注册")
+                    consumed = self.store.consume_email_challenge(
+                        conn,
+                        challenge_id=challenge_id,
+                        now=now.isoformat(),
+                    )
+                    if consumed:
+                        try:
+                            user_id = new_id("user")
+                            role = (
+                                "admin"
+                                if self.store.user_count(conn) == 0 or account.email in _admin_emails()
+                                else "user"
+                            )
+                            self.store.create_password_user(
+                                conn,
+                                user_id=user_id,
+                                email=account.email,
+                                phone=None,
+                                password_salt=password_salt,
+                                password_hash=password_hash,
+                                role=role,
+                                display_name=display_name,
+                                created_at=now.isoformat(),
+                            )
+                            self.store.create_identity(
+                                conn,
+                                provider="email",
+                                provider_subject=account.email,
+                                user_id=user_id,
+                                email=account.email,
+                                display_name=display_name,
+                                created_at=now.isoformat(),
+                                last_login_at=now.isoformat(),
+                            )
+                        except sqlite3.IntegrityError as exc:
+                            raise HTTPException(status_code=409, detail="该邮箱已注册") from exc
+                        self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
+                        return self._issue_session_for_user_id(conn, user_id)
+
+        raise HTTPException(status_code=401, detail="验证码无效或已过期")
+
     def login(self, identifier: str, password: str, *, guest_token: str | None = None) -> tuple[str, UserView]:
         account = _normalize_account_identifier(identifier)
         with self.store.transaction() as conn:
@@ -471,6 +552,21 @@ class AuthService:
         account = _normalize_account_identifier(email)
         if account.kind != "email" or not account.email:
             raise HTTPException(status_code=422, detail="请输入有效邮箱")
+        with self.store.connection() as conn:
+            if self.store.find_user_by_email(conn, account.email) is None:
+                raise HTTPException(status_code=404, detail="该邮箱尚未注册，请先注册")
+        return self._request_email_code(account.email, purpose="login")
+
+    def request_registration_email_code(self, email: str) -> tuple[str, int]:
+        account = _normalize_account_identifier(email)
+        if account.kind != "email" or not account.email:
+            raise HTTPException(status_code=422, detail="请输入有效邮箱")
+        with self.store.connection() as conn:
+            if self.store.find_user_by_email(conn, account.email) is not None:
+                raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录")
+        return self._request_email_code(account.email, purpose="register")
+
+    def _request_email_code(self, email: str, *, purpose: str) -> tuple[str, int]:
         now = datetime.now(timezone.utc)
         challenge_id = new_id("email_challenge")
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -478,14 +574,15 @@ class AuthService:
         code_hash = hashlib.sha256(f"{code_salt}:{code}".encode("utf-8")).hexdigest()
 
         with self.store.transaction() as conn:
-            latest = self.store.latest_email_challenge(conn, email=account.email)
+            latest = self.store.latest_email_challenge(conn, email=email, purpose=purpose)
             latest_created = _parse_iso(latest["created_at"]) if latest is not None else None
             if latest_created and now - latest_created < EMAIL_CODE_RESEND_INTERVAL:
                 raise HTTPException(status_code=429, detail="验证码发送过于频繁，请稍后重试")
             self.store.create_email_challenge(
                 conn,
                 challenge_id=challenge_id,
-                email=account.email,
+                email=email,
+                purpose=purpose,
                 code_salt=code_salt,
                 code_hash=code_hash,
                 created_at=now.isoformat(),
@@ -493,7 +590,7 @@ class AuthService:
             )
 
         try:
-            send_login_code(email=account.email, code=code)
+            send_email_code(email=email, code=code, purpose=purpose)
         except Exception:
             with self.store.transaction() as conn:
                 self.store.delete_email_challenge(conn, challenge_id)
@@ -517,6 +614,7 @@ class AuthService:
                 or expires_at is None
                 or expires_at <= now
                 or int(challenge["attempts"]) >= EMAIL_CODE_MAX_ATTEMPTS
+                or challenge["purpose"] != "login"
             ):
                 raise HTTPException(status_code=401, detail="验证码无效或已过期")
 
@@ -537,38 +635,14 @@ class AuthService:
                 email = str(challenge["email"])
                 row = self.store.find_user_by_email(conn, email)
                 if row is None:
-                    user_id = new_id("user")
-                    password_salt, password_hash = _hash_password(secrets.token_urlsafe(32))
-                    role = "admin" if self.store.user_count(conn) == 0 or email in _admin_emails() else "user"
-                    self.store.create_password_user(
-                        conn,
-                        user_id=user_id,
-                        email=email,
-                        phone=None,
-                        password_salt=password_salt,
-                        password_hash=password_hash,
-                        role=role,
-                        display_name=email.split("@", 1)[0],
-                        created_at=now.isoformat(),
-                    )
-                    self.store.create_identity(
-                        conn,
-                        provider="email",
-                        provider_subject=email,
-                        user_id=user_id,
-                        email=email,
-                        display_name=email.split("@", 1)[0],
-                        created_at=now.isoformat(),
-                        last_login_at=now.isoformat(),
-                    )
-                else:
-                    user_id = str(row["id"])
-                    self.store.touch_password_login(
-                        conn,
-                        user_id=user_id,
-                        provider="email",
-                        now=now.isoformat(),
-                    )
+                    raise HTTPException(status_code=404, detail="该邮箱尚未注册，请先注册")
+                user_id = str(row["id"])
+                self.store.touch_password_login(
+                    conn,
+                    user_id=user_id,
+                    provider="email",
+                    now=now.isoformat(),
+                )
                 self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
                 return self._issue_session_for_user_id(conn, user_id)
 
@@ -751,7 +825,7 @@ class AuthService:
             AuthProviderView(
                 id="email",
                 label="邮箱/手机号",
-                description="使用邮箱或手机号和密码注册或登录。",
+                description="使用已验证邮箱注册，或使用邮箱/手机号登录。",
                 configured=True,
                 kind="password",
             )

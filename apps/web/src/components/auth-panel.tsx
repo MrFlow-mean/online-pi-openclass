@@ -356,20 +356,26 @@ function AuthInput({
   autoComplete,
   Icon,
   id,
+  inputMode,
   label,
+  maxLength,
   minLength,
   onChange,
   placeholder,
+  pattern,
   type,
   value,
 }: {
   autoComplete: string;
   Icon: LucideIcon;
   id: string;
+  inputMode?: "email" | "numeric" | "text";
   label: string;
+  maxLength?: number;
   minLength?: number;
   onChange: (value: string) => void;
   placeholder: string;
+  pattern?: string;
   type: "email" | "password" | "text";
   value: string;
 }) {
@@ -384,7 +390,10 @@ function AuthInput({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           required
+          inputMode={inputMode}
+          maxLength={maxLength}
           minLength={minLength}
+          pattern={pattern}
           autoComplete={autoComplete}
           className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm font-medium text-[#3a312b] outline-none placeholder:text-[#b8a58f] sm:py-3.5"
           placeholder={placeholder}
@@ -593,9 +602,12 @@ function ProductShowcase() {
 export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [mode, setMode] = useState(initialMode);
   const [accountIdentifier, setAccountIdentifier] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [emailCode, setEmailCode] = useState("");
   const [emailChallengeId, setEmailChallengeId] = useState<string | null>(null);
+  const [registrationChallengeId, setRegistrationChallengeId] = useState<string | null>(null);
   const [useEmailCode, setUseEmailCode] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserView | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -808,14 +820,64 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setNotice(null);
 
     try {
-      const payload =
-        mode === "register" ? await api.register(accountIdentifier, password) : await api.login(accountIdentifier, password);
+      const payload = await api.login(accountIdentifier, password);
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleRegistrationCodeRequest() {
+    setIsLoading(true);
+    setError(null);
+    setNotice(null);
+    setEmailCode("");
+
+    try {
+      const response = await api.requestRegistrationEmailCode(accountIdentifier);
+      setRegistrationChallengeId(response.challenge_id);
+      setNotice(response.message);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "验证码发送失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleRegistrationSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      if (password !== passwordConfirmation) {
+        setError("两次输入的密码不一致");
+        return;
+      }
+      if (!registrationChallengeId) {
+        setError("请先发送并填写邮箱验证码");
+        return;
+      }
+      const payload = await api.registerEmail({
+        email: accountIdentifier,
+        username,
+        password,
+        password_confirmation: passwordConfirmation,
+        challenge_id: registrationChallengeId,
+        code: emailCode,
+      });
+      storeAuthToken(payload.token);
+      setCurrentUser(payload.user);
+      const nextPath = new URLSearchParams(window.location.search).get("next");
+      navigateAfterAuth(loginDestination(nextPath));
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "注册失败");
     } finally {
       setIsLoading(false);
     }
@@ -849,6 +911,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   function resetEmailCodeFlow() {
     setUseEmailCode(false);
     setEmailChallengeId(null);
+    setRegistrationChallengeId(null);
     setEmailCode("");
   }
 
@@ -935,7 +998,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setError(null);
     const provider = authProviders.find((item) => item.id === option.id);
     if (!provider?.configured) {
-      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client/App ID 与 Secret。邮箱/手机号注册登录已可直接使用。`);
+      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client/App ID 与 Secret。你也可以使用邮箱注册或登录。`);
       return;
     }
     const nextPath =
@@ -1114,7 +1177,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 <div className="mb-5 flex items-center gap-3 text-xs font-semibold text-[#8d8377]">
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
-                  或使用邮箱/手机号
+                  {isRegister ? "使用邮箱注册" : "或使用邮箱/手机号"}
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
                 </div>
 
@@ -1171,14 +1234,20 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 <form
                   onSubmit={(event) =>
-                    void (useEmailCode && !isRegister ? handleEmailCodeSubmit(event) : handleSubmit(event))
+                    void (
+                      isRegister
+                        ? handleRegistrationSubmit(event)
+                        : useEmailCode
+                          ? handleEmailCodeSubmit(event)
+                          : handleSubmit(event)
+                    )
                   }
                   className="space-y-4"
                 >
                   <AuthInput
                     id="account"
-                    label={useEmailCode && !isRegister ? "邮箱" : "邮箱或手机号"}
-                    type={useEmailCode && !isRegister ? "email" : "text"}
+                    label={isRegister || useEmailCode ? "邮箱" : "邮箱或手机号"}
+                    type={isRegister || useEmailCode ? "email" : "text"}
                     value={accountIdentifier}
                     onChange={(value) => {
                       setAccountIdentifier(value);
@@ -1187,49 +1256,115 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         setEmailCode("");
                         setNotice(null);
                       }
+                      if (registrationChallengeId) {
+                        setRegistrationChallengeId(null);
+                        setEmailCode("");
+                        setNotice(null);
+                      }
                     }}
-                    autoComplete="username"
-                    placeholder={useEmailCode && !isRegister ? "name@company.com" : "name@company.com / 13800138000"}
-                    Icon={useEmailCode && !isRegister ? Mail : User}
+                    autoComplete={isRegister || useEmailCode ? "email" : "username"}
+                    placeholder={isRegister || useEmailCode ? "name@company.com" : "name@company.com / 13800138000"}
+                    Icon={isRegister || useEmailCode ? Mail : User}
                   />
 
-                  {useEmailCode && !isRegister && emailChallengeId ? (
+                  {isRegister ? (
+                    <AuthInput
+                      id="username"
+                      label="用户名"
+                      type="text"
+                      value={username}
+                      onChange={setUsername}
+                      minLength={2}
+                      autoComplete="nickname"
+                      placeholder="用于展示的用户名"
+                      Icon={User}
+                    />
+                  ) : null}
+
+                  {!isRegister && useEmailCode && emailChallengeId ? (
                     <AuthInput
                       id="email-code"
                       label="6 位验证码"
                       type="text"
                       value={emailCode}
                       onChange={setEmailCode}
+                      inputMode="numeric"
+                      maxLength={6}
                       minLength={6}
+                      pattern="[0-9]{6}"
                       autoComplete="one-time-code"
                       placeholder="000000"
                       Icon={LockKeyhole}
                     />
                   ) : null}
 
-                  {!useEmailCode || isRegister ? <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
+                  {!useEmailCode || isRegister ? (
+                    <div className="space-y-4">
+                      {!isRegister ? (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
+                          <button
+                            type="button"
+                            onClick={handleForgotPassword}
+                            className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
+                          >
+                            忘记密码？
+                          </button>
+                        </div>
+                      ) : null}
+                      <AuthInput
+                        id="password"
+                        label={isRegister ? "密码" : ""}
+                        type="password"
+                        value={password}
+                        onChange={setPassword}
+                        minLength={8}
+                        autoComplete={isRegister ? "new-password" : "current-password"}
+                        placeholder={isRegister ? "至少 8 位" : "••••••••"}
+                        Icon={LockKeyhole}
+                      />
+                      {isRegister ? (
+                        <AuthInput
+                          id="password-confirmation"
+                          label="确认密码"
+                          type="password"
+                          value={passwordConfirmation}
+                          onChange={setPasswordConfirmation}
+                          minLength={8}
+                          autoComplete="new-password"
+                          placeholder="再次输入密码"
+                          Icon={ShieldCheck}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {isRegister ? (
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+                      <AuthInput
+                        id="registration-email-code"
+                        label="邮箱验证码"
+                        type="text"
+                        value={emailCode}
+                        onChange={setEmailCode}
+                        inputMode="numeric"
+                        maxLength={6}
+                        minLength={6}
+                        pattern="[0-9]{6}"
+                        autoComplete="one-time-code"
+                        placeholder="6 位验证码"
+                        Icon={LockKeyhole}
+                      />
                       <button
                         type="button"
-                        onClick={handleForgotPassword}
-                        className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
+                        onClick={() => void handleRegistrationCodeRequest()}
+                        disabled={isAuthBusy}
+                        className="h-[50px] whitespace-nowrap rounded-lg border border-[#d2a878] bg-white px-4 text-sm font-semibold text-[#5c4c3c] shadow-sm transition hover:bg-[#f7f3eb] disabled:cursor-wait disabled:opacity-60"
                       >
-                        忘记密码？
+                        {registrationChallengeId ? "重新发送" : "发送验证码"}
                       </button>
                     </div>
-                    <AuthInput
-                      id="password"
-                      label=""
-                      type="password"
-                      value={password}
-                      onChange={setPassword}
-                      minLength={8}
-                      autoComplete={isRegister ? "new-password" : "current-password"}
-                      placeholder={isRegister ? "至少 8 位" : "••••••••"}
-                      Icon={LockKeyhole}
-                    />
-                  </div> : null}
+                  ) : null}
 
                   {error ? (
                     <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div>
@@ -1241,7 +1376,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
-                    {isRegister ? "创建账号" : useEmailCode ? (emailChallengeId ? "验证并登录" : "发送验证码") : "进入工作台"}
+                    {isRegister ? "注册" : useEmailCode ? (emailChallengeId ? "验证并登录" : "发送验证码") : "进入工作台"}
                   </button>
                 </form>
 
@@ -1252,7 +1387,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     onClick={() => handleAuthModeChange(alternateMode)}
                     className="ml-1 border-b border-[#3a312b] pb-0.5 font-semibold text-[#3a312b] transition hover:border-[#d2a878] hover:text-[#b88952]"
                   >
-                    {isRegister ? "返回登录" : "免费注册"}
+                    {isRegister ? "返回登录" : "邮箱注册"}
                   </Link>
                 </p>
 
