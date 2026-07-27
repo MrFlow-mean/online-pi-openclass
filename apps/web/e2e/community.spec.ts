@@ -70,8 +70,7 @@ test("preserves a same-origin history-node draft through Answer single sign-on",
   if (!baseURL) throw new Error("Playwright baseURL is required");
   const publicUrl = `${baseURL}/community`;
   const entryUrl = `${publicUrl}/answer/api/v1/connector/login/basic`;
-  const prefill = "---\ntitle: \"History node\"\n---\n节点完成度 100%";
-  const encodedPrefill = encodeURIComponent(prefill.replaceAll("%", "%25"));
+  const referenceDraft = `> [课堂历史节点引用 · 点击打开](${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history)`;
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -88,20 +87,22 @@ test("preserves a same-origin history-node draft through Answer single sign-on",
     body: "<h1>Answer SSO</h1>",
   }));
 
-  await page.goto(`/community?prefill=${encodedPrefill}`);
+  await page.goto("/community?reference=history_node&lesson_id=lesson-history&history_node=commit-history");
 
   await expect(page).toHaveURL(entryUrl);
   const redirectPath = await page.evaluate(() => window.localStorage.getItem("_a_rp_"));
   expect(redirectPath).toBeTruthy();
   const storedPrefill = new URL(redirectPath!, "http://answer.local").searchParams.get("prefill");
   expect(storedPrefill).toBeTruthy();
-  expect(decodeURIComponent(storedPrefill!)).toBe(prefill);
+  expect(decodeURIComponent(storedPrefill!)).toBe(referenceDraft);
+  expect(referenceDraft).not.toContain("title:");
+  expect(referenceDraft).not.toContain("课堂正文");
 });
 
 
-test("sends a cross-origin history-node draft to the configured Answer site", async ({ page }) => {
-  const prefill = "---\ntitle: \"History node\"\n---\nA reusable lesson node";
-  const encodedPrefill = encodeURIComponent(prefill);
+test("sends a cross-origin history-node reference to the configured Answer site", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const referenceDraft = `> [课堂历史节点引用 · 点击打开](${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history)`;
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -118,12 +119,12 @@ test("sends a cross-origin history-node draft to the configured Answer site", as
     body: "<h1>Prefilled Answer draft</h1>",
   }));
 
-  await page.goto(`/community?prefill=${encodedPrefill}`);
+  await page.goto("/community?reference=history_node&lesson_id=lesson-history&history_node=commit-history");
 
   await expect(page).toHaveURL((url) => (
     url.origin === readyIntegration.public_url
     && url.pathname === "/questions/add"
-    && url.searchParams.get("prefill") === prefill
+    && decodeURIComponent(url.searchParams.get("prefill") ?? "") === referenceDraft
   ));
   await expect(page.getByRole("heading", { name: "Prefilled Answer draft" })).toBeVisible();
 });
@@ -230,6 +231,32 @@ test("keeps an existing Answer session without restarting SSO", async ({ page, b
   await expect(page).toHaveURL(`${entryUrl}/`);
   await expect(page.getByRole("heading", { name: "Authenticated Answer" })).toBeVisible();
   expect(openClassSessionChecks).toBe(0);
+});
+
+
+test("renders a shared history-node link as a fully clickable reference card", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  const targetUrl = `${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history`;
+  await page.route(/\/community\/$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerSsoBridge}</script><blockquote><p><a href="${targetUrl}">课堂历史节点引用 · 点击打开</a></p></blockquote>`,
+  }));
+  await page.route(targetUrl, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: "<h1>Referenced history node</h1>",
+  }));
+
+  await page.goto("/community/");
+
+  const card = page.locator("blockquote.openclass-history-reference");
+  await expect(card).toHaveAttribute("role", "link");
+  await expect(card).toHaveAttribute("tabindex", "0");
+  await card.click({ position: { x: 8, y: 8 } });
+  await expect(page).toHaveURL(targetUrl);
+  await expect(page.getByRole("heading", { name: "Referenced history node" })).toBeVisible();
 });
 
 

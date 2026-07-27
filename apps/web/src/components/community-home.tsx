@@ -35,12 +35,12 @@ function communityShareDestination(
   integration: CommunityIntegration,
   useSingleSignOn: boolean
 ) {
-  const encodedPrefill = new URLSearchParams(window.location.search).get("prefill");
-  if (!encodedPrefill || !integration.public_url) {
-    return null;
-  }
   try {
     const current = new URL(window.location.href);
+    const encodedPrefill = communitySharePrefill(current);
+    if (!encodedPrefill || !integration.public_url) {
+      return null;
+    }
     const communityRoot = new URL(integration.public_url, current);
     const communityPath = communityRoot.pathname.replace(/\/+$/, "");
     const destination = new URL(communityRoot);
@@ -57,6 +57,34 @@ function communityShareDestination(
   } catch {
     return null;
   }
+}
+
+function answerPrefillValue(value: string) {
+  // Answer decodes the query once through URLSearchParams and once in its prefill parser.
+  return encodeURIComponent(value.replaceAll("%", "%25"));
+}
+
+function communitySharePrefill(current: URL) {
+  const existingPrefill = current.searchParams.get("prefill");
+  if (existingPrefill) {
+    return existingPrefill;
+  }
+  if (current.searchParams.get("reference") !== "history_node") {
+    return null;
+  }
+  const lessonId = current.searchParams.get("lesson_id")?.trim();
+  const historyNodeId = current.searchParams.get("history_node")?.trim();
+  if (!lessonId || !historyNodeId) {
+    return null;
+  }
+  const referenceUrl = new URL(
+    `/courses/shared/lesson/${encodeURIComponent(lessonId)}`,
+    current.origin
+  );
+  referenceUrl.searchParams.set("history_node", historyNodeId);
+  return answerPrefillValue(
+    `> [课堂历史节点引用 · 点击打开](${referenceUrl.toString()})`
+  );
 }
 
 

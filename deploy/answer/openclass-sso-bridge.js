@@ -209,3 +209,95 @@
     scanAvatars(document);
   });
 })();
+
+(function installHistoryReferenceCards() {
+  var config = window.__OPENCLASS_COMMUNITY_BRIDGE__;
+  if (!config || !config.entryUrl) {
+    return;
+  }
+
+  var openClassOrigin;
+  try {
+    openClassOrigin = new URL(config.entryUrl, window.location.href).origin;
+  } catch (_error) {
+    return;
+  }
+
+  var style = document.createElement("style");
+  style.textContent = [
+    "blockquote.openclass-history-reference{position:relative;margin:16px 0;padding:18px 20px 16px;border:1px solid #bae6fd;border-radius:14px;background:#f0f9ff;color:#0c4a6e;cursor:pointer;transition:border-color .15s ease,background .15s ease,transform .15s ease}",
+    "blockquote.openclass-history-reference:before{content:'OpenClass · 历史节点引用';display:block;margin-bottom:7px;font-size:11px;font-weight:700;letter-spacing:.08em;color:#0369a1}",
+    "blockquote.openclass-history-reference:hover{border-color:#38bdf8;background:#e0f2fe;transform:translateY(-1px)}",
+    "blockquote.openclass-history-reference:focus-visible{outline:3px solid rgba(14,165,233,.3);outline-offset:2px}",
+    "blockquote.openclass-history-reference p{margin:0}",
+    "blockquote.openclass-history-reference a{display:block;color:#0c4a6e;font-weight:650;text-decoration:none}",
+  ].join("");
+  document.head.appendChild(style);
+
+  function historyReferenceUrl(anchor) {
+    try {
+      var destination = new URL(anchor.href, window.location.href);
+      if (
+        destination.origin !== openClassOrigin
+        || !/^\/courses\/shared\/lesson\/[^/]+$/.test(destination.pathname)
+        || !destination.searchParams.get("history_node")
+      ) {
+        return null;
+      }
+      return destination;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function enhanceReference(anchor) {
+    if (!(anchor instanceof HTMLAnchorElement)) {
+      return;
+    }
+    var destination = historyReferenceUrl(anchor);
+    var card = anchor.closest("blockquote");
+    if (!destination || !card || card.dataset.openclassHistoryReference === "true") {
+      return;
+    }
+    card.dataset.openclassHistoryReference = "true";
+    card.classList.add("openclass-history-reference");
+    card.setAttribute("role", "link");
+    card.setAttribute("tabindex", "0");
+    card.setAttribute("aria-label", "打开引用的课堂历史节点");
+    anchor.setAttribute("tabindex", "-1");
+    card.addEventListener("click", function openReference(event) {
+      event.preventDefault();
+      window.location.assign(destination.toString());
+    });
+    card.addEventListener("keydown", function openReferenceFromKeyboard(event) {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      event.preventDefault();
+      window.location.assign(destination.toString());
+    });
+  }
+
+  function scanReferences(root) {
+    if (root instanceof HTMLAnchorElement) {
+      enhanceReference(root);
+    }
+    if (root instanceof Element || root instanceof Document) {
+      root.querySelectorAll("blockquote a[href]").forEach(enhanceReference);
+    }
+  }
+
+  var observer = new MutationObserver(function handleReferenceMutations(mutations) {
+    mutations.forEach(function inspectMutation(mutation) {
+      mutation.addedNodes.forEach(scanReferences);
+    });
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function scanLoadedReferences() {
+      scanReferences(document);
+    }, { once: true });
+  } else {
+    scanReferences(document);
+  }
+})();

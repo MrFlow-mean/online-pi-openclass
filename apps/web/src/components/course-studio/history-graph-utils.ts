@@ -173,52 +173,13 @@ export function historyNodeSelection(lesson: Lesson, commit: CommitRecord): Sele
   };
 }
 
-function answerPrefillValue(value: string) {
-  // Answer decodes the query once through URLSearchParams and once in its prefill parser.
-  return encodeURIComponent(value.replaceAll("%", "%25"));
-}
-
-function boundedCommunityDraft(prefix: string, content: string, suffix: string) {
-  const maxEncodedLength = 6_800;
-  if (answerPrefillValue(`${prefix}${content}${suffix}`).length <= maxEncodedLength) {
-    return `${prefix}${content}${suffix}`;
-  }
-  const truncatedSuffix = "\n\n> 节点内容较长，草稿中展示了可供讨论的节选。";
-  let lower = 0;
-  let upper = content.length;
-  while (lower < upper) {
-    const middle = Math.ceil((lower + upper) / 2);
-    const candidate = `${prefix}${content.slice(0, middle).trimEnd()}${truncatedSuffix}`;
-    if (answerPrefillValue(candidate).length <= maxEncodedLength) {
-      lower = middle;
-    } else {
-      upper = middle - 1;
-    }
-  }
-  return `${prefix}${content.slice(0, lower).trimEnd()}${truncatedSuffix}`;
-}
-
 export function historyNodeCommunityShareHref(lesson: Lesson, commit: CommitRecord) {
-  const nodeTitle = historyNodeTitle(commit);
-  const postTitle = compactText(`${lesson.title} · ${nodeTitle}`, 140);
-  const prefix = [
-    "---",
-    `title: ${JSON.stringify(postTitle)}`,
-    "---",
-    "",
-    "> OpenClass 课堂历史节点",
-    `> 课程：${lesson.title}`,
-    `> 节点：${nodeTitle}`,
-    `> 类型：${historyNodeKindLabel(historyNodeKind(commit))}`,
-    `> 分支：${commit.branch_name}`,
-    `> 时间：${commit.created_at}`,
-    "",
-    "## 节点内容",
-    "",
-  ].join("\n");
-  const suffix = "\n\n---\n\n请围绕这个课堂节点补充你的问题、理解或建议。";
-  const prefill = boundedCommunityDraft(prefix, historyNodeContent(commit), suffix);
-  return `/community?prefill=${answerPrefillValue(prefill)}`;
+  const params = new URLSearchParams({
+    reference: "history_node",
+    lesson_id: lesson.id,
+    history_node: commit.id,
+  });
+  return `/community?${params.toString()}`;
 }
 
 export function buildHistoryGraphRows(
