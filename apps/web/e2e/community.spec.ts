@@ -27,6 +27,62 @@ const answerSsoBridge = readFileSync(
   resolve(process.cwd(), "../../deploy/answer/openclass-sso-bridge.js"),
   "utf8",
 );
+const answerRidocBridge = readFileSync(
+  resolve(process.cwd(), "../../deploy/answer/openclass-ridoc-bridge.js"),
+  "utf8",
+);
+
+
+function crc32(content: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of content) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+
+function storedZip(entries: Record<string, string>) {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(entries)) {
+    const nameBytes = Buffer.from(name);
+    const content = Buffer.from(text);
+    const checksum = crc32(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(content.length, 18);
+    local.writeUInt32LE(content.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    localParts.push(local, nameBytes, content);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(content.length, 20);
+    central.writeUInt32LE(content.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBytes);
+    offset += local.length + nameBytes.length + content.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(Object.keys(entries).length, 8);
+  end.writeUInt16LE(Object.keys(entries).length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
 
 
 test("sends a registered OpenClass user through Answer single sign-on", async ({ page }) => {
@@ -257,6 +313,130 @@ test("renders a shared history-node link as a fully clickable reference card", a
   await card.click({ position: { x: 8, y: 8 } });
   await expect(page).toHaveURL(targetUrl);
   await expect(page.getByRole("heading", { name: "Referenced history node" })).toBeVisible();
+});
+
+
+test("adds a RIDOC course file to an Answer draft without filling the post title", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  const ridoc = storedZip({
+    "manifest.json": JSON.stringify({
+      spec_version: "1.0",
+      profile: "learning.lesson",
+      media_type: "application/vnd.openclass.ridoc+zip",
+      lesson: { title: "可回放的学习课程", summary: "这是一份可继续学习和分叉的课程简介。" },
+      capabilities: { playback: true, continue: true, fork: true },
+    }),
+    "history/graph.json": "{}",
+    "evidence/index.json": "{}",
+    "integrity/checksums.json": "{}",
+  });
+  let uploadAuthorization = "";
+  await page.addInitScript(() => window.localStorage.setItem("_a_ltk_", "answer-token"));
+  await page.route("**/answer/api/v1/file", (route) => {
+    uploadAuthorization = route.request().headers().authorization || "";
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: `${baseURL}/uploads/shared-course.ridoc` }),
+    });
+  });
+  await page.route(/\/community\/questions\/add$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><label>标题<input aria-label="标题"></label><div><textarea aria-label="内容"></textarea></div>`,
+  }));
+
+  await page.goto("/community/questions/add");
+
+  await expect(page.getByText("添加 RIDOC 课程文件")).toBeVisible();
+  await page.locator('input[type="file"][accept*=".ridoc"]').setInputFiles({
+    name: "shared-course.ridoc",
+    mimeType: "application/vnd.openclass.ridoc+zip",
+    buffer: ridoc,
+  });
+  const body = page.getByLabel("内容");
+  await expect(body).toHaveValue(/OpenClass RIDOC 课程文件/);
+  await expect(page.getByLabel("标题")).toHaveValue("");
+  await expect(page.getByText("已添加：可回放的学习课程")).toBeVisible();
+  expect(uploadAuthorization).toBe("answer-token");
+  const markdown = await body.inputValue();
+  const encodedMetadata = markdown.match(/#openclass-ridoc=([^\)]+)/)?.[1];
+  expect(encodedMetadata).toBeTruthy();
+  const metadata = JSON.parse(Buffer.from(encodedMetadata!, "base64url").toString("utf8"));
+  expect(metadata).toMatchObject({
+    title: "可回放的学习课程",
+    summary: "这是一份可继续学习和分叉的课程简介。",
+  });
+});
+
+
+test("rejects a renamed non-RIDOC file before uploading it", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  let uploadRequests = 0;
+  await page.addInitScript(() => window.localStorage.setItem("_a_ltk_", "answer-token"));
+  await page.route("**/answer/api/v1/file", (route) => {
+    uploadRequests += 1;
+    return route.fulfill({ status: 500 });
+  });
+  await page.route(/\/community\/questions\/add$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><label>标题<input aria-label="标题"></label><div><textarea aria-label="内容"></textarea></div>`,
+  }));
+
+  await page.goto("/community/questions/add");
+  await page.locator('input[type="file"][accept*=".ridoc"]').setInputFiles({
+    name: "renamed.ridoc",
+    mimeType: "application/vnd.openclass.ridoc+zip",
+    buffer: Buffer.from("not a zip archive"),
+  });
+
+  await expect(page.getByText("文件不是有效的 RIDOC ZIP 归档")).toBeVisible();
+  await expect(page.getByLabel("内容")).toHaveValue("");
+  await expect(page.getByLabel("标题")).toHaveValue("");
+  expect(uploadRequests).toBe(0);
+});
+
+
+test("renders a RIDOC attachment as a clickable course introduction card", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  const metadata = Buffer.from(JSON.stringify({
+    version: 1,
+    title: "课程卡片标题",
+    summary: "课程卡片中的简介由 RIDOC 清单提供。",
+    fileName: "course.ridoc",
+    sizeBytes: 2048,
+    capabilities: ["可播放", "可继续", "可分叉"],
+  })).toString("base64url");
+  const attachmentUrl = `${baseURL}/uploads/course.ridoc#openclass-ridoc=${metadata}`;
+  const downloadUrl = `${baseURL}/uploads/course.ridoc`;
+  await page.route(/\/community\/questions\/course-card$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><blockquote><p><a href="${attachmentUrl}">OpenClass RIDOC 课程文件</a></p></blockquote>`,
+  }));
+  await page.route(downloadUrl, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/vnd.openclass.ridoc+zip",
+    headers: { "Content-Disposition": 'attachment; filename="course.ridoc"' },
+    body: "ridoc-download",
+  }));
+
+  await page.goto("/community/questions/course-card");
+
+  const card = page.locator("blockquote.openclass-ridoc-card");
+  await expect(card).toHaveAttribute("role", "link");
+  await expect(card).toContainText("课程卡片标题");
+  await expect(card).toContainText("课程卡片中的简介由 RIDOC 清单提供。");
+  await expect(card).toContainText("2 KB");
+  await expect(card).toContainText("可播放");
+  const downloadPromise = page.waitForEvent("download");
+  await card.click({ position: { x: 8, y: 8 } });
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("course.ridoc");
 });
 
 

@@ -27,6 +27,7 @@ FROM apache/answer:2.0.2
 COPY --from=plugin-builder /usr/bin/openclass-answer /usr/bin/answer
 COPY openclass-theme.css /opt/openclass/openclass-theme.css
 COPY openclass-sso-bridge.js /opt/openclass/openclass-sso-bridge.js
+COPY openclass-ridoc-bridge.js /opt/openclass/openclass-ridoc-bridge.js
 COPY entrypoint.sh /usr/local/bin/openclass-answer-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/openclass-answer-entrypoint.sh

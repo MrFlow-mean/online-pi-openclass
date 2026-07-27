@@ -77,7 +77,8 @@ VALUES (
     'custom_head', '<link rel="stylesheet" href="' || @openclass_theme_stylesheet_url || '">' ||
       '<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:"' || @openclass_community_entry_url ||
         '",avatarBaseUrl:"' || @openclass_avatar_base_url || '"};</script>' ||
-      '<script>' || CAST(readfile('/opt/openclass/openclass-sso-bridge.js') AS TEXT) || '</script>',
+      '<script>' || CAST(readfile('/opt/openclass/openclass-sso-bridge.js') AS TEXT) || '</script>' ||
+      '<script>' || CAST(readfile('/opt/openclass/openclass-ridoc-bridge.js') AS TEXT) || '</script>',
     'custom_css', CAST(readfile('/opt/openclass/openclass-theme.css') AS TEXT),
     'custom_header', '<a class="openclass-home-link" href="' || @openclass_home_url || '" aria-label="返回 OpenClass 主页"><span aria-hidden="true">←</span><span>返回主页</span></a>',
     'custom_footer', '',
@@ -106,6 +107,42 @@ SET content = json_set(
     ),
     updated_at = datetime('now')
 WHERE type = 'theme';
+UPDATE site_info
+SET content = json_set(
+      content,
+      '$.authorized_attachment_extensions',
+      json(
+        CASE
+          WHEN json_type(content, '$.authorized_attachment_extensions') = 'array'
+            AND EXISTS (
+              SELECT 1
+              FROM json_each(json_extract(content, '$.authorized_attachment_extensions'))
+              WHERE lower(value) = 'ridoc'
+            )
+          THEN json_extract(content, '$.authorized_attachment_extensions')
+          WHEN json_type(content, '$.authorized_attachment_extensions') = 'array'
+          THEN json_insert(
+            json_extract(content, '$.authorized_attachment_extensions'),
+            '$[#]',
+            'ridoc'
+          )
+          ELSE json_array('ridoc')
+        END
+      ),
+      '$.max_attachment_size',
+      CASE
+        WHEN json_type(content, '$.authorized_attachment_extensions') = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM json_each(json_extract(content, '$.authorized_attachment_extensions'))
+            WHERE lower(value) <> 'ridoc'
+          )
+        THEN COALESCE(CAST(json_extract(content, '$.max_attachment_size') AS INTEGER), 8)
+        ELSE max(COALESCE(CAST(json_extract(content, '$.max_attachment_size') AS INTEGER), 0), 256)
+      END
+    ),
+    updated_at = datetime('now')
+WHERE type = 'advanced';
 UPDATE site_info
 SET content = json_set(content, '$.name', 'OpenClass 学习社区'),
     updated_at = datetime('now')
