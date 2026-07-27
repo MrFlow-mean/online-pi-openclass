@@ -312,7 +312,13 @@ export function useLessonMerge({
     aiAbortRef.current?.abort();
     setBusyAction("merge-abandon");
     try {
-      await api.abandonMergeSession(current.lesson_id, current.id, current.version);
+      const contributionId = current.audit.lesson_contribution_id;
+      if (typeof contributionId === "string" && contributionId) {
+        const contribution = await api.getLessonContribution(contributionId);
+        await api.returnLessonContributionForChanges(contributionId, contribution.version);
+      } else {
+        await api.abandonMergeSession(current.lesson_id, current.id, current.version);
+      }
       replaceSession(null);
       setError(null);
     } catch (error) {
@@ -343,6 +349,10 @@ export function useLessonMerge({
       });
       replaceSession(null);
       setError(null);
+      const contributionId = current.audit.lesson_contribution_id;
+      if (typeof contributionId === "string" && contributionId) {
+        window.location.assign(`/contributions/${encodeURIComponent(contributionId)}`);
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "提交合并失败");
       try {
