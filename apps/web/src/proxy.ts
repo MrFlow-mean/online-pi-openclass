@@ -7,7 +7,9 @@ const publicRoutePrefixes = ["/courses"];
 const productLandingRedirects = ["/admin", "/following", "/profile", "/studio"];
 
 function isPublicRoute(pathname: string) {
+  const contributionDetail = pathname.match(/^\/contributions\/([^/]+)$/)?.[1];
   return (
+    Boolean(contributionDetail) ||
     publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`)) ||
     publicRoutePrefixes.some((route) => pathname === route || pathname.startsWith(`${route}/`))
   );

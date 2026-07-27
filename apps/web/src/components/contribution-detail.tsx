@@ -104,7 +104,7 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
             currentUser = null;
           }
         }
-        const view = currentUser?.role !== "guest"
+        const view = currentUser && currentUser.role !== "guest"
           ? await api.getLessonContribution(contributionId)
           : await api.getPublicLessonContribution(contributionId);
         if (active) {
