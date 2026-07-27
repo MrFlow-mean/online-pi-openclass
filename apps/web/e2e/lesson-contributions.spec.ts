@@ -188,7 +188,7 @@ test("lists received and submitted lesson contributions", async ({ page }) => {
   await expect(page.getByText("当前筛选下还没有课程改进方案。")).toBeVisible();
 });
 
-test("manages collaboration inside the selected profile repository", async ({ page }) => {
+test("keeps collaboration in the selected profile repository instead of the home navigation", async ({ page }) => {
   await authenticate(page);
   await page.route("**/api/workspace", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(workspaceWithProject()) })
@@ -199,6 +199,9 @@ test("manages collaboration inside the selected profile repository", async ({ pa
   await page.route("**/api/contributions?role=submitted", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
   );
+
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: "打开课程协作" })).toHaveCount(0);
 
   await page.goto("/profile?tab=collaboration");
   await expect(page.getByRole("button", { name: "协作" })).toBeVisible();
