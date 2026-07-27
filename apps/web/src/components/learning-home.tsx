@@ -51,6 +51,7 @@ import { RecentFeedCard } from "@/components/recent-feed-card";
 import {
   ProjectVisibilityControl,
   PublicationReviewNotice,
+  PublicationReviewProgress,
 } from "@/components/project-visibility-control";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
@@ -1087,6 +1088,8 @@ export function LearningHome() {
                     const isLessonActive = lesson.id === selectedLessonId;
                     const isBatchSelected = lessonBatch.selectedLessonIds.has(lesson.id);
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
+                    const isReviewingPublication =
+                      busyKey === `visibility:lesson:${lesson.id}` && lesson.visibility === "private";
                     const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
                       <article
@@ -1175,6 +1178,13 @@ export function LearningHome() {
                             </div>
                           </div>
                         </button>
+                        {isReviewingPublication ? (
+                          <PublicationReviewProgress
+                            className="px-4 pb-3"
+                            label={h.publicationReviewScanning}
+                            ariaLabel={h.publicationReviewProgressAria}
+                          />
+                        ) : null}
                       </article>
                     );
                   })

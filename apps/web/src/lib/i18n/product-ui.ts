@@ -131,6 +131,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       packageNamePlaceholder: z ? "输入课程包名称" : "Package title",
       lessonMenuAria: z ? "打开课程操作菜单" : "Lesson actions menu",
       lessonMoreTitle: z ? "更多操作" : "More actions",
+      publicationReviewScanning: z ? "资料扫描中" : "Scanning materials",
+      publicationReviewProgressAria: z ? "课程发布扫描进度" : "Course publication scan progress",
       noLessonMatch: z ? "还没有匹配到课程。试试换个关键词，或者去工作台创建一节新课。" : "No matching lessons — try another keyword or create one in Studio.",
       noStandalone: z ? "现在没有未被存入课程包的单独课程。你可以先新建课程，或者把包内课程移回单独课程池。" : "No standalone lessons yet — create one or move lessons out of packages.",
       loadError: z ? "加载主页数据失败" : "Could not load home data",

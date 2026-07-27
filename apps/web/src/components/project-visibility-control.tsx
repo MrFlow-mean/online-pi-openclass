@@ -17,6 +17,12 @@ type ProjectVisibilityControlProps = {
   reviewing?: boolean;
 };
 
+type PublicationReviewProgressProps = {
+  label: string;
+  ariaLabel: string;
+  className?: string;
+};
+
 export function ProjectVisibilityControl({
   visibility,
   onChange,
@@ -120,6 +126,29 @@ export function PublicationReviewNotice({
           <q className="mt-0.5 block text-rose-800">{finding.evidence_excerpt}</q>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export function PublicationReviewProgress({
+  label,
+  ariaLabel,
+  className,
+}: PublicationReviewProgressProps) {
+  return (
+    <div className={clsx("min-w-0", className)} aria-live="polite">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium text-blue-700">
+        <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+        <span>{label}</span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={ariaLabel}
+        aria-valuetext={label}
+        className="h-1.5 w-full overflow-hidden rounded-full bg-blue-100"
+      >
+        <div className="source-processing-progress__indeterminate h-full rounded-full bg-blue-500" />
+      </div>
     </div>
   );
 }

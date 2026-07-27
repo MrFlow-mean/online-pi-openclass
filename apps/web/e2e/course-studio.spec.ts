@@ -181,6 +181,8 @@ test("sets standalone lessons and course packages to public or private", async (
     (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility`) && response.request().method() === "POST"
   );
   await page.getByRole("button", { name: "Public", exact: true }).click();
+  await expect(lessonCard.getByText("资料扫描中")).toBeVisible();
+  await expect(lessonCard.getByRole("progressbar", { name: "课程发布扫描进度" })).toBeVisible();
   await expect(page.getByText(/AI 正在扫描所有上传资料的非正文内容/)).toBeVisible();
   expect((await lessonVisibilityResponse).ok()).toBeTruthy();
   await expect(page.getByText("课程没有上传资料，可以公开。")).toBeVisible();
