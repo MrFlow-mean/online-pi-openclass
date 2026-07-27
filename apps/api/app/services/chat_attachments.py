@@ -93,10 +93,14 @@ def prepare_chat_attachments(
                 f"附件“{item.source.file_name or item.source.title}”仍在解析，请稍后再发送。"
             )
         rows.append(
-            "  The attachment is a verified source scope. Its content must be obtained from "
-            "the backend source retrieval context for this turn."
+            "  The attachment is an explicit source scope for this turn, but its original "
+            "content is not included in this metadata block. Use only a separate backend-verified "
+            "source retrieval context when one is present."
         )
-    rows.append("Do not infer attachment content from its name or metadata.")
+    rows.append(
+        "Do not infer, summarize, or claim to have inspected attachment content from its name "
+        "or metadata alone."
+    )
     return PreparedChatAttachments(
         prompt_context="\n".join(rows),
         image_inputs=image_inputs,

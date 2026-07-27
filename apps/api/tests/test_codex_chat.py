@@ -26,6 +26,7 @@ from app.models import (
     SourceChapter,
     SourceChunk,
     SourceIngestionRecord,
+    SourceQueryScope,
     SourceStructure,
     SourceVisualAsset,
     SourceVisualEvidence,
@@ -213,9 +214,22 @@ def test_ready_file_attachment_defers_content_to_source_retrieval(
 
     assert prepared.image_inputs == []
     assert "Backend-indexed attachment evidence." not in prepared.prompt_context
-    assert "backend source retrieval context" in prepared.prompt_context
+    assert "backend-verified source retrieval context" in prepared.prompt_context
+    assert "Do not infer, summarize, or claim to have inspected" in prepared.prompt_context
     assert "Raw attachment copy" not in prepared.prompt_context
     assert "spoofed.txt" not in prepared.prompt_context
+
+
+def test_source_query_scope_requires_current_turn_authorization() -> None:
+    ordinary = ChatRequest(message="Explain the current board.")
+    assert codex_chat._source_query_scope_for_turn(ordinary, []) is None
+
+    explicit_scope = SourceQueryScope(mode="all_ready_sources")
+    requested = ChatRequest(
+        message="Scan all ready sources for this answer.",
+        source_query_scope=explicit_scope,
+    )
+    assert codex_chat._source_query_scope_for_turn(requested, []) is explicit_scope
 
 
 def _thread_result(thread_id: str, cwd: Path) -> dict:

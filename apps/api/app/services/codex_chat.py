@@ -110,7 +110,9 @@ _PRESERVED_VISUAL_MARKER_RE = re.compile(
 BoardState = Literal["empty", "non_empty"]
 SOURCE_QA_INSTRUCTIONS = """
 You are the learner-facing source question-answering role inside OpenClass. The backend has already
-restricted the query to an authenticated source scope and supplied a frozen evidence bundle.
+restricted the current request to an explicit, authenticated source scope and supplied a frozen
+evidence bundle. This is the only condition under which the teaching agent may inspect source-file
+content. A normal teaching turn has no access to complete original files.
 
 Answer the learner's question directly. The main answer must use the supplied evidence for every
 claim about the selected sources. Append the exact Evidence ID in square brackets immediately after
@@ -1595,6 +1597,12 @@ def _source_query_scope_for_turn(
     request: ChatRequest,
     attachments: list[VerifiedChatAttachment],
 ) -> SourceQueryScope | None:
+    """Return only a source scope explicitly authorized in the current turn.
+
+    Course-library sources are intentionally absent here. A scope exists only
+    when the client submits one or the learner attaches concrete files to this
+    message; prior turns and the rest of the course library grant no access.
+    """
     if request.source_query_scope is not None:
         return request.source_query_scope
     refs = [

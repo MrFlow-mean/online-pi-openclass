@@ -543,6 +543,8 @@ export function CourseStudio() {
       ...current,
       composerMode: "ask",
       includeSelectionInPrompt: true,
+      composerSelection: sourceReference,
+      composerSelections: [sourceReference],
       sourceQuerySelections: appendSourceQuerySelection(
         current.sourceQueryAllReady ? [] : current.sourceQuerySelections,
         sourceReference
