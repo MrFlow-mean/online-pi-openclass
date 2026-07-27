@@ -1445,6 +1445,14 @@ test("uses the top-right profile avatar as the only account menu on the home pag
   await expect(page.getByRole("menuitem", { name: "结束游客访问" })).toBeVisible();
 });
 
+test("shows the configured platform contact email on the home page", async ({ page }) => {
+  await enterAsGuest(page);
+
+  const contactLink = page.getByRole("link", { name: "发送邮件至 hello@open-classes.com" });
+  await expect(contactLink).toBeVisible();
+  await expect(contactLink).toHaveAttribute("href", "mailto:hello@open-classes.com");
+});
+
 test("collapses course package and standalone lesson lists independently", async ({ page }) => {
   await enterAsGuest(page);
 

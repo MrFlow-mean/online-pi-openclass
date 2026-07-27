@@ -27,6 +27,7 @@ import {
   Layers,
   LoaderCircle,
   LockKeyhole,
+  Mail,
   MessageCircle,
   MoreHorizontal,
   PencilLine,
@@ -95,6 +96,7 @@ import {
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
 const GITHUB_REPOSITORY_URL = "https://github.com/MrFlow-mean/openclass";
+const PLATFORM_CONTACT_EMAIL = process.env.NEXT_PUBLIC_CONTACT_EMAIL?.trim() || "hello@open-classes.com";
 
 type SearchFacet = { kind: "all" } | { kind: "category" | "language"; value: string };
 
@@ -425,6 +427,8 @@ export function LearningHome() {
   const quickLinksLabel = language === "en" ? "Project links" : "项目链接";
   const githubLinkLabel = language === "en" ? "Open GitHub repository" : "打开 GitHub 仓库";
   const projectDocsLinkLabel = language === "en" ? "Open project documentation" : "打开项目文档";
+  const contactLinkLabel =
+    language === "en" ? `Email ${PLATFORM_CONTACT_EMAIL}` : `发送邮件至 ${PLATFORM_CONTACT_EMAIL}`;
 
   async function handleOpenLesson(lessonId: string) {
     setSelectedLessonId(lessonId);
@@ -1508,6 +1512,15 @@ export function LearningHome() {
         aria-label={quickLinksLabel}
         className="fixed bottom-4 right-4 z-[130] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border border-stone-200 bg-white/92 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur xl:bottom-6 xl:right-8"
       >
+        <a
+          href={`mailto:${PLATFORM_CONTACT_EMAIL}`}
+          aria-label={contactLinkLabel}
+          title={contactLinkLabel}
+          className="inline-flex h-10 items-center gap-2 rounded-md px-3 text-sm font-semibold text-stone-700 transition hover:bg-sky-50 hover:text-sky-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
+        >
+          <Mail className="h-4 w-4" />
+          <span>{language === "en" ? "Contact" : "联系"}</span>
+        </a>
         <a
           href={GITHUB_REPOSITORY_URL}
           target="_blank"
