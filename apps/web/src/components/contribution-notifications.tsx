@@ -30,14 +30,14 @@ export function ContributionNotifications() {
 
   const load = useCallback(async () => {
     const received = await api.listLessonContributions("received");
-    setItems(received.slice(0, 3));
+    setItems(received);
   }, []);
 
   useEffect(() => {
     let active = true;
     api.listLessonContributions("received")
       .then((received) => {
-        if (active) setItems(received.slice(0, 3));
+        if (active) setItems(received);
       })
       .catch(() => {
         if (active) setItems([]);
@@ -67,7 +67,7 @@ export function ContributionNotifications() {
         </span>
       </div>
       <div className="mt-3 space-y-2">
-        {items.length ? items.map((item) => (
+        {items.length ? items.slice(0, 3).map((item) => (
           <Link key={item.id} href={`/contributions/${item.id}`} className="block rounded-xl border border-violet-100 bg-white px-3 py-2.5 transition hover:border-violet-300">
             <p className="truncate text-xs font-semibold text-stone-950">{item.title}</p>
             <p className="mt-1 line-clamp-1 text-[11px] text-stone-500">{eventSummary(item)}</p>
