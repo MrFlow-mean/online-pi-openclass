@@ -39,11 +39,29 @@ case "${OPENCLASS_ANSWER_THEME_ENABLED:-true}" in
         exit 1
         ;;
     esac
+    openclass_theme_stylesheet_url="/custom.css"
+    if [ -n "${OPENCLASS_COMMUNITY_PUBLIC_URL:-}" ]; then
+      case "$OPENCLASS_COMMUNITY_PUBLIC_URL" in
+        http://*|https://*) ;;
+        *)
+          echo "OPENCLASS_COMMUNITY_PUBLIC_URL must use http:// or https://" >&2
+          exit 1
+          ;;
+      esac
+      case "$OPENCLASS_COMMUNITY_PUBLIC_URL" in
+        *\"*|*\'*|*\<*|*\>*|*\\*|*" "*)
+          echo "OPENCLASS_COMMUNITY_PUBLIC_URL contains unsupported characters" >&2
+          exit 1
+          ;;
+      esac
+      openclass_theme_stylesheet_url="${OPENCLASS_COMMUNITY_PUBLIC_URL%/}/custom.css"
+    fi
 
     sqlite3 /data/answer.db \
       -cmd ".parameter init" \
       -cmd ".parameter set @openclass_home_url \"$openclass_home_url\"" \
-      -cmd ".parameter set @openclass_favicon_url \"$openclass_favicon_url\"" <<'SQL'
+      -cmd ".parameter set @openclass_favicon_url \"$openclass_favicon_url\"" \
+      -cmd ".parameter set @openclass_theme_stylesheet_url \"$openclass_theme_stylesheet_url\"" <<'SQL'
 BEGIN IMMEDIATE;
 DELETE FROM site_info WHERE type IN ('css-html', 'custom_css_html');
 INSERT INTO site_info (created_at, updated_at, type, content, status)
@@ -52,7 +70,7 @@ VALUES (
   datetime('now'),
   'css-html',
   json_object(
-    'custom_head', '',
+    'custom_head', '<link rel="stylesheet" href="' || @openclass_theme_stylesheet_url || '">',
     'custom_css', CAST(readfile('/opt/openclass/openclass-theme.css') AS TEXT),
     'custom_header', '<a class="openclass-home-link" href="' || @openclass_home_url || '" aria-label="返回 OpenClass 主页"><span aria-hidden="true">←</span><span>返回主页</span></a>',
     'custom_footer', '',
