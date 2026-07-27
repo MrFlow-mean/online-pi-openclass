@@ -17,6 +17,9 @@ from app.models import (
     CoursePackage,
     DocumentSegmentSearchResult,
     Lesson,
+    LessonContribution,
+    LessonContributionEvent,
+    LessonContributionRevision,
     LessonHistoryGraph,
     LessonMergeSession,
     LessonRuntimeSnapshot,
@@ -31,7 +34,7 @@ from app.models import (
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -422,6 +425,147 @@ class SqliteCourseStore:
                     conn.rollback()
                     raise
 
+    def load_lesson_with_owner(self, lesson_id: str) -> tuple[str, Lesson, bool] | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT lessons.*, course_packages.owner_user_id,
+                           course_packages.visibility AS package_visibility,
+                           course_packages.sort_order AS package_sort_order
+                    FROM lessons
+                    JOIN course_packages ON course_packages.id = lessons.package_id
+                    WHERE lessons.id = ?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                if row is None or not row["owner_user_id"]:
+                    return None
+                is_public = (
+                    (row["visibility"] == "public" and int(row["package_sort_order"]) == 0)
+                    or row["package_visibility"] == "public"
+                )
+                return str(row["owner_user_id"]), self._read_lesson(conn, row), is_public
+
+    def load_lesson_contribution(
+        self,
+        contribution_id: str,
+    ) -> tuple[LessonContribution, LessonContributionRevision, list[LessonContributionEvent]] | None:
+        with self._lock:
+            with self._connect() as conn:
+                return _load_contribution_bundle(conn, contribution_id)
+
+    def list_lesson_contributions(
+        self,
+        *,
+        user_id: str,
+        role: str,
+        status: str | None = None,
+    ) -> list[tuple[LessonContribution, LessonContributionRevision, list[LessonContributionEvent]]]:
+        owner_column = "source_owner_user_id" if role == "received" else "contributor_user_id"
+        params: list[str] = [user_id]
+        status_clause = ""
+        if status:
+            status_clause = " AND status = ?"
+            params.append(status)
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT id FROM lesson_contributions
+                    WHERE {owner_column} = ?{status_clause}
+                    ORDER BY updated_at DESC
+                    """,
+                    tuple(params),
+                ).fetchall()
+                return [
+                    bundle
+                    for row in rows
+                    if (bundle := _load_contribution_bundle(conn, str(row["id"]))) is not None
+                ]
+
+    def find_active_lesson_contribution(
+        self,
+        *,
+        contributor_user_id: str,
+        contributor_lesson_id: str,
+        source_lesson_id: str,
+    ) -> tuple[LessonContribution, LessonContributionRevision, list[LessonContributionEvent]] | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT id FROM lesson_contributions
+                    WHERE contributor_user_id = ? AND contributor_lesson_id = ?
+                      AND source_lesson_id = ? AND status IN ('open', 'merge_draft')
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (contributor_user_id, contributor_lesson_id, source_lesson_id),
+                ).fetchone()
+                return _load_contribution_bundle(conn, str(row["id"])) if row is not None else None
+
+    def create_lesson_contribution(
+        self,
+        contribution: LessonContribution,
+        revision: LessonContributionRevision,
+        event: LessonContributionEvent,
+    ) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    _insert_contribution(conn, contribution)
+                    _insert_contribution_revision(conn, revision)
+                    _insert_contribution_event(conn, event)
+
+    def save_lesson_contribution_if_version(
+        self,
+        contribution: LessonContribution,
+        *,
+        expected_version: int,
+        revision: LessonContributionRevision | None = None,
+        events: list[LessonContributionEvent] | None = None,
+    ) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    updated = conn.execute(
+                        """
+                        UPDATE lesson_contributions SET
+                            title = ?, description = ?, status = ?, version = ?,
+                            current_revision = ?, current_revision_id = ?,
+                            merge_session_id = ?, merged_commit_id = ?,
+                            updated_at = ?, closed_at = ?
+                        WHERE id = ? AND version = ?
+                        """,
+                        (
+                            contribution.title,
+                            contribution.description,
+                            contribution.status,
+                            contribution.version,
+                            contribution.current_revision,
+                            contribution.current_revision_id,
+                            contribution.merge_session_id,
+                            contribution.merged_commit_id,
+                            contribution.updated_at,
+                            contribution.closed_at,
+                            contribution.id,
+                            expected_version,
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        conn.rollback()
+                        return False
+                    if revision is not None:
+                        _insert_contribution_revision(conn, revision)
+                    for event in events or []:
+                        _insert_contribution_event(conn, event)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
     def search_document_segments(
         self,
         query: str = "",
@@ -615,6 +759,63 @@ class SqliteCourseStore:
 
             CREATE INDEX IF NOT EXISTS idx_lesson_merge_sessions_owner_lesson
                 ON lesson_merge_sessions(owner_user_id, lesson_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS lesson_contributions (
+                id TEXT PRIMARY KEY,
+                source_lesson_id TEXT NOT NULL,
+                source_owner_user_id TEXT NOT NULL,
+                contributor_lesson_id TEXT NOT NULL,
+                contributor_user_id TEXT NOT NULL,
+                source_title TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                status TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                current_revision INTEGER NOT NULL,
+                current_revision_id TEXT NOT NULL,
+                source_author_json TEXT NOT NULL,
+                contributor_json TEXT NOT NULL,
+                merge_session_id TEXT,
+                merged_commit_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                closed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_contributions_source_owner
+                ON lesson_contributions(source_owner_user_id, status, updated_at);
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_contributions_contributor
+                ON lesson_contributions(contributor_user_id, status, updated_at);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_contributions_active_copy
+                ON lesson_contributions(source_lesson_id, contributor_lesson_id)
+                WHERE status IN ('open', 'merge_draft');
+
+            CREATE TABLE IF NOT EXISTS lesson_contribution_revisions (
+                id TEXT PRIMARY KEY,
+                contribution_id TEXT NOT NULL REFERENCES lesson_contributions(id) ON DELETE CASCADE,
+                revision_number INTEGER NOT NULL,
+                source_commit_id TEXT NOT NULL,
+                contributor_commit_id TEXT NOT NULL,
+                base_document_json TEXT NOT NULL,
+                proposed_document_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(contribution_id, revision_number)
+            );
+
+            CREATE TABLE IF NOT EXISTS lesson_contribution_events (
+                id TEXT PRIMARY KEY,
+                contribution_id TEXT NOT NULL REFERENCES lesson_contributions(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                actor_json TEXT NOT NULL,
+                body TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_contribution_events_timeline
+                ON lesson_contribution_events(contribution_id, created_at, id);
 
             CREATE TABLE IF NOT EXISTS resources (
                 id TEXT PRIMARY KEY,
@@ -1514,6 +1715,130 @@ def _upsert_merge_session(conn: sqlite3.Connection, session: LessonMergeSession)
             session.updated_at,
         ),
     )
+
+
+def _insert_contribution(conn: sqlite3.Connection, contribution: LessonContribution) -> None:
+    conn.execute(
+        """
+        INSERT INTO lesson_contributions(
+            id, source_lesson_id, source_owner_user_id, contributor_lesson_id,
+            contributor_user_id, source_title, title, description, status, version,
+            current_revision, current_revision_id, source_author_json, contributor_json,
+            merge_session_id, merged_commit_id, created_at, updated_at, closed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            contribution.id,
+            contribution.source_lesson_id,
+            contribution.source_owner_user_id,
+            contribution.contributor_lesson_id,
+            contribution.contributor_user_id,
+            contribution.source_title,
+            contribution.title,
+            contribution.description,
+            contribution.status,
+            contribution.version,
+            contribution.current_revision,
+            contribution.current_revision_id,
+            _dumps(contribution.source_author.model_dump(mode="json")),
+            _dumps(contribution.contributor.model_dump(mode="json")),
+            contribution.merge_session_id,
+            contribution.merged_commit_id,
+            contribution.created_at,
+            contribution.updated_at,
+            contribution.closed_at,
+        ),
+    )
+
+
+def _insert_contribution_revision(conn: sqlite3.Connection, revision: LessonContributionRevision) -> None:
+    conn.execute(
+        """
+        INSERT INTO lesson_contribution_revisions(
+            id, contribution_id, revision_number, source_commit_id,
+            contributor_commit_id, base_document_json, proposed_document_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            revision.id,
+            revision.contribution_id,
+            revision.revision_number,
+            revision.source_commit_id,
+            revision.contributor_commit_id,
+            _dumps(revision.base_document.model_dump(mode="json")),
+            _dumps(revision.proposed_document.model_dump(mode="json")),
+            revision.created_at,
+        ),
+    )
+
+
+def _insert_contribution_event(conn: sqlite3.Connection, event: LessonContributionEvent) -> None:
+    conn.execute(
+        """
+        INSERT INTO lesson_contribution_events(
+            id, contribution_id, kind, actor_json, body, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event.id,
+            event.contribution_id,
+            event.kind,
+            _dumps(event.actor.model_dump(mode="json")),
+            event.body,
+            _dumps(event.metadata),
+            event.created_at,
+        ),
+    )
+
+
+def _load_contribution_bundle(
+    conn: sqlite3.Connection,
+    contribution_id: str,
+) -> tuple[LessonContribution, LessonContributionRevision, list[LessonContributionEvent]] | None:
+    row = conn.execute(
+        "SELECT * FROM lesson_contributions WHERE id = ?",
+        (contribution_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    contribution = LessonContribution.model_validate(
+        {
+            **dict(row),
+            "source_author": _loads(row["source_author_json"], {}),
+            "contributor": _loads(row["contributor_json"], {}),
+        }
+    )
+    revision_row = conn.execute(
+        "SELECT * FROM lesson_contribution_revisions WHERE id = ? AND contribution_id = ?",
+        (contribution.current_revision_id, contribution.id),
+    ).fetchone()
+    if revision_row is None:
+        raise ValueError(f"Contribution {contribution.id} has no current revision")
+    revision = LessonContributionRevision.model_validate(
+        {
+            **dict(revision_row),
+            "base_document": _loads(revision_row["base_document_json"], {}),
+            "proposed_document": _loads(revision_row["proposed_document_json"], {}),
+        }
+    )
+    event_rows = conn.execute(
+        """
+        SELECT * FROM lesson_contribution_events
+        WHERE contribution_id = ? ORDER BY created_at, id
+        """,
+        (contribution.id,),
+    ).fetchall()
+    events = [
+        LessonContributionEvent.model_validate(
+            {
+                **dict(event_row),
+                "actor": _loads(event_row["actor_json"], {}),
+                "metadata": _loads(event_row["metadata_json"], {}),
+            }
+        )
+        for event_row in event_rows
+    ]
+    return contribution, revision, events
 
 
 def _dumps(value: Any) -> str:

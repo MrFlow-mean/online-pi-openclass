@@ -74,6 +74,19 @@ LessonMergeStatus = Literal[
 ]
 LessonMergeConflictKind = Literal["board", "learning_requirement", "board_task", "source_reference"]
 LessonMergeResolutionKind = Literal["unresolved", "target", "source", "both", "custom", "clear", "ai"]
+LessonContributionStatus = Literal["open", "merge_draft", "merged", "closed"]
+LessonContributionEventKind = Literal[
+    "opened",
+    "revision_submitted",
+    "commented",
+    "comment_edited",
+    "comment_deleted",
+    "merge_started",
+    "returned_for_changes",
+    "merged",
+    "closed",
+    "reopened",
+]
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
 LearningTeachingType = Literal["knowledge_point", "skill_practice"]
 GuidedRequirementDiscoveryStrategy = Literal[
@@ -720,6 +733,117 @@ class RecomputeLessonMergeSessionRequest(BaseModel):
     expected_version: int = Field(ge=1)
     mode: LessonMergeMode | None = None
     text_model: AIModelSelection | None = None
+
+
+class LessonContributionActor(BaseModel):
+    user_id: str
+    display_name: str
+    avatar_url: str | None = None
+
+
+class LessonContributionRevision(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("contributionrevision"))
+    contribution_id: str
+    revision_number: int = Field(ge=1)
+    source_commit_id: str
+    contributor_commit_id: str
+    base_document: BoardDocument
+    proposed_document: BoardDocument
+    created_at: str = Field(default_factory=now_iso)
+
+
+class LessonContributionEvent(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("contributionevent"))
+    contribution_id: str
+    kind: LessonContributionEventKind
+    actor: LessonContributionActor
+    body: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=now_iso)
+
+
+class LessonContribution(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("contribution"))
+    source_lesson_id: str
+    source_owner_user_id: str
+    contributor_lesson_id: str
+    contributor_user_id: str
+    source_title: str
+    title: str
+    description: str = ""
+    status: LessonContributionStatus = "open"
+    version: int = Field(default=1, ge=1)
+    current_revision: int = Field(default=1, ge=1)
+    current_revision_id: str
+    source_author: LessonContributionActor
+    contributor: LessonContributionActor
+    merge_session_id: str | None = None
+    merged_commit_id: str | None = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    closed_at: str | None = None
+
+
+class LessonContributionRevisionView(BaseModel):
+    id: str
+    revision_number: int
+    source_commit_id: str
+    base_document: BoardDocument
+    proposed_document: BoardDocument
+    created_at: str
+
+
+class LessonContributionViewerPermissions(BaseModel):
+    can_comment: bool = False
+    can_update: bool = False
+    can_close: bool = False
+    can_reopen: bool = False
+    can_start_merge: bool = False
+    can_return_for_changes: bool = False
+
+
+class LessonContributionView(BaseModel):
+    id: str
+    source_lesson_id: str
+    source_title: str
+    title: str
+    description: str
+    status: LessonContributionStatus
+    version: int
+    current_revision: int
+    source_author: LessonContributionActor
+    contributor: LessonContributionActor
+    revision: LessonContributionRevisionView
+    events: list[LessonContributionEvent] = Field(default_factory=list)
+    viewer_permissions: LessonContributionViewerPermissions = Field(
+        default_factory=LessonContributionViewerPermissions
+    )
+    source_is_public: bool
+    merge_session_id: str | None = None
+    merged_commit_id: str | None = None
+    created_at: str
+    updated_at: str
+    closed_at: str | None = None
+
+
+class CreateLessonContributionRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=4000)
+
+
+class UpdateLessonContributionRevisionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+
+
+class LessonContributionVersionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class LessonContributionCommentRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    body: str = Field(min_length=1, max_length=4000)
 
 
 class CourseGraphEdge(BaseModel):

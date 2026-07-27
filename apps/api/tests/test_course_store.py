@@ -1,7 +1,15 @@
 import json
 import sqlite3
 
-from app.models import BoardDocument, LessonMergeSession, ResourceLibraryItem
+from app.models import (
+    BoardDocument,
+    LessonContribution,
+    LessonContributionActor,
+    LessonContributionEvent,
+    LessonContributionRevision,
+    LessonMergeSession,
+    ResourceLibraryItem,
+)
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document, rich_structure_counts, would_flatten_rich_document
@@ -129,6 +137,69 @@ def test_sqlite_store_keeps_merge_session_across_workspace_replacement(tmp_path)
     assert reloaded is not None
     assert reloaded.id == session.id
     assert reloaded.merge_blueprint == session.merge_blueprint
+
+
+def test_sqlite_store_migrates_and_keeps_contribution_snapshots(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', '13')")
+
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    workspace = build_initial_workspace_state()
+    source = _append_lesson(workspace, "Source")
+    store.save_for_user("author", workspace)
+    actor = LessonContributionActor(user_id="learner", display_name="Learner")
+    author = LessonContributionActor(user_id="author", display_name="Author")
+    revision = LessonContributionRevision(
+        contribution_id="contribution_test",
+        revision_number=1,
+        source_commit_id=source.history_graph.commits[0].id,
+        contributor_commit_id="personal_head",
+        base_document=source.board_document,
+        proposed_document=source.board_document.model_copy(update={"content_text": "Proposal"}),
+    )
+    contribution = LessonContribution(
+        id="contribution_test",
+        source_lesson_id=source.id,
+        source_owner_user_id="author",
+        contributor_lesson_id="personal_lesson",
+        contributor_user_id="learner",
+        source_title=source.title,
+        title="Improve the lesson",
+        current_revision_id=revision.id,
+        source_author=author,
+        contributor=actor,
+    )
+    event = LessonContributionEvent(
+        contribution_id=contribution.id,
+        kind="opened",
+        actor=actor,
+    )
+    store.create_lesson_contribution(contribution, revision, event)
+
+    store.save_for_user("author", store.load_for_user("author"))
+    loaded = store.load_lesson_contribution(contribution.id)
+
+    assert loaded is not None
+    assert loaded[0].version == 1
+    assert loaded[1].proposed_document.content_text == "Proposal"
+    assert [item.kind for item in loaded[2]] == ["opened"]
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()[0] == "14"
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lesson_contribution%'"
+            )
+        }
+    assert tables == {
+        "lesson_contributions",
+        "lesson_contribution_revisions",
+        "lesson_contribution_events",
+    }
 
 
 def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> None:
