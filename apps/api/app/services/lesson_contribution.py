@@ -600,6 +600,13 @@ def contribution_view(
     return LessonContributionView(
         id=contribution.id,
         source_lesson_id=contribution.source_lesson_id,
+        viewer_project_lesson_id=(
+            contribution.contributor_lesson_id
+            if viewer and viewer.id == contribution.contributor_user_id
+            else contribution.source_lesson_id
+            if viewer and viewer.id == contribution.source_owner_user_id
+            else None
+        ),
         source_title=contribution.source_title,
         title=contribution.title,
         description=contribution.description,

@@ -2004,7 +2004,7 @@ export function LearningHome() {
             <span>Star</span>
           </Link>
           <Link
-            href="/contributions"
+            href="/profile?tab=collaboration"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-violet-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(124,58,237,0.10)] transition hover:-translate-y-0.5 hover:bg-violet-600 hover:text-white sm:flex"
             aria-label="打开课程协作"
           >

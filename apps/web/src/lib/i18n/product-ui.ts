@@ -259,6 +259,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       noUpdatesYet: z ? "暂无更新" : "No updates yet",
       tabSettings: z ? "个人设置" : "Settings",
       tabRepositories: z ? "项目" : "Repositories",
+      tabCollaboration: z ? "协作" : "Collaboration",
       tabStars: z ? "收藏" : "Stars",
       repoFilterAll: z ? "全部" : "All",
       repoFilterLessons: z ? "单独课程" : "Lessons",

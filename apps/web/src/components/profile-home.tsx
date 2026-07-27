@@ -17,6 +17,7 @@ import {
   Download,
   FolderClosed,
   GitFork,
+  GitPullRequest,
   GraduationCap,
   Globe2,
   LinkIcon,
@@ -32,6 +33,10 @@ import {
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
+import {
+  ProfileCollaborationPanel,
+  type CollaborationProject,
+} from "@/components/profile-collaboration-panel";
 import { ProjectVisibilityControl } from "@/components/project-visibility-control";
 import {
   DEFAULT_PROFILE_SETTINGS,
@@ -62,7 +67,7 @@ import {
 import { downloadRidoc } from "@/lib/ridoc-file";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
-type ProfileTab = "repositories" | "stars" | "settings";
+type ProfileTab = "repositories" | "collaboration" | "stars" | "settings";
 type RepositoryTypeFilter = "all" | "lessons" | "packages";
 type ProjectMenuState =
   | { kind: "lesson"; id: string }
@@ -70,6 +75,7 @@ type ProjectMenuState =
   | null;
 
 type ProfileHomeProps = {
+  initialProjectKey?: string;
   initialTab?: ProfileTab;
 };
 
@@ -132,7 +138,7 @@ function persistCollectedCourseIds(courseIds: Set<string>) {
   }
 }
 
-export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
+export function ProfileHome({ initialProjectKey, initialTab = "settings" }: ProfileHomeProps) {
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
   const ph = txt.profileHome;
@@ -157,6 +163,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const [error, setError] = useState<string | null>(null);
   const [repositoryQuery, setRepositoryQuery] = useState("");
   const [repositoryTypeFilter, setRepositoryTypeFilter] = useState<RepositoryTypeFilter>("all");
+  const [collaborationProjectKey, setCollaborationProjectKey] = useState<string | null>(initialProjectKey ?? null);
   const [expandedPackageIds, setExpandedPackageIds] = useState<Set<string>>(() => new Set());
   const [starQuery, setStarQuery] = useState("");
   const [openingLessonId, setOpeningLessonId] = useState<string | null>(null);
@@ -348,6 +355,29 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     ],
     [ph, repositoryItems.length, standaloneLessonProjects.length, coursePackageProjects.length]
   );
+  const collaborationProjects = useMemo<CollaborationProject[]>(
+    () => [
+      ...standaloneLessonProjects.map((lesson) => ({
+        key: `lesson:${lesson.id}`,
+        kind: "lesson" as const,
+        id: lesson.id,
+        title: lesson.title,
+        visibility: lesson.visibility,
+        lessonIds: [lesson.id],
+        lessonCount: 1,
+      })),
+      ...coursePackageProjects.map((coursePackage) => ({
+        key: `package:${coursePackage.id}`,
+        kind: "package" as const,
+        id: coursePackage.id,
+        title: coursePackage.title,
+        visibility: coursePackage.visibility,
+        lessonIds: coursePackage.lessons.map((lesson) => lesson.id),
+        lessonCount: coursePackage.lessons.length,
+      })),
+    ],
+    [coursePackageProjects, standaloneLessonProjects]
+  );
   const repositoryCount = repositoryItems.length;
   const filteredFavoriteProjects = favoriteProjects.filter((course) =>
     matchesQuery(starQuery, courseFullName(course), course.summary, course.topics.join(" "), course.language)
@@ -357,6 +387,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     () => [
       { id: "settings" as const, label: ph.tabSettings, icon: Settings, count: null },
       { id: "repositories" as const, label: ph.tabRepositories, icon: FolderClosed, count: repositoryCount },
+      { id: "collaboration" as const, label: ph.tabCollaboration, icon: GitPullRequest, count: null },
       { id: "stars" as const, label: ph.tabStars, icon: Star, count: favoriteProjects.length },
     ],
     [ph, repositoryCount, favoriteProjects.length]
@@ -398,6 +429,24 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     } finally {
       setOpeningLessonId(null);
     }
+  }
+
+  function handleProfileTabChange(tab: ProfileTab) {
+    setActiveTab(tab);
+    if (tab !== "collaboration") {
+      setCollaborationProjectKey(null);
+    }
+    router.replace(`/profile?tab=${encodeURIComponent(tab)}`);
+  }
+
+  function handleSelectCollaborationProject(projectKey: string | null) {
+    setActiveTab("collaboration");
+    setCollaborationProjectKey(projectKey);
+    router.replace(
+      projectKey
+        ? `/profile?tab=collaboration&project=${encodeURIComponent(projectKey)}`
+        : "/profile?tab=collaboration"
+    );
   }
 
   async function handleSetLessonVisibility(lesson: Lesson, visibility: ProjectVisibility) {
@@ -579,7 +628,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleProfileTabChange(tab.id)}
                 className={clsx(
                   "inline-flex min-h-11 items-center gap-2 border-b-2 px-3 text-sm font-semibold transition",
                   isActive
@@ -631,7 +680,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               </span>
               <button
                 type="button"
-                onClick={() => setActiveTab("settings")}
+                onClick={() => handleProfileTabChange("settings")}
                 className="mt-4 w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
               >
                 Edit profile
@@ -684,6 +733,14 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
 
         <section className="min-w-0">
           {activeTab === "repositories" ? renderRepositories() : null}
+          {activeTab === "collaboration" ? (
+            <ProfileCollaborationPanel
+              isLoadingProjects={isLoading}
+              projects={collaborationProjects}
+              selectedProjectKey={collaborationProjectKey}
+              onSelectProject={handleSelectCollaborationProject}
+            />
+          ) : null}
           {activeTab === "stars" ? renderStars() : null}
         </section>
       </div>
@@ -1025,6 +1082,15 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             </button>
             <button
               type="button"
+              onClick={() => handleSelectCollaborationProject(`lesson:${lesson.id}`)}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+              aria-label={`打开 ${lesson.title} 的协作管理`}
+            >
+              <GitPullRequest className="h-4 w-4" />
+              协作
+            </button>
+            <button
+              type="button"
               onClick={() => void handleOpenLesson(lesson.id)}
               disabled={isOpening}
               className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
@@ -1135,6 +1201,15 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
+            <button
+              type="button"
+              onClick={() => handleSelectCollaborationProject(`package:${coursePackage.id}`)}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+              aria-label={`打开 ${coursePackage.title} 的协作管理`}
+            >
+              <GitPullRequest className="h-4 w-4" />
+              协作
+            </button>
             <Link
               href={`/?package=${coursePackage.id}`}
               className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
@@ -1181,16 +1256,27 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                       {summary ? <p className="mt-1 line-clamp-1 text-xs leading-5 text-stone-500">{summary}</p> : null}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenLesson(lesson.id)}
-                      disabled={isOpening}
-                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
-                    >
-                      {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                      打开
-                      {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectCollaborationProject(`lesson:${lesson.id}`)}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                        aria-label={`打开 ${lesson.title} 的协作管理`}
+                      >
+                        <GitPullRequest className="h-3.5 w-3.5" />
+                        协作
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenLesson(lesson.id)}
+                        disabled={isOpening}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                        打开
+                        {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
+                      </button>
+                    </div>
                   </li>
                 );
               })

@@ -43,6 +43,7 @@ function contribution(overrides: Record<string, unknown> = {}) {
   return {
     id: "contribution_browser",
     source_lesson_id: "lesson_source",
+    viewer_project_lesson_id: "lesson_source",
     source_title: "公开课程",
     title: "补充关键背景",
     description: "这个版本补充了学习过程中发现的必要背景。",
@@ -88,9 +89,82 @@ function contribution(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function workspaceWithProject() {
+  return {
+    active_package_id: "package_standalone",
+    packages: [
+      {
+        id: "package_standalone",
+        title: "单独课程",
+        summary: "",
+        visibility: "private",
+        publication_review: {
+          id: "review_standalone",
+          status: "not_started",
+          source_fingerprint: "",
+          scanned_source_count: 0,
+          scanned_unit_count: 0,
+          findings: [],
+          message: "",
+        },
+        is_standalone: true,
+        lessons: [
+          {
+            id: "lesson_source",
+            title: "公开课程",
+            slug: "public-course",
+            summary: "用于项目级协作管理的课程。",
+            tags: [],
+            visibility: "public",
+            publication_review: {
+              id: "review_lesson",
+              status: "approved",
+              source_fingerprint: "",
+              scanned_source_count: 0,
+              scanned_unit_count: 0,
+              findings: [],
+              message: "可以公开。",
+            },
+            board_document: boardDocument("document_source", "第一节"),
+            history_graph: {
+              branches: {},
+              commits: [],
+              current_branch: "main",
+            },
+            created_at: "2026-07-27T00:00:00+00:00",
+            updated_at: "2026-07-27T01:00:00+00:00",
+          },
+        ],
+        course_graph: [],
+        resources: [],
+        open_lesson_ids: [],
+        active_lesson_id: "lesson_source",
+        workspace_tab_order: [],
+      },
+    ],
+  };
+}
+
 async function authenticate(page: Page) {
+  await page.context().addCookies([
+    {
+      name: "openclass.auth.token",
+      value: "browser-test-token",
+      domain: "127.0.0.1",
+      path: "/",
+      sameSite: "Lax",
+    },
+    {
+      name: "openclass.guest.auth.token",
+      value: "browser-test-guest-token",
+      domain: "127.0.0.1",
+      path: "/",
+      sameSite: "Lax",
+    },
+  ]);
   await page.addInitScript(() => {
     window.localStorage.setItem("openclass.auth.token", "browser-test-token");
+    window.sessionStorage.setItem("openclass.guest.auth.token", "browser-test-guest-token");
     document.cookie = "openclass.auth.token=browser-test-token; Path=/; SameSite=Lax";
   });
   await page.route("**/api/auth/me", (route) =>
@@ -112,6 +186,29 @@ test("lists received and submitted lesson contributions", async ({ page }) => {
   await expect(page.getByRole("link", { name: /补充关键背景/ })).toBeVisible();
   await page.getByRole("button", { name: "我提交的" }).click();
   await expect(page.getByText("当前筛选下还没有课程改进方案。")).toBeVisible();
+});
+
+test("manages collaboration inside the selected profile repository", async ({ page }) => {
+  await authenticate(page);
+  await page.route("**/api/workspace", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(workspaceWithProject()) })
+  );
+  await page.route("**/api/contributions?role=received", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([contribution()]) })
+  );
+  await page.route("**/api/contributions?role=submitted", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
+  );
+
+  await page.goto("/profile?tab=collaboration");
+  await expect(page.getByRole("button", { name: "协作" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目协作" })).toBeVisible();
+  await page.getByRole("button", { name: "管理协作" }).click();
+
+  await expect(page).toHaveURL(/tab=collaboration&project=lesson%3Alesson_source/);
+  await expect(page.getByRole("heading", { name: "公开课程" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /补充关键背景/ })).toBeVisible();
+  await expect(page.getByText("1 个待处理")).toBeVisible();
 });
 
 test("shows a public diff without exposing write controls", async ({ page }) => {

@@ -419,6 +419,7 @@ export interface LessonContributionViewerPermissions {
 export interface LessonContributionView {
   id: string;
   source_lesson_id: string;
+  viewer_project_lesson_id?: string | null;
   source_title: string;
   title: string;
   description: string;

@@ -805,6 +805,7 @@ class LessonContributionViewerPermissions(BaseModel):
 class LessonContributionView(BaseModel):
     id: str
     source_lesson_id: str
+    viewer_project_lesson_id: str | None = None
     source_title: str
     title: str
     description: str

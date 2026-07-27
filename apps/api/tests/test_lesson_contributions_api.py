@@ -104,10 +104,12 @@ def test_contribution_snapshot_comments_and_visibility(api_client: TestClient) -
     contribution = created.json()
     assert contribution["status"] == "open"
     assert contribution["revision"]["proposed_document"]["content_text"].endswith("Learner improvement")
+    assert contribution["viewer_project_lesson_id"] == personal["id"]
     assert "contributor_lesson_id" not in contribution
 
     public_view = api_client.get(f"/api/public/contributions/{contribution['id']}")
     assert public_view.status_code == 200
+    assert public_view.json()["viewer_project_lesson_id"] is None
     assert public_view.json()["viewer_permissions"]["can_comment"] is False
 
     stale = api_client.post(
@@ -148,6 +150,7 @@ def test_contribution_snapshot_comments_and_visibility(api_client: TestClient) -
     participant_view = api_client.get(f"/api/contributions/{contribution['id']}")
     assert participant_view.status_code == 200
     assert participant_view.json()["source_is_public"] is False
+    assert participant_view.json()["viewer_project_lesson_id"] == source["id"]
 
 
 def test_guest_and_unrelated_lesson_cannot_submit(api_client: TestClient) -> None:
