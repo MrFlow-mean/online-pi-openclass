@@ -815,6 +815,104 @@ def test_standalone_lessons_and_packages_have_revocable_public_visibility(
     assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
 
 
+def test_public_lesson_fork_is_personal_idempotent_and_restorable(
+    api_client: TestClient,
+) -> None:
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Shared lesson", "start_blank": True},
+    )
+    assert generated.status_code == 200
+    source_lesson = generated.json()["lessons"][0]
+    source_document = _document_with_text(
+        source_lesson["board_document"],
+        "Public source version",
+    )
+    saved_source = api_client.post(
+        f"/api/lessons/{source_lesson['id']}/document/save",
+        json={
+            "document": source_document,
+            "label": "Publishable version",
+            "message": "Saved the public source version",
+        },
+    )
+    assert saved_source.status_code == 200
+    published = api_client.post(
+        f"/api/lessons/{source_lesson['id']}/visibility",
+        json={"visibility": "public"},
+    )
+    assert published.status_code == 200
+
+    viewer = UserView(
+        id="user_public_viewer",
+        email="viewer@example.com",
+        role="user",
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: viewer
+
+    first_fork = api_client.post(f"/api/public/lessons/{source_lesson['id']}/fork")
+    assert first_fork.status_code == 200
+    personal_package = first_fork.json()
+    assert personal_package["is_standalone"] is True
+    personal_lesson = next(
+        lesson
+        for lesson in personal_package["lessons"]
+        if lesson["id"] == personal_package["active_lesson_id"]
+    )
+    assert personal_lesson["id"] != source_lesson["id"]
+    assert personal_lesson["visibility"] == "private"
+    assert personal_lesson["board_document"]["content_text"] == "Public source version"
+    initial_commit = personal_lesson["history_graph"]["commits"][0]
+    assert initial_commit["metadata"]["forked_from_public_lesson_id"] == source_lesson["id"]
+
+    repeated_fork = api_client.post(f"/api/public/lessons/{source_lesson['id']}/fork")
+    assert repeated_fork.status_code == 200
+    assert repeated_fork.json()["active_lesson_id"] == personal_lesson["id"]
+    assert sum(
+        lesson["id"] == personal_lesson["id"]
+        for lesson in repeated_fork.json()["lessons"]
+    ) == 1
+
+    personal_document = _document_with_text(
+        personal_lesson["board_document"],
+        "Public source version\n\nMy follow-up notes",
+    )
+    saved_personal = api_client.post(
+        f"/api/lessons/{personal_lesson['id']}/document/save",
+        json={
+            "document": personal_document,
+            "label": "Personal follow-up",
+            "message": "Recorded the viewer's follow-up",
+        },
+    )
+    assert saved_personal.status_code == 200
+    assert saved_personal.json()["lessons"][0]["board_document"]["content_text"].endswith(
+        "My follow-up notes"
+    )
+
+    restored = api_client.post(
+        f"/api/lessons/{personal_lesson['id']}/restore",
+        json={
+            "commit_id": initial_commit["id"],
+            "label": "Restore public source baseline",
+        },
+    )
+    assert restored.status_code == 200
+    assert restored.json()["lessons"][0]["board_document"]["content_text"] == "Public source version"
+
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER
+    owner_workspace = api_client.get("/api/workspace")
+    assert owner_workspace.status_code == 200
+    persisted_source = next(
+        lesson
+        for package in owner_workspace.json()["packages"]
+        for lesson in package["lessons"]
+        if lesson["id"] == source_lesson["id"]
+    )
+    assert persisted_source["board_document"]["content_text"] == "Public source version"
+
+
 def test_publication_gate_keeps_project_private_when_review_finds_copyright(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

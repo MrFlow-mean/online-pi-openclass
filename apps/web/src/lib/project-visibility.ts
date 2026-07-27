@@ -1,5 +1,5 @@
 import { getApiBase, readEffectiveAuthToken } from "@/lib/api";
-import type { BoardDocument, WorkspaceState } from "@/types";
+import type { BoardDocument, CoursePackage, WorkspaceState } from "@/types";
 
 export type ProjectVisibility = "private" | "public";
 
@@ -19,6 +19,16 @@ export interface PublicCoursePackage {
   lessons: PublicLesson[];
 }
 
+export class ProjectVisibilityRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ProjectVisibilityRequestError";
+    this.status = status;
+  }
+}
+
 async function visibilityRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Content-Type", "application/json");
@@ -33,7 +43,10 @@ async function visibilityRequest<T>(path: string, init?: RequestInit): Promise<T
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-    throw new Error(typeof payload?.detail === "string" ? payload.detail : `Request failed (${response.status})`);
+    throw new ProjectVisibilityRequestError(
+      typeof payload?.detail === "string" ? payload.detail : `Request failed (${response.status})`,
+      response.status,
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -55,6 +68,13 @@ export function updatePackageVisibility(packageId: string, visibility: ProjectVi
 export function getPublicLesson(lessonId: string, historyNodeId?: string) {
   const query = historyNodeId ? `?history_node=${encodeURIComponent(historyNodeId)}` : "";
   return visibilityRequest<PublicLesson>(`/api/public/lessons/${lessonId}${query}`);
+}
+
+export function forkPublicLesson(lessonId: string, historyNodeId?: string) {
+  const query = historyNodeId ? `?history_node=${encodeURIComponent(historyNodeId)}` : "";
+  return visibilityRequest<CoursePackage>(`/api/public/lessons/${lessonId}/fork${query}`, {
+    method: "POST",
+  });
 }
 
 export function getPublicPackage(packageId: string) {

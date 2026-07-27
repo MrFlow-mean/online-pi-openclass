@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ArrowLeft, BookOpen, Globe2, LoaderCircle } from "lucide-react";
+import { ArrowLeft, BookOpen, GitFork, Globe2, LoaderCircle } from "lucide-react";
 
 import { BrandMark } from "@/components/brand-mark";
 import { CommunityMarkdown } from "@/components/community/community-markdown";
+import { readEffectiveAuthToken } from "@/lib/api";
 import {
+  forkPublicLesson,
   getPublicLesson,
   getPublicPackage,
+  ProjectVisibilityRequestError,
   type PublicCoursePackage,
   type PublicLesson,
 } from "@/lib/project-visibility";
@@ -18,7 +21,15 @@ type PublicProject =
   | { kind: "lesson"; lesson: PublicLesson }
   | { kind: "package"; coursePackage: PublicCoursePackage };
 
-function PublicLessonArticle({ lesson }: { lesson: PublicLesson }) {
+function PublicLessonArticle({
+  lesson,
+  isRetaining,
+  onRetain,
+}: {
+  lesson: PublicLesson;
+  isRetaining: boolean;
+  onRetain: (lesson: PublicLesson) => void;
+}) {
   return (
     <article className="rounded-[28px] border border-stone-200 bg-white p-6 shadow-[0_18px_50px_rgba(15,23,42,0.06)] sm:p-8">
       <div className="flex items-start gap-3">
@@ -37,16 +48,33 @@ function PublicLessonArticle({ lesson }: { lesson: PublicLesson }) {
           <p className="py-8 text-sm text-stone-400">这节课程暂时还没有公开内容。</p>
         )}
       </div>
+      <div className="mt-8 flex flex-col gap-4 border-t border-stone-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
+        <p className="max-w-2xl text-sm leading-6 text-stone-500">
+          完成阅读后，可保留为你的单独课程。后续提问和修改只进入个人版本，并保留完整历史，可随时回滚。
+        </p>
+        <button
+          type="button"
+          onClick={() => onRetain(lesson)}
+          disabled={isRetaining}
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:opacity-60"
+        >
+          {isRetaining ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
+          {isRetaining ? "正在保留…" : "保留到单独课程并继续"}
+        </button>
+      </div>
     </article>
   );
 }
 
 export default function SharedCoursePage() {
   const params = useParams<{ kind: string; id: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const historyNodeId = searchParams.get("history_node")?.trim() ?? "";
   const [project, setProject] = useState<PublicProject | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retainError, setRetainError] = useState<string | null>(null);
+  const [retainingLessonId, setRetainingLessonId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -72,6 +100,33 @@ export default function SharedCoursePage() {
       active = false;
     };
   }, [historyNodeId, params.id, params.kind]);
+
+  async function handleRetainLesson(lesson: PublicLesson) {
+    if (!readEffectiveAuthToken()) {
+      const next = `${window.location.pathname}${window.location.search}`;
+      router.push(`/login?next=${encodeURIComponent(next)}`);
+      return;
+    }
+
+    setRetainError(null);
+    setRetainingLessonId(lesson.id);
+    try {
+      const retained = await forkPublicLesson(
+        lesson.id,
+        params.kind === "lesson" ? historyNodeId : undefined,
+      );
+      const retainedLessonId = retained.active_lesson_id ?? lesson.id;
+      router.push(`/studio?lesson=${encodeURIComponent(retainedLessonId)}`);
+    } catch (retainFailure) {
+      if (retainFailure instanceof ProjectVisibilityRequestError && retainFailure.status === 401) {
+        const next = `${window.location.pathname}${window.location.search}`;
+        router.push(`/login?next=${encodeURIComponent(next)}`);
+        return;
+      }
+      setRetainError(retainFailure instanceof Error ? retainFailure.message : "暂时无法保留这节课程");
+      setRetainingLessonId(null);
+    }
+  }
 
   const title =
     project?.kind === "lesson"
@@ -123,11 +178,30 @@ export default function SharedCoursePage() {
           </div>
         ) : null}
 
-        {project?.kind === "lesson" ? <PublicLessonArticle lesson={project.lesson} /> : null}
+        {retainError ? (
+          <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+            {retainError}
+          </div>
+        ) : null}
+
+        {project?.kind === "lesson" ? (
+          <PublicLessonArticle
+            lesson={project.lesson}
+            isRetaining={retainingLessonId === project.lesson.id}
+            onRetain={(lesson) => void handleRetainLesson(lesson)}
+          />
+        ) : null}
         {project?.kind === "package" ? (
           <div className="space-y-5">
             {project.coursePackage.lessons.length ? (
-              project.coursePackage.lessons.map((lesson) => <PublicLessonArticle key={lesson.id} lesson={lesson} />)
+              project.coursePackage.lessons.map((lesson) => (
+                <PublicLessonArticle
+                  key={lesson.id}
+                  lesson={lesson}
+                  isRetaining={retainingLessonId === lesson.id}
+                  onRetain={(selectedLesson) => void handleRetainLesson(selectedLesson)}
+                />
+              ))
             ) : (
               <div className="rounded-[28px] border border-dashed border-stone-300 bg-white/70 px-6 py-14 text-center text-sm text-stone-500">
                 这个公开课程包目前还没有课程。

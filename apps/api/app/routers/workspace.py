@@ -35,6 +35,7 @@ from app.services.lesson_package_format import (
 )
 from app.services.lesson_package_import import import_ridoc_archive, rollback_imported_assets
 from app.services.lesson_summary import lesson_content_summary
+from app.services.personal_lesson_copy import retain_public_lesson_as_personal_copy
 from app.services.publication_review import review_project_publication
 from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
@@ -244,6 +245,41 @@ def get_public_lesson(
             }
         )
     return _public_lesson_view(lesson)
+
+
+@router.post("/api/public/lessons/{lesson_id}/fork", response_model=CoursePackageView)
+def fork_public_lesson(
+    lesson_id: str,
+    history_node: str | None = Query(default=None),
+    user: UserView = Depends(current_user),
+) -> CoursePackageView:
+    source_lesson = get_course_store().load_public_lesson(lesson_id)
+    if source_lesson is None:
+        raise HTTPException(status_code=404, detail="Public lesson not found")
+
+    source_commit = current_head_commit(source_lesson)
+    if history_node:
+        source_commit = next(
+            (item for item in source_lesson.history_graph.commits if item.id == history_node),
+            None,
+        )
+        if source_commit is None:
+            raise HTTPException(status_code=404, detail="Public history node not found")
+        source_lesson = source_lesson.model_copy(
+            update={
+                "board_document": source_commit.snapshot,
+                "updated_at": source_commit.created_at,
+            }
+        )
+
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
+    package, personal_lesson = retain_public_lesson_as_personal_copy(
+        workspace,
+        source_lesson,
+        source_commit_id=source_commit.id,
+    )
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+    return package_view_for_lesson(workspace, package, personal_lesson.id)
 
 
 @router.get("/api/public/packages/{package_id}", response_model=PublicCoursePackageView)
