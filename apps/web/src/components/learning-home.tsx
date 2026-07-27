@@ -21,6 +21,7 @@ import {
   Flame,
   FolderClosed,
   GitFork,
+  GitPullRequest,
   Globe2,
   GraduationCap,
   Languages,
@@ -42,6 +43,7 @@ import {
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
+import { ContributionNotifications } from "@/components/contribution-notifications";
 import {
   HomeLessonBatchToggle,
   HomeLessonBatchToolbar,
@@ -2002,6 +2004,16 @@ export function LearningHome() {
             <span>Star</span>
           </Link>
           <Link
+            href="/contributions"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-violet-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(124,58,237,0.10)] transition hover:-translate-y-0.5 hover:bg-violet-600 hover:text-white sm:flex"
+            aria-label="打开课程协作"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-50 text-violet-600 transition group-hover:bg-white group-hover:text-violet-600">
+              <GitPullRequest className="h-4 w-4" />
+            </span>
+            <span>协作</span>
+          </Link>
+          <Link
             href="/following"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)] sm:flex"
             aria-label="打开关注动态"
@@ -2057,6 +2069,8 @@ export function LearningHome() {
                 {followingUnreadCount ? `${followingBadge} NEW` : "已同步"}
               </span>
             </div>
+
+            <ContributionNotifications />
 
             <div className="space-y-3">
               {notificationUpdates.length ? (
