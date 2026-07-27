@@ -194,6 +194,27 @@ export function WalletHome() {
           <p>Credits 是 OpenClass 平台使用额度，不是现金，不可转让或提现。</p>
         </section>
 
+        {wallet && wallet.balance_credits > 0 && wallet.model_access_status !== "ready" ? (
+          <section
+            className={`mt-6 flex items-start gap-3 rounded-2xl border p-5 text-sm leading-6 ${
+              wallet.model_access_status === "syncing"
+                ? "border-blue-200 bg-blue-50 text-blue-950"
+                : "border-red-200 bg-red-50 text-red-900"
+            }`}
+          >
+            {wallet.model_access_status === "syncing" ? (
+              <LoaderCircle className="mt-0.5 h-5 w-5 shrink-0 animate-spin" />
+            ) : (
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+            )}
+            <p>
+              {wallet.model_access_status === "syncing"
+                ? "模型额度同步中，点数已经到账。"
+                : "模型额度暂不可用，请稍后重试或联系支持。"}
+            </p>
+          </section>
+        ) : null}
+
         <section className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
           <h2 className="font-semibold">交易明细</h2>
           {loading ? (

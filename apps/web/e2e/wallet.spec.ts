@@ -55,6 +55,7 @@ test("shows PayPal points at face value without exposing the internal cost value
           reserved_credits: 0,
           available_credits: 10_000,
           paypal_configured: true,
+          model_access_status: "syncing",
           currency: "USD",
           updated_at: "2026-07-26T00:00:00Z",
         },
@@ -81,6 +82,7 @@ test("shows PayPal points at face value without exposing the internal cost value
   await expect(page.getByText("收款状态", { exact: true })).toHaveCount(0);
   await expect(page.getByText("$75", { exact: false })).toHaveCount(0);
   await expect(page.getByText("75 美元", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("模型额度同步中，点数已经到账。")).toBeVisible();
 });
 
 test("opens a standalone checkout with eligible PayPal payment methods", async ({
@@ -125,6 +127,7 @@ test("opens a standalone checkout with eligible PayPal payment methods", async (
           reserved_credits: 0,
           available_credits: 0,
           paypal_configured: true,
+          model_access_status: "blocked",
           currency: "USD",
           updated_at: "2026-07-26T00:00:00Z",
         },

@@ -24,6 +24,7 @@ from app.services.ai_logging import ai_usage_logger
 from app.services.billing_service import BillingError, BillingService
 from app.services.config import DATA_DIR, load_root_dotenv
 from app.services.codex_app_server import CodexTurnCancelledError
+from app.services.openrouter_provisioning import OpenRouterProvisioningService
 from app.services.structured_output import (
     json_object,
     validation_issues,
@@ -870,6 +871,7 @@ class PiTextClient:
         runtime_root: Path | None = None,
         process_runner: PiProcessRunner | None = None,
         billing_service: BillingService | None = None,
+        openrouter_service: OpenRouterProvisioningService | None = None,
     ) -> None:
         resolved_binary = binary or pi_binary_path()
         if not resolved_binary:
@@ -888,6 +890,12 @@ class PiTextClient:
         self.runtime_root = runtime_root or pi_runtime_root()
         self._process_runner = process_runner
         self._billing_service = billing_service
+        self._openrouter_service = openrouter_service
+        if self.access_method == "platform_credits":
+            service = self._openrouter()
+            if service.config.provisioning_enabled:
+                self.provider = "openrouter"
+                self.model = service.config.resolve_model(provider, model)
 
     def _billing(self) -> BillingService:
         if self._billing_service is None:
@@ -895,6 +903,11 @@ class PiTextClient:
 
             self._billing_service = BillingService(DATABASE_PATH)
         return self._billing_service
+
+    def _openrouter(self) -> OpenRouterProvisioningService:
+        if self._openrouter_service is None:
+            self._openrouter_service = OpenRouterProvisioningService(self._billing())
+        return self._openrouter_service
 
     def _command(self, *, system_prompt: str, image_paths: list[Path] | None = None) -> list[str]:
         command = [
@@ -968,6 +981,8 @@ class PiTextClient:
         workspace_root = self.runtime_root / "workspaces"
         workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = os.environ.copy()
+        environment.pop("OPENROUTER_MANAGEMENT_API_KEY", None)
+        environment.pop("OPENROUTER_API_KEY", None)
         environment.update(
             {
                 "PI_OFFLINE": "1",
@@ -977,6 +992,10 @@ class PiTextClient:
         )
         if self.service_tier:
             environment["OPENCLASS_PI_SERVICE_TIER"] = self.service_tier
+        if self.provider == "openrouter":
+            environment["OPENROUTER_API_KEY"] = self._openrouter().api_key_for_user(
+                self.owner_user_id
+            )
         with tempfile.TemporaryDirectory(prefix="turn-", dir=workspace_root) as temporary:
             temporary_path = Path(temporary)
             agent_dir = persistent_agent_dir or temporary_path / ".pi-platform-agent"
@@ -1058,6 +1077,11 @@ class PiTextClient:
                             upstream_cost_usd=recorder.upstream_cost_usd,
                             usage=recorder.usage,
                         )
+                elif self.provider == "openrouter" and recorder.upstream_cost_usd is not None:
+                    self._billing().record_openrouter_usage(
+                        user_id=self.owner_user_id,
+                        upstream_cost_usd=recorder.upstream_cost_usd,
+                    )
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
             recorder.fail("模型进程返回失败状态。")

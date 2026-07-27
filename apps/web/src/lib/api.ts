@@ -263,6 +263,7 @@ export type CreditWallet = {
   reserved_credits: number;
   available_credits: number;
   paypal_configured: boolean;
+  model_access_status: "syncing" | "ready" | "blocked";
   currency: string;
   updated_at: string;
 };

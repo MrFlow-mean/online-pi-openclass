@@ -17,6 +17,10 @@ from app.services import ai_execution_adapter, codex_app_server, pi_agent_runtim
 from app.services.billing_service import BillingConfig, BillingService
 from app.services.codex_app_server import CodexTurnCancelledError
 from app.services.lesson_factory import build_requirements
+from app.services.openrouter_provisioning import (
+    OpenRouterConfig,
+    OpenRouterProvisioningService,
+)
 from app.services.pi_agent_runtime import PiTextClient
 
 
@@ -511,6 +515,93 @@ def test_platform_credit_request_reserves_and_charges_reported_pi_cost(
     assert usage_entry["kind"] == "model_usage"
     assert usage_entry["delta_credits"] == -17
     assert usage_entry["metadata"]["total_tokens"] == 160
+
+
+def test_platform_credit_openrouter_route_injects_only_the_users_private_key(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setenv("OPENCLASS_CREDIT_BILLING_ENABLED", "false")
+    monkeypatch.setenv("OPENROUTER_MANAGEMENT_API_KEY", "must-not-reach-pi")
+    monkeypatch.setattr(pi_agent_runtime, "load_root_dotenv", lambda: None)
+    billing = BillingService(
+        tmp_path / "billing.sqlite3",
+        config=BillingConfig(
+            mode="sandbox",
+            client_id="client-id",
+            client_secret="client-secret",
+            webhook_id="webhook-id",
+            currency="USD",
+            public_origin="https://openclass.example",
+            credit_value_percent=75,
+            top_up_amounts_cents=(10_000,),
+        ),
+    )
+    openrouter = OpenRouterProvisioningService(
+        billing,
+        config=OpenRouterConfig(
+            provisioning_enabled=True,
+            management_api_key="management-secret",
+            api_origin="https://openrouter.example",
+            sync_interval_seconds=1,
+            safety_buffer_microusd=25_000_000,
+            credentials_dir=tmp_path / "private-openrouter",
+            model_map={"deepseek:deepseek-v4-flash": "deepseek/deepseek-chat"},
+        ),
+    )
+    timestamp = "2026-07-27T00:00:00+00:00"
+    with billing._transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO openrouter_user_keys (
+                user_id, key_hash, key_label, key_name, target_limit_microusd,
+                usage_microusd, status, disabled, created_at, updated_at
+            ) VALUES (
+                'user_test', 'hash-user', 'user key', 'openclass-user-hash',
+                75000000, 0, 'ready', 0, ?, ?
+            )
+            """,
+            (timestamp, timestamp),
+        )
+    openrouter._write_secret("user_test", "sk-or-v1-private-user")
+    observed: dict[str, object] = {}
+
+    def run(command, **kwargs):
+        observed["command"] = command
+        observed["key"] = kwargs["env"].get("OPENROUTER_API_KEY")
+        observed["management_key"] = kwargs["env"].get(
+            "OPENROUTER_MANAGEMENT_API_KEY"
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _pi_stdout_with_usage("answer", cost_usd="0.25"),
+            "",
+        )
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        access_method="platform_credits",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=run,
+        billing_service=billing,
+        openrouter_service=openrouter,
+    ).complete_text(system_prompt="Answer.", user_prompt="Question")
+
+    assert response.output_text == "answer"
+    command = observed["command"]
+    assert isinstance(command, list)
+    assert command[command.index("--provider") + 1] == "openrouter"
+    assert command[command.index("--model") + 1] == "deepseek/deepseek-chat"
+    assert observed["key"] == "sk-or-v1-private-user"
+    assert observed["management_key"] is None
+    key = openrouter.store.key("user_test")
+    assert key is not None
+    assert key["usage_microusd"] == 250_000
 
 
 def test_pi_client_converts_live_json_events_into_public_activity(tmp_path) -> None:

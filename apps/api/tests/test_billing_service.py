@@ -152,6 +152,42 @@ def test_completed_webhook_credits_once_and_partial_refund_debits_proportionally
     assert [entry["delta_credits"] for entry in service.transactions("user-1")] == [-2000, 10000]
 
 
+def test_cumulative_refunds_cannot_exceed_the_original_capture(tmp_path: Path) -> None:
+    service = BillingService(
+        tmp_path / "billing.sqlite3",
+        config=_config(),
+        transport=_paypal_transport([]),
+    )
+    asyncio.run(service.create_paypal_order("user-1", "usd_10000"))
+    asyncio.run(service.capture_paypal_order("user-1", "ORDER-1"))
+    with service._transaction() as connection:
+        service._debit_refund_in_transaction(
+            connection,
+            "event-refund-1",
+            "PAYMENT.CAPTURE.REFUNDED",
+            {
+                "id": "refund-1",
+                "amount": {"currency_code": "USD", "value": "60.00"},
+                "supplementary_data": {"related_ids": {"capture_id": "CAPTURE-1"}},
+            },
+        )
+    with service._transaction() as connection, pytest.raises(
+        BillingError,
+        match="退款金额超出订单范围",
+    ):
+        service._debit_refund_in_transaction(
+            connection,
+            "event-refund-2",
+            "PAYMENT.CAPTURE.REFUNDED",
+            {
+                "id": "refund-2",
+                "amount": {"currency_code": "USD", "value": "50.00"},
+                "supplementary_data": {"related_ids": {"capture_id": "CAPTURE-1"}},
+            },
+        )
+    assert service.wallet("user-1")["balance_credits"] == 4_000
+
+
 def test_capture_rejects_mismatched_amount(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/oauth2/token":

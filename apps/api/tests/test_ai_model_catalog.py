@@ -203,6 +203,41 @@ def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypa
         assert catalog.defaults["text"].access_method == "platform_credits"
 
 
+def test_openrouter_mapping_enables_platform_models_without_a_deepseek_key(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "disabled")
+    monkeypatch.setenv("OPENCLASS_OPENROUTER_PROVISIONING_ENABLED", "true")
+    monkeypatch.setenv("OPENROUTER_MANAGEMENT_API_KEY", "management-key")
+    monkeypatch.setenv(
+        "OPENCLASS_OPENROUTER_MODEL_MAP_JSON",
+        json.dumps(
+            {
+                "deepseek:deepseek-v4-flash": "deepseek/deepseek-chat",
+                "deepseek:deepseek-v4-pro": "deepseek/deepseek-r1",
+            }
+        ),
+    )
+    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: False,
+    )
+
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+
+    platform = [
+        option
+        for option in catalog.text
+        if option.provider == "deepseek"
+        and option.access_method == "platform_credits"
+    ]
+    assert platform
+    assert all(option.enabled and option.configured for option in platform)
+    assert catalog.defaults["text"].access_method == "platform_credits"
+
+
 def test_personal_deepseek_key_enables_only_the_personal_api_route(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "disabled")
     monkeypatch.setattr(

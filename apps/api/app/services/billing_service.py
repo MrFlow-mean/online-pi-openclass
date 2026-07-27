@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import sqlite3
@@ -172,6 +173,7 @@ class BillingService:
                     credits INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     capture_id TEXT UNIQUE,
+                    refunded_cents INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -201,8 +203,54 @@ class BillingService:
 
                 CREATE INDEX IF NOT EXISTS idx_credit_reservations_user_created
                     ON credit_reservations(user_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS openrouter_user_keys (
+                    user_id TEXT PRIMARY KEY,
+                    key_hash TEXT UNIQUE,
+                    key_label TEXT,
+                    key_name TEXT NOT NULL,
+                    target_limit_microusd INTEGER NOT NULL DEFAULT 0,
+                    usage_microusd INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'syncing',
+                    disabled INTEGER NOT NULL DEFAULT 1,
+                    last_error TEXT,
+                    synced_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS openrouter_limit_grants (
+                    grant_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    delta_microusd INTEGER NOT NULL,
+                    target_limit_microusd INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    available_at TEXT NOT NULL,
+                    lease_until TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(source_type, source_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_openrouter_grants_ready
+                    ON openrouter_limit_grants(status, available_at, created_at);
+                CREATE INDEX IF NOT EXISTS idx_openrouter_grants_user
+                    ON openrouter_limit_grants(user_id, created_at);
                 """
             )
+            paypal_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(paypal_orders)").fetchall()
+            }
+            if "refunded_cents" not in paypal_columns:
+                connection.execute(
+                    "ALTER TABLE paypal_orders "
+                    "ADD COLUMN refunded_cents INTEGER NOT NULL DEFAULT 0"
+                )
 
     def packages(self) -> list[dict[str, object]]:
         return [
@@ -218,7 +266,10 @@ class BillingService:
     def wallet(self, user_id: str) -> dict[str, object]:
         with self._transaction() as connection:
             row = self._wallet_row(connection, user_id)
-            return self._wallet_view(row)
+            return self._wallet_view(
+                row,
+                model_access_status=self._model_access_status(connection, user_id),
+            )
 
     def transactions(self, user_id: str, *, limit: int = 50) -> list[dict[str, object]]:
         safe_limit = max(1, min(limit, 100))
@@ -274,6 +325,19 @@ class BillingService:
             available = int(wallet["balance_credits"]) - int(wallet["reserved_credits"])
             if available < credits:
                 raise BillingError(402, "积分余额不足，请先充值")
+            if provider == "openrouter":
+                key = connection.execute(
+                    "SELECT status, disabled, target_limit_microusd, usage_microusd "
+                    "FROM openrouter_user_keys WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                if (
+                    key is None
+                    or str(key["status"]) != "ready"
+                    or bool(key["disabled"])
+                    or int(key["target_limit_microusd"]) <= int(key["usage_microusd"])
+                ):
+                    raise BillingError(503, "模型额度尚未就绪，请稍后重试")
             timestamp = _now()
             connection.execute(
                 "UPDATE credit_wallets SET reserved_credits = reserved_credits + ?, updated_at = ? WHERE user_id = ?",
@@ -366,7 +430,32 @@ class BillingService:
                     request_id,
                 ),
             )
+            if str(reservation["provider"]) == "openrouter" and upstream_cost_microusd:
+                connection.execute(
+                    """
+                    UPDATE openrouter_user_keys
+                    SET usage_microusd = usage_microusd + ?, updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (upstream_cost_microusd, timestamp, reservation["user_id"]),
+                )
         return charged_credits
+
+    def record_openrouter_usage(self, *, user_id: str, upstream_cost_usd: Decimal) -> None:
+        if upstream_cost_usd <= 0:
+            return
+        upstream_cost_microusd = int(
+            (upstream_cost_usd * 1_000_000).to_integral_value(rounding=ROUND_CEILING)
+        )
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE openrouter_user_keys
+                SET usage_microusd = usage_microusd + ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (upstream_cost_microusd, _now(), user_id),
+            )
 
     def release_model_call(self, *, request_id: str) -> bool:
         with self._transaction() as connection:
@@ -600,6 +689,13 @@ class BillingService:
             "SELECT 1 FROM credit_ledger WHERE reference_id = ?",
             (reference_id,),
         ).fetchone():
+            self._record_openrouter_grant_in_transaction(
+                connection,
+                user_id=str(order["user_id"]),
+                source_type="capture",
+                source_id=capture_id,
+                delta_microusd=self._model_allowance_microusd(amount_cents),
+            )
             connection.execute(
                 "UPDATE paypal_orders SET status = 'COMPLETED', capture_id = ?, updated_at = ? WHERE paypal_order_id = ?",
                 (capture_id, _now(), paypal_order_id),
@@ -640,6 +736,13 @@ class BillingService:
             "UPDATE paypal_orders SET status = 'COMPLETED', capture_id = ?, updated_at = ? WHERE paypal_order_id = ?",
             (capture_id, timestamp, paypal_order_id),
         )
+        self._record_openrouter_grant_in_transaction(
+            connection,
+            user_id=str(order["user_id"]),
+            source_type="capture",
+            source_id=capture_id,
+            delta_microusd=self._model_allowance_microusd(amount_cents),
+        )
         return True
 
     def _debit_refund_in_transaction(
@@ -660,19 +763,38 @@ class BillingService:
         ).fetchone()
         if order is None:
             raise BillingError(404, "退款对应的 PayPal 订单不存在")
-        reference_id = f"paypal:refund:{event_id}"
+        refund_id = str(resource.get("id") or event_id)
+        source_type = "reversal" if event_type == "PAYMENT.CAPTURE.REVERSED" else "refund"
+        reference_id = f"paypal:{source_type}:{refund_id}"
         if connection.execute(
             "SELECT 1 FROM credit_ledger WHERE reference_id = ?",
             (reference_id,),
         ).fetchone():
+            amount = _json_object(resource.get("amount"), detail="PayPal 退款金额格式无效")
+            refund_cents = self._amount_to_cents(amount.get("value"))
+            self._record_openrouter_grant_in_transaction(
+                connection,
+                user_id=str(order["user_id"]),
+                source_type=source_type,
+                source_id=refund_id,
+                delta_microusd=-self._model_allowance_microusd(refund_cents),
+            )
             return
         amount = _json_object(resource.get("amount"), detail="PayPal 退款金额格式无效")
         if str(amount.get("currency_code") or "") != str(order["currency"]):
             raise BillingError(409, "PayPal 退款币种与订单不一致")
         refund_cents = self._amount_to_cents(amount.get("value"))
-        if refund_cents <= 0 or refund_cents > int(order["amount_cents"]):
+        previous_refunded_cents = int(order["refunded_cents"])
+        cumulative_refunded_cents = previous_refunded_cents + refund_cents
+        if refund_cents <= 0 or cumulative_refunded_cents > int(order["amount_cents"]):
             raise BillingError(409, "PayPal 退款金额超出订单范围")
-        credits_to_reverse = math.ceil(int(order["credits"]) * refund_cents / int(order["amount_cents"]))
+        previous_reversed_credits = math.ceil(
+            int(order["credits"]) * previous_refunded_cents / int(order["amount_cents"])
+        )
+        cumulative_reversed_credits = math.ceil(
+            int(order["credits"]) * cumulative_refunded_cents / int(order["amount_cents"])
+        )
+        credits_to_reverse = cumulative_reversed_credits - previous_reversed_credits
         wallet = self._wallet_row(connection, str(order["user_id"]))
         balance_after = int(wallet["balance_credits"]) - credits_to_reverse
         timestamp = _now()
@@ -706,8 +828,23 @@ class BillingService:
             ),
         )
         connection.execute(
-            "UPDATE paypal_orders SET status = ?, updated_at = ? WHERE paypal_order_id = ?",
-            ("REFUNDED" if refund_cents == int(order["amount_cents"]) else "PARTIALLY_REFUNDED", timestamp, order["paypal_order_id"]),
+            "UPDATE paypal_orders SET status = ?, refunded_cents = ?, updated_at = ? "
+            "WHERE paypal_order_id = ?",
+            (
+                "REFUNDED"
+                if cumulative_refunded_cents == int(order["amount_cents"])
+                else "PARTIALLY_REFUNDED",
+                cumulative_refunded_cents,
+                timestamp,
+                order["paypal_order_id"],
+            ),
+        )
+        self._record_openrouter_grant_in_transaction(
+            connection,
+            user_id=str(order["user_id"]),
+            source_type=source_type,
+            source_id=refund_id,
+            delta_microusd=-self._model_allowance_microusd(refund_cents),
         )
 
     def _owned_order(self, user_id: str, paypal_order_id: str) -> sqlite3.Row:
@@ -739,7 +876,12 @@ class BillingService:
         assert row is not None
         return row
 
-    def _wallet_view(self, row: sqlite3.Row) -> dict[str, object]:
+    def _wallet_view(
+        self,
+        row: sqlite3.Row,
+        *,
+        model_access_status: str,
+    ) -> dict[str, object]:
         balance = int(row["balance_credits"])
         reserved = int(row["reserved_credits"])
         return {
@@ -748,6 +890,7 @@ class BillingService:
             "reserved_credits": reserved,
             "available_credits": balance - reserved,
             "paypal_configured": self.config.configured,
+            "model_access_status": model_access_status,
             "currency": self.config.currency,
             "updated_at": str(row["updated_at"]),
         }
@@ -758,6 +901,87 @@ class BillingService:
     def _credits_for_upstream_cost(self, upstream_cost_usd: Decimal) -> int:
         credit_value_usd = Decimal(self.config.credit_value_percent) / Decimal(10_000)
         return int((upstream_cost_usd / credit_value_usd).to_integral_value(rounding=ROUND_CEILING))
+
+    def _model_allowance_microusd(self, amount_cents: int) -> int:
+        return amount_cents * self.config.credit_value_percent * 100
+
+    def _record_openrouter_grant_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        source_type: str,
+        source_id: str,
+        delta_microusd: int,
+    ) -> bool:
+        if connection.execute(
+            "SELECT 1 FROM openrouter_limit_grants WHERE source_type = ? AND source_id = ?",
+            (source_type, source_id),
+        ).fetchone():
+            return False
+        current_target = int(
+            connection.execute(
+                "SELECT COALESCE(SUM(delta_microusd), 0) AS target "
+                "FROM openrouter_limit_grants WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()["target"]
+        )
+        target = max(0, current_target + delta_microusd)
+        timestamp = _now()
+        connection.execute(
+            """
+            INSERT INTO openrouter_limit_grants (
+                grant_id, user_id, source_type, source_id, delta_microusd,
+                target_limit_microusd, status, available_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                f"org_{uuid.uuid4().hex}",
+                user_id,
+                source_type,
+                source_id,
+                delta_microusd,
+                target,
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+        key_name = "openclass-" + hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:24]
+        connection.execute(
+            """
+            INSERT INTO openrouter_user_keys (
+                user_id, key_name, target_limit_microusd, status, disabled,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, 'syncing', 1, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                target_limit_microusd = excluded.target_limit_microusd,
+                status = 'syncing',
+                updated_at = excluded.updated_at
+            """,
+            (user_id, key_name, target, timestamp, timestamp),
+        )
+        return True
+
+    def _model_access_status(
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> str:
+        row = connection.execute(
+            "SELECT status, target_limit_microusd FROM openrouter_user_keys WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        provisioning_enabled = (os.getenv("OPENCLASS_OPENROUTER_PROVISIONING_ENABLED") or "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        management_configured = bool((os.getenv("OPENROUTER_MANAGEMENT_API_KEY") or "").strip())
+        if row is None or int(row["target_limit_microusd"]) <= 0:
+            return "blocked"
+        if not provisioning_enabled or not management_configured:
+            return "blocked"
+        status = str(row["status"])
+        return status if status in {"syncing", "ready", "blocked"} else "blocked"
 
     def _model_call_reserve_credits(self) -> int:
         raw_value = os.getenv("OPENCLASS_MODEL_CALL_RESERVE_CREDITS", "25").strip()

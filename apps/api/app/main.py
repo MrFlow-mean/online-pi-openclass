@@ -27,16 +27,28 @@ from app.routers import (
 from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.deepseek_api import deepseek_provider_configured
+from app.services.openrouter_provisioning import (
+    OpenRouterProvisioningService,
+    OpenRouterProvisioningWorker,
+)
 from app.services.workspace_state import ensure_data_dirs
 from app.services.source_ingestion_jobs import source_ingestion_task_manager
 
 ensure_data_dirs()
+openrouter_provisioning_service = OpenRouterProvisioningService(billing.billing_service)
+openrouter_provisioning_worker = OpenRouterProvisioningWorker(
+    openrouter_provisioning_service
+)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     source_ingestion_task_manager.recover_active()
-    yield
+    openrouter_provisioning_worker.start()
+    try:
+        yield
+    finally:
+        await openrouter_provisioning_worker.stop()
 
 
 app = FastAPI(title="AI Board Course System API", version="0.2.0", lifespan=lifespan)
@@ -81,6 +93,9 @@ def health() -> dict[str, object]:
             "configured": deepseek_provider_configured(),
             "access": "shared_unmetered",
         },
+        "openrouter": openrouter_provisioning_service.health(
+            worker_healthy=openrouter_provisioning_worker.healthy
+        ),
         "workflow": {"status": "provider_neutral_board"},
         "realtime": {
             "status": "enabled" if realtime_runtime_enabled() else "disabled",

@@ -20,6 +20,8 @@ from app.services.pi_agent_runtime import (
     pi_personal_api_configured,
     pi_runtime_available,
 )
+from app.services.openrouter_provisioning import OpenRouterConfig
+from app.services.workspace_state import DATABASE_PATH
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
@@ -258,6 +260,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         provider="deepseek",
     )
     shared_deepseek = deepseek_config()
+    openrouter_config = OpenRouterConfig.from_env(DATABASE_PATH)
     realtime_default = default_realtime_selection()
     realtime_configured = _configured_secret("OPENAI_API_KEY")
     realtime_enabled = realtime_runtime_enabled() and realtime_configured
@@ -300,7 +303,19 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     deepseek_models = list(DEEPSEEK_CURATED_MODELS)
     if not any(model == shared_deepseek.model for model, _label in deepseek_models):
         deepseek_models.insert(0, (shared_deepseek.model, f"DeepSeek {shared_deepseek.model}"))
-    deepseek_is_default = shared_deepseek.configured and not pi_openai_configured
+    def platform_model_configured(model: str) -> bool:
+        if not openrouter_config.provisioning_enabled:
+            return shared_deepseek.configured
+        if not openrouter_config.active:
+            return False
+        try:
+            openrouter_config.resolve_model("deepseek", model)
+        except RuntimeError:
+            return False
+        return True
+
+    platform_default_configured = platform_model_configured(shared_deepseek.model)
+    deepseek_is_default = platform_default_configured and not pi_openai_configured
     text_options.extend(
         AIModelOption(
             provider="deepseek",
@@ -308,8 +323,8 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             access_method="platform_credits",
             label=label,
             capability="text",
-            enabled=shared_deepseek.configured,
-            configured=shared_deepseek.configured,
+            enabled=platform_model_configured(model),
+            configured=platform_model_configured(model),
             default=deepseek_is_default and model == shared_deepseek.model,
         )
         for model, label in deepseek_models
