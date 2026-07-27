@@ -1011,6 +1011,7 @@ export interface AIModelOption {
   supported_reasoning_efforts?: AIReasoningEffortOption[];
   default_service_tier?: string | null;
   service_tiers?: AIServiceTierOption[];
+  input_price_credits_per_million?: number | null;
 }
 
 export interface AIProviderCredentialStatus {

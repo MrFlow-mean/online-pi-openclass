@@ -1411,6 +1411,7 @@ class AIModelOption(BaseModel):
     )
     default_service_tier: str | None = None
     service_tiers: list[AIServiceTierOption] = Field(default_factory=list)
+    input_price_credits_per_million: int | None = Field(default=None, ge=0)
 
 
 class AIModelCatalog(BaseModel):

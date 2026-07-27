@@ -24,6 +24,23 @@ class BillingError(RuntimeError):
         self.detail = detail
 
 
+def credits_for_upstream_cost(
+    upstream_cost_usd: Decimal,
+    *,
+    credit_value_percent: int,
+) -> int:
+    if upstream_cost_usd < 0:
+        raise ValueError("Upstream model cost cannot be negative")
+    if not 1 <= credit_value_percent <= 100:
+        raise ValueError("Credit value percentage must be between 1 and 100")
+    credit_value_usd = Decimal(credit_value_percent) / Decimal(10_000)
+    return int(
+        (upstream_cost_usd / credit_value_usd).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+    )
+
+
 @dataclass(frozen=True)
 class BillingConfig:
     mode: str
@@ -899,8 +916,10 @@ class BillingService:
         return amount_cents
 
     def _credits_for_upstream_cost(self, upstream_cost_usd: Decimal) -> int:
-        credit_value_usd = Decimal(self.config.credit_value_percent) / Decimal(10_000)
-        return int((upstream_cost_usd / credit_value_usd).to_integral_value(rounding=ROUND_CEILING))
+        return credits_for_upstream_cost(
+            upstream_cost_usd,
+            credit_value_percent=self.config.credit_value_percent,
+        )
 
     def _model_allowance_microusd(self, amount_cents: int) -> int:
         return amount_cents * self.config.credit_value_percent * 100

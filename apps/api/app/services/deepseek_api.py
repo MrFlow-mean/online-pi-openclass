@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, TypeVar
 
 from openai import OpenAI
@@ -26,6 +27,10 @@ DEEPSEEK_CURATED_MODELS: tuple[tuple[str, str], ...] = (
     ("deepseek-v4-flash", "DeepSeek V4 Flash"),
     ("deepseek-v4-pro", "DeepSeek V4 Pro"),
 )
+DEEPSEEK_INPUT_USD_PER_MILLION: dict[str, Decimal] = {
+    "deepseek-v4-flash": Decimal("0.14"),
+    "deepseek-v4-pro": Decimal("0.435"),
+}
 
 
 def _normalized_secret(value: str | None) -> str | None:

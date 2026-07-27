@@ -24,7 +24,10 @@ from app.routers import (
     speech,
     workspace,
 )
-from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
+from app.services.ai_model_catalog import (
+    build_model_catalog_with_pricing,
+    realtime_runtime_enabled,
+)
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.deepseek_api import deepseek_provider_configured
 from app.services.openrouter_provisioning import (
@@ -105,5 +108,5 @@ def health() -> dict[str, object]:
 
 
 @app.get("/api/ai-models", response_model=AIModelCatalog)
-def get_ai_models(user: UserView = Depends(current_user)) -> AIModelCatalog:
-    return build_model_catalog(user.id)
+async def get_ai_models(user: UserView = Depends(current_user)) -> AIModelCatalog:
+    return await build_model_catalog_with_pricing(user.id)

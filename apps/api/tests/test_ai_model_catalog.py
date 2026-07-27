@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -18,6 +19,7 @@ def _no_personal_api_credentials(monkeypatch) -> None:
 
 
 def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_CREDIT_VALUE_PERCENT", "75")
     monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
     monkeypatch.setattr(
         ai_model_catalog,
@@ -103,6 +105,16 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
         not option.supported_reasoning_efforts and not option.service_tiers
         for option in catalog.text
         if option.provider == "deepseek"
+    )
+    assert [
+        option.input_price_credits_per_million
+        for option in catalog.text
+        if option.access_method == "platform_credits"
+    ] == [19, 58]
+    assert all(
+        option.input_price_credits_per_million is None
+        for option in catalog.text
+        if option.access_method != "platform_credits"
     )
 
 
@@ -209,6 +221,7 @@ def test_openrouter_mapping_enables_platform_models_without_a_deepseek_key(
     monkeypatch.setenv("DEEPSEEK_API_KEY", "disabled")
     monkeypatch.setenv("OPENCLASS_OPENROUTER_PROVISIONING_ENABLED", "true")
     monkeypatch.setenv("OPENROUTER_MANAGEMENT_API_KEY", "management-key")
+    monkeypatch.setenv("OPENCLASS_CREDIT_VALUE_PERCENT", "75")
     monkeypatch.setenv(
         "OPENCLASS_OPENROUTER_MODEL_MAP_JSON",
         json.dumps(
@@ -236,6 +249,29 @@ def test_openrouter_mapping_enables_platform_models_without_a_deepseek_key(
     assert platform
     assert all(option.enabled and option.configured for option in platform)
     assert catalog.defaults["text"].access_method == "platform_credits"
+    ai_model_catalog.apply_platform_input_prices(
+        catalog,
+        openrouter_config=ai_model_catalog.OpenRouterConfig.from_env(
+            ai_model_catalog.DATABASE_PATH
+        ),
+        openrouter_prices={
+            "deepseek/deepseek-chat": Decimal("0.098"),
+            "deepseek/deepseek-r1": Decimal("0.435"),
+        },
+    )
+    assert [option.input_price_credits_per_million for option in platform] == [14, 58]
+
+
+def test_openrouter_prompt_prices_are_normalized_to_usd_per_million() -> None:
+    assert ai_model_catalog._parse_openrouter_input_prices(
+        [
+            {
+                "id": "provider/model",
+                "pricing": {"prompt": "0.0000002"},
+            },
+            {"id": "missing-pricing"},
+        ]
+    ) == {"provider/model": Decimal("0.2")}
 
 
 def test_personal_deepseek_key_enables_only_the_personal_api_route(monkeypatch) -> None:

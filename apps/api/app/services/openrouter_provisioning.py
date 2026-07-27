@@ -219,6 +219,15 @@ class OpenRouterClient:
             data.get("total_usage")
         )
 
+    async def models(self) -> list[dict[str, Any]]:
+        payload = await self._request(
+            "GET", "/api/v1/models", operation="OpenRouter model pricing lookup"
+        )
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise OpenRouterAPIError(502, "OpenRouter model pricing lookup")
+        return [item for item in data if isinstance(item, dict)]
+
     async def list_keys(self) -> list[dict[str, Any]]:
         keys: list[dict[str, Any]] = []
         offset = 0

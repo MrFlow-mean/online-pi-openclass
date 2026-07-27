@@ -324,6 +324,19 @@ export function ModelSelectionPanel({
                 >
                   {PROVIDER_LABELS[option.provider]} · {option.enabled ? "可用" : "尚未配置"}
                 </span>
+                {selectedAccessMethod === "platform_credits" ? (
+                  <span
+                    className={clsx(
+                      "mt-1.5 block text-xs font-medium",
+                      active ? "text-emerald-300" : "text-emerald-700",
+                    )}
+                  >
+                    每 100 万输入 token ·{" "}
+                    {option.input_price_credits_per_million == null
+                      ? "价格暂不可用"
+                      : `${option.input_price_credits_per_million.toLocaleString("zh-CN")} 平台积分`}
+                  </span>
+                ) : null}
               </button>
             );
           })}

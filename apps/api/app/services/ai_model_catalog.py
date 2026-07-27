@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
+
+import httpx
 
 from app.models import (
     AIAgentBackendOption,
@@ -13,20 +18,29 @@ from app.models import (
 )
 from app.services.deepseek_api import (
     DEEPSEEK_CURATED_MODELS,
+    DEEPSEEK_INPUT_USD_PER_MILLION,
     deepseek_config,
 )
+from app.services.billing_service import BillingConfig, credits_for_upstream_cost
 from app.services.pi_agent_runtime import (
     pi_credentials_available,
     pi_personal_api_configured,
     pi_runtime_available,
 )
-from app.services.openrouter_provisioning import OpenRouterConfig
+from app.services.openrouter_provisioning import (
+    OpenRouterAPIError,
+    OpenRouterClient,
+    OpenRouterConfig,
+)
 from app.services.workspace_state import DATABASE_PATH
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
+OPENROUTER_PRICE_CACHE_TTL_SECONDS = 15 * 60
+logger = logging.getLogger(__name__)
+_openrouter_price_cache: tuple[str, float, dict[str, Decimal]] | None = None
 PI_OPENAI_CODEX_MODELS = (
     ("gpt-5.5", "GPT 5.5"),
     ("gpt-5.4", "GPT 5.4"),
@@ -250,6 +264,88 @@ def _default_model_id(models: list[dict[str, Any]]) -> str:
     return OPENAI_CODEX_DEFAULT_TEXT_MODEL
 
 
+def _platform_input_price_credits(
+    *,
+    provider: str,
+    model: str,
+    openrouter_config: OpenRouterConfig,
+    openrouter_prices: dict[str, Decimal],
+) -> int | None:
+    input_usd_per_million: Decimal | None = None
+    if openrouter_config.provisioning_enabled:
+        try:
+            routed_model = openrouter_config.resolve_model(provider, model)
+        except RuntimeError:
+            return None
+        input_usd_per_million = openrouter_prices.get(routed_model)
+    elif provider == "deepseek":
+        input_usd_per_million = DEEPSEEK_INPUT_USD_PER_MILLION.get(model)
+    if input_usd_per_million is None:
+        return None
+    return credits_for_upstream_cost(
+        input_usd_per_million,
+        credit_value_percent=BillingConfig.from_env().credit_value_percent,
+    )
+
+
+def apply_platform_input_prices(
+    catalog: AIModelCatalog,
+    *,
+    openrouter_config: OpenRouterConfig,
+    openrouter_prices: dict[str, Decimal] | None = None,
+) -> AIModelCatalog:
+    prices = openrouter_prices or {}
+    for option in catalog.text:
+        if option.access_method != "platform_credits":
+            continue
+        option.input_price_credits_per_million = _platform_input_price_credits(
+            provider=option.provider,
+            model=option.model,
+            openrouter_config=openrouter_config,
+            openrouter_prices=prices,
+        )
+    return catalog
+
+
+def _parse_openrouter_input_prices(models: list[dict[str, Any]]) -> dict[str, Decimal]:
+    prices: dict[str, Decimal] = {}
+    for item in models:
+        model_id = str(item.get("id") or "").strip()
+        pricing = item.get("pricing")
+        if not model_id or not isinstance(pricing, dict):
+            continue
+        try:
+            prompt_price = Decimal(str(pricing.get("prompt")))
+        except (InvalidOperation, ValueError):
+            continue
+        if prompt_price < 0:
+            continue
+        prices[model_id] = prompt_price * Decimal(1_000_000)
+    return prices
+
+
+async def _openrouter_input_prices(config: OpenRouterConfig) -> dict[str, Decimal]:
+    global _openrouter_price_cache
+    now = time.monotonic()
+    cached = _openrouter_price_cache
+    if cached and cached[0] == config.api_origin and now - cached[1] < OPENROUTER_PRICE_CACHE_TTL_SECONDS:
+        return cached[2]
+    try:
+        prices = _parse_openrouter_input_prices(await OpenRouterClient(config).models())
+    except (OpenRouterAPIError, httpx.HTTPError) as error:
+        operation = (
+            error.operation
+            if isinstance(error, OpenRouterAPIError)
+            else "OpenRouter model pricing lookup"
+        )
+        logger.warning("OpenRouter model pricing is unavailable: %s", operation)
+        if cached and cached[0] == config.api_origin:
+            return cached[2]
+        return {}
+    _openrouter_price_cache = (config.api_origin, now, prices)
+    return prices
+
+
 def build_model_catalog(user_id: str) -> AIModelCatalog:
     pi_available = pi_runtime_available()
     pi_openai_configured = pi_available and pi_credentials_available(
@@ -370,7 +466,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             reasoning_effort=codex_default_option.default_reasoning_effort,
             service_tier=codex_default_option.default_service_tier,
         )
-    return AIModelCatalog(
+    catalog = AIModelCatalog(
         text=text_options,
         realtime=[
             AIModelOption(
@@ -388,4 +484,20 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         ],
         defaults={"text": text_default, "realtime": realtime_default},
         agent_backends=_agent_backend_options(),
+    )
+    return apply_platform_input_prices(
+        catalog,
+        openrouter_config=openrouter_config,
+    )
+
+
+async def build_model_catalog_with_pricing(user_id: str) -> AIModelCatalog:
+    catalog = build_model_catalog(user_id)
+    openrouter_config = OpenRouterConfig.from_env(DATABASE_PATH)
+    if not openrouter_config.active:
+        return catalog
+    return apply_platform_input_prices(
+        catalog,
+        openrouter_config=openrouter_config,
+        openrouter_prices=await _openrouter_input_prices(openrouter_config),
     )
