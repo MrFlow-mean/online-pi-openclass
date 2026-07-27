@@ -564,6 +564,9 @@ class PublicationReviewFinding(BaseModel):
 class PublicationReview(BaseModel):
     id: str = Field(default_factory=lambda: new_id("publicationreview"))
     status: PublicationReviewStatus = "not_started"
+    agent_backend: str = ""
+    provider: str = ""
+    model: str = ""
     source_fingerprint: str = ""
     scanned_source_count: int = 0
     scanned_unit_count: int = 0

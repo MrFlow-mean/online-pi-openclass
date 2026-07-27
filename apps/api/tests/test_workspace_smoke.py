@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from io import BytesIO
+import hashlib
 import json
+from pathlib import Path
 import threading
 import time
 from zipfile import ZipFile
@@ -10,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 from fastapi.testclient import TestClient
+from reportlab.pdfgen import canvas
 
 import app.main as main_module
 from app.models import (
@@ -19,8 +22,12 @@ from app.models import (
     LearningSourceGrounding,
     LearningSourceReference,
     PublicationReview,
+    SourceChapter,
     SourceIngestionJob,
     SourceIngestionRecord,
+    SourceRange,
+    SourceStructure,
+    SourceStructureView,
     UserView,
 )
 from app.routers import auth as auth_router
@@ -31,11 +38,13 @@ from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services import publication_review as publication_review_service
+from app.services import source_range_reader
 from app.services.publication_review import (
     PublicationSourceUnit,
     review_project_publication,
     scan_publication_units,
 )
+from app.services.publication_review_agent import default_publication_review_selection
 from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
@@ -93,6 +102,50 @@ class _PublicationReviewAdapter:
 
     def parse_structured(self, **_kwargs):
         return type("Result", (), {"output_parsed": {"decisions": self.decisions}})()
+
+
+class _DirectoryPublicationAgentAdapter:
+    def __init__(self) -> None:
+        self.scanned_text = ""
+
+    def parse_structured(self, **kwargs):
+        payload = json.loads(str(kwargs["user_prompt"]))
+        schema_name = kwargs["schema"].__name__
+        if schema_name == "_ScopeBatchDecision":
+            return type(
+                "Result",
+                (),
+                {
+                    "output_parsed": {
+                        "decisions": [
+                            {
+                                "unit_id": unit["unit_id"],
+                                "region": "body",
+                                "reason": "Substantive directory range.",
+                            }
+                            for unit in payload["directory_units"]
+                        ]
+                    }
+                },
+            )()
+        units = payload["units"]
+        self.scanned_text = "\n".join(str(unit["text"]) for unit in units)
+        decisions = []
+        for unit in units:
+            text = str(unit["text"])
+            declaration = "Copyright 2026. All rights reserved." in text
+            decisions.append(
+                {
+                    "unit_id": unit["unit_id"],
+                    "region": "non_body",
+                    "copyright_declaration": declaration,
+                    "evidence_excerpt": (
+                        "Copyright 2026. All rights reserved." if declaration else ""
+                    ),
+                    "reason": "Original non-body range review.",
+                }
+            )
+        return type("Result", (), {"output_parsed": {"decisions": decisions}})()
 
 
 def _publication_unit(*, unit_id: str, text: str) -> PublicationSourceUnit:
@@ -163,6 +216,215 @@ def test_publication_scan_does_not_block_body_discussion_or_non_body_without_dec
 
     assert review.status == "approved"
     assert review.findings == []
+
+
+def _write_publication_pdf(path: Path, pages: list[str]) -> str:
+    document = canvas.Canvas(str(path))
+    for text in pages:
+        document.drawString(72, 720, text)
+        document.showPage()
+    document.save()
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _catalog_view_for_publication_pdf(
+    *,
+    source: SourceIngestionRecord,
+    content_hash: str,
+    mapping_status: str = "verified",
+) -> SourceStructureView:
+    structure = SourceStructure(
+        id="structure_publication",
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_ingestion_id=source.id,
+        status="ready",
+        strategy="codex_directory_v1",
+        has_verified_toc=True,
+        catalog_version=4,
+        source_content_hash=content_hash,
+        catalog_schema_version="codex_directory_v1",
+    )
+    chapter = SourceChapter(
+        id="chapter_body",
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_ingestion_id=source.id,
+        title="Main authored section",
+        path=["Main authored section"],
+        mapping_status=mapping_status,
+        range=SourceRange(kind="pdf_pages", start=2, end=2, display_label="page 2"),
+        source_content_hash=content_hash,
+        catalog_version=4,
+        confidence=1.0,
+    )
+    return SourceStructureView(source=source, structure=structure, chapters=[chapter])
+
+
+def test_publication_review_pi_agent_defaults_to_deepseek_v4_flash() -> None:
+    selection = default_publication_review_selection()
+
+    assert selection.agent_backend == "pi"
+    assert selection.provider == "deepseek"
+    assert selection.model == "deepseek-v4-flash"
+    assert selection.access_method == "shared_api"
+
+
+def test_publication_review_reads_original_non_body_ranges_and_blocks_copyright(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "publication.pdf"
+    content_hash = _write_publication_pdf(
+        path,
+        [
+            "Copyright 2026. All rights reserved.",
+            "BODY_COPYRIGHT_DISCUSSION is substantive body content only.",
+            "Back matter without a rights declaration.",
+        ],
+    )
+    package = _publication_package_with_reference("source_pdf")
+    source = SourceIngestionRecord(
+        id="source_pdf",
+        owner_user_id=TEST_USER.id,
+        package_id=package.id,
+        title="Uploaded publication",
+        source_type="local_file",
+        file_name=path.name,
+        mime_type="application/pdf",
+        size_bytes=path.stat().st_size,
+        status="ready",
+        metadata={"content_hash": content_hash},
+    )
+    view = _catalog_view_for_publication_pdf(source=source, content_hash=content_hash)
+    adapter = _DirectoryPublicationAgentAdapter()
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [source],
+    )
+    monkeypatch.setattr(
+        publication_review_service.source_structure_store,
+        "get_structure_view",
+        lambda **_kwargs: view,
+    )
+    monkeypatch.setattr(source_range_reader, "_source_path", lambda _source: path)
+
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=adapter,
+    )
+
+    assert review.status == "blocked"
+    assert review.agent_backend == "pi"
+    assert review.provider == "deepseek"
+    assert review.model == "deepseek-v4-flash"
+    assert review.findings[0].source_title == "Uploaded publication"
+    assert review.findings[0].evidence_excerpt == "Copyright 2026. All rights reserved."
+    assert "BODY_COPYRIGHT_DISCUSSION" not in adapter.scanned_text
+
+
+def test_publication_review_allows_when_original_non_body_ranges_have_no_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "publication-clear.pdf"
+    content_hash = _write_publication_pdf(
+        path,
+        [
+            "Front matter without a rights declaration.",
+            "BODY_COPYRIGHT_DISCUSSION remains inside substantive body content.",
+            "Index entries without a rights declaration.",
+        ],
+    )
+    package = _publication_package_with_reference("source_pdf_clear")
+    source = SourceIngestionRecord(
+        id="source_pdf_clear",
+        owner_user_id=TEST_USER.id,
+        package_id=package.id,
+        title="Uploaded source",
+        source_type="local_file",
+        file_name=path.name,
+        mime_type="application/pdf",
+        size_bytes=path.stat().st_size,
+        status="ready",
+        metadata={"content_hash": content_hash},
+    )
+    view = _catalog_view_for_publication_pdf(source=source, content_hash=content_hash)
+    adapter = _DirectoryPublicationAgentAdapter()
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [source],
+    )
+    monkeypatch.setattr(
+        publication_review_service.source_structure_store,
+        "get_structure_view",
+        lambda **_kwargs: view,
+    )
+    monkeypatch.setattr(source_range_reader, "_source_path", lambda _source: path)
+
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=adapter,
+    )
+
+    assert review.status == "approved"
+    assert review.findings == []
+    assert "BODY_COPYRIGHT_DISCUSSION" not in adapter.scanned_text
+
+
+def test_publication_review_fails_closed_when_directory_body_ranges_are_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "publication-unverified.pdf"
+    content_hash = _write_publication_pdf(path, ["Front matter", "Body", "Back matter"])
+    package = _publication_package_with_reference("source_pdf_unverified")
+    source = SourceIngestionRecord(
+        id="source_pdf_unverified",
+        owner_user_id=TEST_USER.id,
+        package_id=package.id,
+        title="Unverified source",
+        source_type="local_file",
+        file_name=path.name,
+        mime_type="application/pdf",
+        size_bytes=path.stat().st_size,
+        status="ready",
+        metadata={"content_hash": content_hash},
+    )
+    view = _catalog_view_for_publication_pdf(
+        source=source,
+        content_hash=content_hash,
+        mapping_status="unmapped",
+    )
+    adapter = _DirectoryPublicationAgentAdapter()
+    monkeypatch.setattr(
+        publication_review_service.source_ingestion_service,
+        "list_sources",
+        lambda **_kwargs: [source],
+    )
+    monkeypatch.setattr(
+        publication_review_service.source_structure_store,
+        "get_structure_view",
+        lambda **_kwargs: view,
+    )
+    monkeypatch.setattr(source_range_reader, "_source_path", lambda _source: path)
+
+    review = review_project_publication(
+        owner_user_id=TEST_USER.id,
+        package=package,
+        lesson_id=package.lessons[0].id,
+        adapter=adapter,
+    )
+
+    assert review.status == "error"
+    assert "未验证的正文范围" in review.message
+    assert adapter.scanned_text == ""
 
 
 def _publication_package_with_reference(source_id: str | None) -> CoursePackage:

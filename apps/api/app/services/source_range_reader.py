@@ -10,7 +10,13 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from app.models import RetrievalEvidence, SelectionRef, SourceChapter, SourceIngestionRecord
+from app.models import (
+    RetrievalEvidence,
+    SelectionRef,
+    SourceChapter,
+    SourceIngestionRecord,
+    SourceRange,
+)
 from app.services.image_ocr import (
     extract_pdf_pages_layout,
     extract_pdf_pages_text,
@@ -43,6 +49,23 @@ class SourceRangeReadResult:
     catalog_version: int
     source_content_hash: str
     source_range: dict[str, Any]
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AuthenticatedSourceTextUnit:
+    text: str
+    locator: str
+    display_label: str
+    range_index: int = 0
+    page_start: int | None = None
+    page_end: int | None = None
+
+
+@dataclass(frozen=True)
+class AuthenticatedSourceRangeReadResult:
+    units: list[AuthenticatedSourceTextUnit]
+    source_content_hash: str
     warnings: list[str] = field(default_factory=list)
 
 
@@ -150,6 +173,158 @@ def read_verified_source_range(
         source_range=authoritative_range,
         warnings=warnings,
     )
+
+
+def source_coordinate_extent(
+    *,
+    owner_user_id: str,
+    package_id: str,
+    source: SourceIngestionRecord,
+    structure: Any,
+    kind: str,
+    container: str = "",
+) -> SourceRange:
+    """Return the complete authenticated coordinate space for one original source.
+
+    Publication review uses this boundary to calculate the complement of verified
+    body ranges without trusting model-provided file sizes or opening arbitrary paths.
+    """
+
+    path, _source_hash = _authenticated_structure_source_path(
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        source=source,
+        structure=structure,
+    )
+    if kind == "pdf_pages":
+        try:
+            from pypdf import PdfReader
+        except Exception as exc:  # pragma: no cover - dependency guard
+            raise SourceRangeReadError("当前环境缺少 PDF 读取组件。") from exc
+        count = len(PdfReader(str(path)).pages)
+        start, end = 1, count
+    elif kind == "epub_spine":
+        with SafeSourceArchive(path) as archive:
+            count = len(_epub_spine_items(archive))
+        start, end = 0, count - 1
+    elif kind == "docx_paragraphs":
+        try:
+            count = len(read_docx_paragraph_blocks(path))
+        except OoxmlNavigationError as exc:
+            raise SourceRangeReadError("无法读取当前 DOCX 的原生段落顺序。") from exc
+        start, end = 0, count - 1
+    elif kind == "ppt_slides":
+        with SafeSourceArchive(path) as archive:
+            try:
+                count = len(ordered_pptx_slide_parts(archive))
+            except OoxmlNavigationError as exc:
+                raise SourceRangeReadError("无法验证当前 PPTX 的原生播放顺序。") from exc
+        start, end = 1, count
+    elif kind == "sheet_rows":
+        if path.suffix.lower() == ".csv":
+            with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+                count = sum(1 for _row in csv.reader(handle))
+        else:
+            with SafeSourceArchive(path) as archive:
+                names = set(archive.namelist())
+                _sheet_name, sheet_path = _xlsx_sheet_path(archive, names, container)
+                root = parse_untrusted_xml(archive.read(sheet_path))
+                implicit_row = 0
+                count = 0
+                for row in (node for node in root.iter() if node.tag.endswith("}row")):
+                    implicit_row += 1
+                    count = max(count, _positive_int(row.attrib.get("r")) or implicit_row)
+        start, end = 1, count
+    elif kind == "text_lines":
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            count = sum(1 for _line in handle)
+        start, end = 1, count
+    else:
+        raise SourceRangeReadError(
+            "当前资料范围类型无法机械计算完整文档边界。"
+        )
+    if count < 1 or end < start:
+        raise SourceRangeReadError("原文件没有可供发布审核的内容范围。")
+    return SourceRange(
+        kind=kind,
+        start=start,
+        end=end,
+        container=container,
+        display_label=f"{kind}:{start}-{end}",
+    )
+
+
+def read_authenticated_source_ranges(
+    *,
+    owner_user_id: str,
+    package_id: str,
+    source: SourceIngestionRecord,
+    structure: Any,
+    ranges: Sequence[SourceRange],
+) -> AuthenticatedSourceRangeReadResult:
+    """Read bounded ranges from the fingerprinted original file without indexing it."""
+
+    path, source_hash = _authenticated_structure_source_path(
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        source=source,
+        structure=structure,
+    )
+    units: list[AuthenticatedSourceTextUnit] = []
+    warnings: list[str] = []
+    for range_index, source_range in enumerate(ranges):
+        payload = _range_payload(source_range)
+        _validate_range(payload)
+        raw_units, range_warnings = _read_range(path, source=source, source_range=payload)
+        warnings.extend(range_warnings)
+        units.extend(
+            AuthenticatedSourceTextUnit(
+                text=unit.text,
+                locator=unit.locator,
+                display_label=unit.display_label,
+                range_index=range_index,
+                page_start=unit.page_start,
+                page_end=unit.page_end,
+            )
+            for unit in raw_units
+            if _has_any_source_text(unit.text)
+        )
+    if _file_sha256(path) != source_hash:
+        raise SourceRangeReadError("资料文件在审核读取期间发生了变化。")
+    return AuthenticatedSourceRangeReadResult(
+        units=units,
+        source_content_hash=source_hash,
+        warnings=list(dict.fromkeys(warnings)),
+    )
+
+
+def _authenticated_structure_source_path(
+    *,
+    owner_user_id: str,
+    package_id: str,
+    source: SourceIngestionRecord,
+    structure: Any,
+) -> tuple[Path, str]:
+    if source.owner_user_id != owner_user_id or source.package_id != package_id:
+        raise SourceRangeReadError("当前用户无权读取这份资料。")
+    if source.status != "ready":
+        raise SourceRangeReadError("这份资料尚未准备好，暂时不能审核。")
+    if (
+        str(getattr(structure, "owner_user_id", "") or "") != owner_user_id
+        or str(getattr(structure, "package_id", "") or "") != package_id
+        or str(getattr(structure, "source_ingestion_id", "") or "") != source.id
+    ):
+        raise SourceRangeReadError("资料目录与当前文件身份不一致。")
+    source_hash = _content_hash(structure)
+    metadata_hash = str(source.metadata.get("content_hash") or "").strip().lower()
+    if not _is_sha256(source_hash) or (metadata_hash and metadata_hash != source_hash):
+        raise SourceRangeReadError("这份资料缺少可验证的文件指纹。")
+    path = _source_path(source)
+    if path is None:
+        raise SourceRangeReadError("找不到这份资料的原文件。")
+    if _file_sha256(path) != source_hash:
+        raise SourceRangeReadError("资料文件内容已变化，旧目录不再可用。")
+    return path, source_hash
 
 
 def _validate_identity(
