@@ -12,6 +12,7 @@ from app.services.lesson_factory import create_empty_lesson
 from app.services.lesson_package_format import (
     RidocAsset,
     RidocFormatError,
+    RidocSourcePage,
     build_ridoc_archive,
     read_ridoc,
     write_ridoc,
@@ -115,6 +116,21 @@ def test_ridoc_round_trip_preserves_merge_events_evidence_and_assets(tmp_path) -
         lesson,
         evidence_bundles=[evidence],
         assets=[RidocAsset(original_id="asset_1", mime_type="image/png", file_name="figure.png", content=b"png")],
+        source_pages=[
+            RidocSourcePage(
+                source_ingestion_id="source_1",
+                source_title="Reference",
+                source_file_name="reference.pdf",
+                source_mime_type="application/pdf",
+                source_content_hash="a" * 64,
+                page_number=10,
+                mime_type="image/png",
+                content=b"rendered-page",
+                width=1200,
+                height=1600,
+                reference_ids=("evidence_1",),
+            )
+        ],
     )
     target = write_ridoc(archive, tmp_path / "lesson.ridoc")
     restored = read_ridoc(target)
@@ -132,6 +148,12 @@ def test_ridoc_round_trip_preserves_merge_events_evidence_and_assets(tmp_path) -
     assert "/Users/example" not in serialized
     assert "token=secret" not in serialized
     assert restored.manifest["asset_index"][0]["original_id"] == "asset_1"
+    source_page = restored.manifest["source_page_index"][0]
+    assert source_page["page_number"] == 10
+    assert source_page["page_number_basis"] == "physical_1_based"
+    assert source_page["reference_ids"] == ["evidence_1"]
+    assert restored.assets[source_page["path"]] == b"rendered-page"
+    assert restored.manifest["capabilities"]["cited_source_pages_embedded"] is True
 
 
 def test_ridoc_rejects_checksum_tampering(tmp_path) -> None:

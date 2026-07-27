@@ -6,12 +6,14 @@ from typing import Iterable
 from app.models import EvidenceBundle, Lesson
 from app.services.board_asset_store import BoardAssetStore, get_board_asset_store
 from app.services.lesson_package_format import RidocAsset, build_ridoc_archive, write_ridoc
+from app.services.lesson_package_source_pages import collect_referenced_source_pages
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
 
 
 def export_lesson_ridoc(
     *,
     owner_user_id: str,
+    package_id: str,
     lesson: Lesson,
     target_path: Path,
     source_mode: str = "evidence",
@@ -31,6 +33,17 @@ def export_lesson_ridoc(
             else:
                 bundles.append(bundle)
 
+    source_pages = []
+    source_page_warnings: list[str] = []
+    if source_mode == "evidence":
+        source_pages, source_page_warnings = collect_referenced_source_pages(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson=lesson,
+            evidence_bundles=bundles,
+            evidence_store=evidence_store,
+        )
+
     assets = _lesson_board_assets(
         owner_user_id=owner_user_id,
         lesson_id=lesson.id,
@@ -41,6 +54,8 @@ def export_lesson_ridoc(
         evidence_bundles=bundles,
         missing_evidence_ids=missing_ids,
         assets=assets,
+        source_pages=source_pages,
+        source_page_warnings=source_page_warnings,
         source_mode=source_mode,
     )
     return write_ridoc(archive, target_path)
@@ -96,4 +111,3 @@ def _lesson_board_assets(
         )
         seen.add(reference.asset_id)
     return result
-

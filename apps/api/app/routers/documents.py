@@ -403,11 +403,12 @@ def export_lesson_package(
     user: UserView = Depends(current_user),
 ) -> FileResponse:
     workspace = load_workspace_for_user(user.id)
-    _, lesson = find_lesson_package(workspace, lesson_id)
+    package, lesson = find_lesson_package(workspace, lesson_id)
     target_path = _unique_export_path("ridoc")
     try:
         export_lesson_ridoc(
             owner_user_id=user.id,
+            package_id=package.id,
             lesson=lesson,
             target_path=target_path,
             source_mode=source_mode,

@@ -103,6 +103,32 @@ class RidocAsset:
         return hashlib.sha256(self.content).hexdigest()
 
 
+@dataclass(frozen=True)
+class RidocSourcePage:
+    source_ingestion_id: str
+    source_title: str
+    source_file_name: str
+    source_mime_type: str
+    source_content_hash: str
+    page_number: int
+    mime_type: str
+    content: bytes
+    width: int
+    height: int
+    reference_ids: tuple[str, ...] = ()
+
+    @property
+    def content_hash(self) -> str:
+        return hashlib.sha256(self.content).hexdigest()
+
+    @property
+    def archive_path(self) -> str:
+        source_key = self.source_content_hash or hashlib.sha256(
+            self.source_ingestion_id.encode("utf-8")
+        ).hexdigest()
+        return f"assets/source-pages/{source_key}/page-{self.page_number:06d}.png"
+
+
 @dataclass
 class RidocArchive:
     manifest: dict[str, Any]
@@ -133,6 +159,8 @@ def build_ridoc_archive(
     evidence_bundles: Iterable[EvidenceBundle] = (),
     missing_evidence_ids: Iterable[str] = (),
     assets: Iterable[RidocAsset] = (),
+    source_pages: Iterable[RidocSourcePage] = (),
+    source_page_warnings: Iterable[str] = (),
     source_mode: str = "evidence",
 ) -> RidocArchive:
     if source_mode not in {"evidence", "references"}:
@@ -226,10 +254,36 @@ def build_ridoc_archive(
             }
         )
 
+    source_page_index: list[dict[str, Any]] = []
+    for source_page in source_pages:
+        path = source_page.archive_path
+        asset_bytes[path] = source_page.content
+        source_page_index.append(
+            {
+                "source_ingestion_id": source_page.source_ingestion_id,
+                "source_title": source_page.source_title,
+                "source_file_name": Path(source_page.source_file_name).name,
+                "source_mime_type": source_page.source_mime_type,
+                "source_content_hash": source_page.source_content_hash,
+                "page_number": source_page.page_number,
+                "page_number_basis": "physical_1_based",
+                "representation": "rendered_full_page",
+                "path": path,
+                "content_hash": source_page.content_hash,
+                "mime_type": source_page.mime_type,
+                "size_bytes": len(source_page.content),
+                "width": source_page.width,
+                "height": source_page.height,
+                "reference_ids": list(source_page.reference_ids),
+            }
+        )
+
     lineage = _ridoc_lineage(graph_commits)
+    page_warnings = [str(value) for value in source_page_warnings if str(value).strip()]
     warnings: list[str] = []
     if missing_ids:
         warnings.append("Some referenced evidence bundles were unavailable during export.")
+    warnings.extend(page_warnings)
     manifest = {
         "document_id": f"ridoc_{uuid.uuid4().hex}",
         "spec_version": RIDOC_SPEC_VERSION,
@@ -250,10 +304,15 @@ def build_ridoc_archive(
             "merge_history": True,
             "board_assets_embedded": bool(asset_index),
             "source_evidence_embedded": source_mode == "evidence" and bool(bundle_payloads),
+            "cited_source_pages_embedded": bool(source_page_index),
+            "cited_source_pages_complete": not page_warnings,
             "original_sources_embedded": False,
-            "grounded_continuation": "partial",
+            "grounded_continuation": (
+                "cited_pages" if source_page_index and not warnings else "partial"
+            ),
         },
         "asset_index": asset_index,
+        "source_page_index": source_page_index,
         "lineage": lineage,
         "warnings": warnings,
     }
@@ -545,6 +604,33 @@ def validate_ridoc_archive(archive: RidocArchive) -> None:
         if payload is None or hashlib.sha256(payload).hexdigest() != digest:
             raise RidocFormatError("RIDOC asset index does not match embedded asset bytes.")
 
+    source_page_index = manifest.get("source_page_index") or []
+    seen_source_pages: set[tuple[str, int]] = set()
+    for item in source_page_index:
+        if not isinstance(item, dict):
+            raise RidocFormatError("RIDOC source page index entry is invalid.")
+        source_id = item.get("source_ingestion_id")
+        page_number = item.get("page_number")
+        path = item.get("path")
+        digest = item.get("content_hash")
+        if (
+            not isinstance(source_id, str)
+            or not source_id
+            or not isinstance(page_number, int)
+            or isinstance(page_number, bool)
+            or page_number < 1
+            or not isinstance(path, str)
+            or not path.startswith("assets/source-pages/")
+        ):
+            raise RidocFormatError("RIDOC source page index entry is invalid.")
+        identity = (source_id, page_number)
+        if identity in seen_source_pages:
+            raise RidocFormatError("RIDOC source page index contains duplicate pages.")
+        seen_source_pages.add(identity)
+        payload = archive.assets.get(path)
+        if payload is None or hashlib.sha256(payload).hexdigest() != digest:
+            raise RidocFormatError("RIDOC source page index does not match embedded page bytes.")
+
 
 def validate_history_graph(
     graph: Mapping[str, Any],
@@ -708,4 +794,3 @@ def _read_events_entry(archive_file: zipfile.ZipFile, info: zipfile.ZipInfo) -> 
     if not all(isinstance(event, dict) for event in events):
         raise RidocFormatError("RIDOC event timeline must contain JSON objects.")
     return events
-
