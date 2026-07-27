@@ -37,6 +37,9 @@ bridge. If OpenClass is still authenticated while Answer has no valid session,
 the bridge returns through the OpenClass `/community` entry and completes SSO
 automatically. A short per-tab cooldown prevents redirect loops when the
 connector is unavailable.
+The same adapter script replaces externally hosted Answer avatars with a
+deterministic local fallback when Answer's external-content policy blocks the
+image. Other external media remains subject to the configured privacy choice.
 The theme also adds a top-left link back to OpenClass. Set `OPENCLASS_HOME_URL`
 to the public `/home` URL in deployed environments; it defaults to
 `http://127.0.0.1:3000/home` for local development.

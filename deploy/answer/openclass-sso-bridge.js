@@ -57,3 +57,98 @@
     }
   }).catch(function ignoreUnavailableAnswerSession() {});
 })();
+
+(function installExternalAvatarFallback() {
+  var palette = ["#dce9e4", "#e8e1d4", "#dfe5ef", "#eadde3", "#e3e0ef"];
+
+  function isExternalAvatar(image) {
+    if (!image.classList.contains("rounded-circle")) {
+      return false;
+    }
+    var source = image.getAttribute("src") || image.dataset.src || "";
+    if (!source || source.indexOf("data:") === 0 || source.indexOf("blob:") === 0) {
+      return false;
+    }
+    try {
+      return new URL(source, window.location.href).origin !== window.location.origin;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function initials(label) {
+    var characters = Array.from((label || "U").trim());
+    return (characters.slice(0, 2).join("") || "U").toUpperCase();
+  }
+
+  function avatarDataUrl(label, requestedSize) {
+    var size = Math.max(32, Number(requestedSize) || 96);
+    var hash = Array.from(label || "U").reduce(function combine(value, character) {
+      return ((value * 31) + character.codePointAt(0)) >>> 0;
+    }, 0);
+    var canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    var context = canvas.getContext("2d");
+    if (!context) {
+      return "";
+    }
+    context.fillStyle = palette[hash % palette.length];
+    context.fillRect(0, 0, size, size);
+    context.fillStyle = "#3f3b35";
+    context.font = "600 " + Math.round(size * 0.36) + "px system-ui, sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(initials(label), size / 2, size / 2 + 1);
+    return canvas.toDataURL("image/png");
+  }
+
+  function replaceAvatar(image) {
+    if (!(image instanceof HTMLImageElement) || image.dataset.openclassAvatarFallback === "true") {
+      return;
+    }
+    if (!isExternalAvatar(image)) {
+      return;
+    }
+    var fallback = avatarDataUrl(image.alt, image.getAttribute("width") || image.width);
+    if (!fallback) {
+      return;
+    }
+    image.dataset.openclassAvatarFallback = "true";
+    image.removeAttribute("data-src");
+    image.classList.remove("broken");
+    image.src = fallback;
+  }
+
+  function scanAvatars(root) {
+    if (root instanceof HTMLImageElement) {
+      replaceAvatar(root);
+    }
+    if (root instanceof Element || root instanceof Document) {
+      root.querySelectorAll("img.rounded-circle").forEach(replaceAvatar);
+    }
+  }
+
+  var observer = new MutationObserver(function handleAvatarMutations(mutations) {
+    mutations.forEach(function inspectMutation(mutation) {
+      if (mutation.type === "attributes") {
+        replaceAvatar(mutation.target);
+        return;
+      }
+      mutation.addedNodes.forEach(scanAvatars);
+    });
+  });
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["src", "data-src"],
+    childList: true,
+    subtree: true,
+  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function scanLoadedAvatars() {
+      scanAvatars(document);
+    }, { once: true });
+  } else {
+    scanAvatars(document);
+  }
+})();

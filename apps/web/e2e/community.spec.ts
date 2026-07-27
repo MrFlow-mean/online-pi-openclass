@@ -159,6 +159,25 @@ test("keeps an existing Answer session without restarting SSO", async ({ page, b
 });
 
 
+test("replaces a blocked external Answer avatar with a local fallback", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  await page.route("https://images.example.com/**", (route) => route.abort());
+  await page.route(/\/community\/$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerSsoBridge}</script><img class="rounded-circle" src="https://images.example.com/avatar.png" width="48" height="48" alt="OpenClass Learner">`,
+  }));
+
+  await page.goto("/community/");
+
+  const avatar = page.getByRole("img", { name: "OpenClass Learner" });
+  await expect(avatar).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect(avatar).toHaveAttribute("data-openclass-avatar-fallback", "true");
+  await expect(avatar).not.toHaveAttribute("data-src", /.+/);
+});
+
+
 test("reports an unavailable Answer service without exposing a second forum", async ({ page }) => {
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 401,
