@@ -160,12 +160,12 @@ test("creates a package and lesson, edits the document, and persists a version",
 
   const shareHref = await historyNode.getByRole("link", { name: "分享到社区" }).getAttribute("href");
   expect(shareHref).toBeTruthy();
-  const encodedPrefill = new URL(shareHref!, "http://localhost").searchParams.get("prefill");
-  expect(encodedPrefill).toBeTruthy();
-  const prefill = decodeURIComponent(encodedPrefill!);
-  expect(prefill).toContain(`title: "${lessonTitle} · Auto Save"`);
-  expect(prefill).toContain("> 分支：main");
-  expect(prefill).toContain(documentText);
+  const shareUrl = new URL(shareHref!, "http://localhost");
+  expect(shareUrl.searchParams.get("reference")).toBe("history_node");
+  expect(shareUrl.searchParams.get("lesson_id")).toBeTruthy();
+  expect(shareUrl.searchParams.get("history_node")).toBeTruthy();
+  expect(shareUrl.searchParams.has("prefill")).toBe(false);
+  expect(shareHref).not.toContain(documentText);
 });
 
 test("sets standalone lessons and course packages to public or private", async ({ page }) => {
@@ -181,7 +181,10 @@ test("sets standalone lessons and course packages to public or private", async (
     data: { topic: lessonTitle, start_blank: true },
   });
   expect(generated.ok()).toBeTruthy();
-  const lesson = (await generated.json()).lessons[0] as { id: string };
+  const lesson = (await generated.json()).lessons[0] as {
+    id: string;
+    history_graph: { commits: Array<{ id: string }> };
+  };
 
   await page.reload();
   const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
@@ -210,6 +213,18 @@ test("sets standalone lessons and course packages to public or private", async (
   await page.goto(publicLessonPath);
   await expect(page.getByText(lessonTitle).first()).toBeVisible();
   await expect(page.getByText("Public · 只读")).toBeVisible();
+
+  const historyNodeId = lesson.history_graph.commits[0]?.id;
+  expect(historyNodeId).toBeTruthy();
+  await page.goto(`${publicLessonPath}?history_node=${encodeURIComponent(historyNodeId!)}`);
+  await expect(page.getByText("当前展示的是该课程被引用的历史节点。")).toBeVisible();
+
+  const unavailableNodeResponse = page.waitForResponse(
+    (response) => response.url().includes(`/api/public/lessons/${lesson.id}?history_node=missing-node`)
+  );
+  await page.goto(`${publicLessonPath}?history_node=missing-node`);
+  expect((await unavailableNodeResponse).status()).toBe(404);
+  await expect(page.getByText(/这个项目不存在/)).toBeVisible();
 
   await page.goto("/home");
   const privateLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
@@ -273,25 +288,51 @@ test("sets standalone lessons and course packages to public or private", async (
   await expect(page.getByText("All rights reserved.")).toBeVisible();
 
   await createPackageFromHome(page, packageTitle);
-  const packageCard = page.locator("[data-package-selection-root]").filter({ hasText: packageTitle }).first();
-  await expect(packageCard).toBeVisible();
-  const packageId = await page.evaluate(async (apiBase) => {
+  await page.locator("[data-package-selection-root]").filter({ hasText: packageTitle }).first().click();
+  const packagedLessonTitle = `课程包内课节 ${unique}`;
+  await createLessonFromEmptyStudio(page, packagedLessonTitle);
+  const packageContext = await page.evaluate(async ({ apiBase, expectedTitle }) => {
     const authToken = window.sessionStorage.getItem("openclass.guest.auth.token");
     const response = await fetch(`${apiBase}/api/workspace`, {
       headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
     });
-    const workspace = (await response.json()) as { active_package_id: string };
-    return workspace.active_package_id;
-  }, API_BASE_URL);
+    const workspace = (await response.json()) as {
+      packages: Array<{
+        id: string;
+        title: string;
+        lessons: Array<{ id: string; history_graph: { commits: Array<{ id: string }> } }>;
+      }>;
+    };
+    const coursePackage = workspace.packages.find((item) => item.title === expectedTitle);
+    const packagedLesson = coursePackage?.lessons[0];
+    if (!coursePackage || !packagedLesson) throw new Error("Public package lesson fixture was not found");
+    return {
+      packageId: coursePackage.id,
+      lessonId: packagedLesson.id,
+      historyNodeId: packagedLesson.history_graph.commits[0]?.id,
+    };
+  }, { apiBase: API_BASE_URL, expectedTitle: packageTitle });
+  expect(packageContext.historyNodeId).toBeTruthy();
+
+  await page.goto("/home");
+  const packageCard = page.locator("[data-package-selection-root]").filter({ hasText: packageTitle }).first();
+  await expect(packageCard).toBeVisible();
+  await packageCard.click();
   const packageVisibilityResponse = page.waitForResponse(
-    (response) => response.url().endsWith(`/api/packages/${packageId}`) && response.request().method() === "POST"
+    (response) => response.url().endsWith(`/api/packages/${packageContext.packageId}`) && response.request().method() === "POST"
   );
   await page.locator('button[aria-label="课程包设为 Public"]:visible').click();
   expect((await packageVisibilityResponse).ok()).toBeTruthy();
 
-  await page.goto(`/courses/shared/package/${packageId}`);
+  await page.goto(`/courses/shared/package/${packageContext.packageId}`);
   await expect(page.getByText(packageTitle).first()).toBeVisible();
   await expect(page.getByText("Public · 只读")).toBeVisible();
+
+  await page.goto(
+    `/courses/shared/lesson/${packageContext.lessonId}?history_node=${encodeURIComponent(packageContext.historyNodeId!)}`
+  );
+  await expect(page.getByText(packagedLessonTitle).first()).toBeVisible();
+  await expect(page.getByText("当前展示的是该课程被引用的历史节点。")).toBeVisible();
 });
 
 test("connects a personal API key from the Models panel without exposing it", async ({ page }) => {
