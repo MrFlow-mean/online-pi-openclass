@@ -1825,6 +1825,7 @@ class UserView(BaseModel):
     avatar_url: str | None = None
     created_at: str
     last_login_at: str | None = None
+    email_verified_at: str | None = None
     auth_identities: list[AuthIdentityView] = Field(default_factory=list)
 
 
@@ -2019,6 +2020,7 @@ class AuthRequest(BaseModel):
     email: str | None = None
     phone: str | None = None
     guest_token: str | None = None
+    turnstile_token: str | None = Field(default=None, max_length=2048)
     password: str = Field(min_length=8, max_length=256)
 
     def account_identifier(self) -> str:
@@ -2026,12 +2028,58 @@ class AuthRequest(BaseModel):
 
 
 class AuthSessionResponse(BaseModel):
-    token: str
+    token: str | None = None
     user: UserView
+
+
+class AuthMessageResponse(BaseModel):
+    message: str
+
+
+class HumanVerificationRequest(BaseModel):
+    turnstile_token: str | None = Field(default=None, max_length=2048)
+
+
+class PasswordResetRequest(BaseModel):
+    challenge_id: str
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    password: str = Field(min_length=8, max_length=256)
+    password_confirmation: str = Field(min_length=8, max_length=256)
+    turnstile_token: str | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="after")
+    def passwords_must_match(self) -> PasswordResetRequest:
+        if self.password != self.password_confirmation:
+            raise ValueError("两次输入的密码不一致")
+        return self
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+    new_password_confirmation: str | None = Field(default=None, min_length=8, max_length=256)
+
+    @model_validator(mode="after")
+    def passwords_must_match(self) -> PasswordChangeRequest:
+        if self.new_password_confirmation is not None and self.new_password != self.new_password_confirmation:
+            raise ValueError("两次输入的新密码不一致")
+        return self
+
+
+class AccountDeleteRequest(BaseModel):
+    password: str | None = Field(default=None, max_length=256)
+    confirmation: Literal["DELETE"]
+
+
+class AccountDataExport(BaseModel):
+    exported_at: str
+    user: dict[str, Any]
+    data: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
 
 class EmailCodeRequest(BaseModel):
     email: str
+    turnstile_token: str | None = Field(default=None, max_length=2048)
 
 
 class EmailCodeRequestResponse(BaseModel):
@@ -2044,6 +2092,7 @@ class EmailCodeVerifyRequest(BaseModel):
     challenge_id: str
     code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
     guest_token: str | None = None
+    turnstile_token: str | None = Field(default=None, max_length=2048)
 
 
 class EmailRegistrationRequest(BaseModel):
@@ -2054,6 +2103,7 @@ class EmailRegistrationRequest(BaseModel):
     challenge_id: str
     code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
     guest_token: str | None = None
+    turnstile_token: str | None = Field(default=None, max_length=2048)
 
     @field_validator("username")
     @classmethod

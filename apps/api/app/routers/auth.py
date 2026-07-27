@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 from urllib import parse
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket
 from fastapi.responses import RedirectResponse
 
 from app.models import (
     AdminOverview,
+    AccountDataExport,
+    AccountDeleteRequest,
+    AuthMessageResponse,
     AuthProviderView,
     AuthRequest,
     AuthSessionResponse,
@@ -15,15 +18,64 @@ from app.models import (
     EmailCodeRequestResponse,
     EmailRegistrationRequest,
     EmailCodeVerifyRequest,
+    HumanVerificationRequest,
+    PasswordChangeRequest,
+    PasswordResetRequest,
     UserView,
 )
-from app.services.auth_service import AuthService, bearer_token_from_request, bearer_token_from_websocket
+from app.services.auth_service import (
+    AUTH_COOKIE_NAME,
+    GUEST_AUTH_COOKIE_NAME,
+    AuthService,
+    auth_cookie_max_age,
+    auth_cookie_secure,
+    bearer_token_from_request,
+    bearer_token_from_websocket,
+)
 from app.services.community_oauth import community_oauth_service
+from app.services.human_verification import require_turnstile_verification
+from app.services.rate_limiter import enforce_auth_rate_limit
 from app.services.workspace_state import DATABASE_PATH
 
 
 router = APIRouter(prefix="/api")
 auth_service = AuthService(DATABASE_PATH)
+
+
+def _set_auth_cookie(response: Response, request: Request, token: str) -> None:
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=auth_cookie_max_age(),
+        httponly=True,
+        secure=auth_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+    response.delete_cookie(
+        GUEST_AUTH_COOKIE_NAME,
+        httponly=False,
+        secure=auth_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_auth_cookie(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        AUTH_COOKIE_NAME,
+        httponly=True,
+        secure=auth_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+    response.delete_cookie(
+        GUEST_AUTH_COOKIE_NAME,
+        httponly=False,
+        secure=auth_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
 
 
 def current_user(request: Request) -> UserView:
@@ -43,7 +95,13 @@ def current_admin(user: UserView = Depends(current_user)) -> UserView:
 
 
 @router.post("/auth/register", response_model=AuthSessionResponse)
-def register(payload: EmailRegistrationRequest) -> AuthSessionResponse:
+async def register(payload: EmailRegistrationRequest, request: Request, response: Response) -> AuthSessionResponse:
+    enforce_auth_rate_limit("register", request, account_identifier=payload.email)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="register",
+    )
     token, user = auth_service.register_email(
         email=payload.email,
         username=payload.username,
@@ -52,17 +110,31 @@ def register(payload: EmailRegistrationRequest) -> AuthSessionResponse:
         code=payload.code,
         guest_token=payload.guest_token,
     )
-    return AuthSessionResponse(token=token, user=user)
+    _set_auth_cookie(response, request, token)
+    return AuthSessionResponse(user=user)
 
 
 @router.post("/auth/login", response_model=AuthSessionResponse)
-def login(payload: AuthRequest) -> AuthSessionResponse:
+async def login(payload: AuthRequest, request: Request, response: Response) -> AuthSessionResponse:
+    enforce_auth_rate_limit("login", request, account_identifier=payload.account_identifier())
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="login",
+    )
     token, user = auth_service.login(payload.account_identifier(), payload.password, guest_token=payload.guest_token)
-    return AuthSessionResponse(token=token, user=user)
+    _set_auth_cookie(response, request, token)
+    return AuthSessionResponse(user=user)
 
 
 @router.post("/auth/email/code", response_model=EmailCodeRequestResponse)
-def request_email_code(payload: EmailCodeRequest) -> EmailCodeRequestResponse:
+async def request_email_code(payload: EmailCodeRequest, request: Request) -> EmailCodeRequestResponse:
+    enforce_auth_rate_limit("login", request, account_identifier=payload.email)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="email_code_login",
+    )
     challenge_id, expires_in_seconds = auth_service.request_email_code(payload.email)
     return EmailCodeRequestResponse(
         challenge_id=challenge_id,
@@ -72,7 +144,13 @@ def request_email_code(payload: EmailCodeRequest) -> EmailCodeRequestResponse:
 
 
 @router.post("/auth/register/email/code", response_model=EmailCodeRequestResponse)
-def request_registration_email_code(payload: EmailCodeRequest) -> EmailCodeRequestResponse:
+async def request_registration_email_code(payload: EmailCodeRequest, request: Request) -> EmailCodeRequestResponse:
+    enforce_auth_rate_limit("register", request, account_identifier=payload.email)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="register",
+    )
     challenge_id, expires_in_seconds = auth_service.request_registration_email_code(payload.email)
     return EmailCodeRequestResponse(
         challenge_id=challenge_id,
@@ -82,19 +160,144 @@ def request_registration_email_code(payload: EmailCodeRequest) -> EmailCodeReque
 
 
 @router.post("/auth/email/verify", response_model=AuthSessionResponse)
-def verify_email_code(payload: EmailCodeVerifyRequest) -> AuthSessionResponse:
+async def verify_email_code(payload: EmailCodeVerifyRequest, request: Request, response: Response) -> AuthSessionResponse:
+    enforce_auth_rate_limit("login", request, account_identifier=payload.challenge_id)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="email_code_login",
+    )
     token, user = auth_service.verify_email_code(
         payload.challenge_id,
         payload.code,
         guest_token=payload.guest_token,
     )
-    return AuthSessionResponse(token=token, user=user)
+    _set_auth_cookie(response, request, token)
+    return AuthSessionResponse(user=user)
 
 
 @router.post("/auth/guest", response_model=AuthSessionResponse)
-def guest() -> AuthSessionResponse:
+def guest(request: Request) -> AuthSessionResponse:
+    enforce_auth_rate_limit("login", request)
     token, user = auth_service.start_guest_session()
     return AuthSessionResponse(token=token, user=user)
+
+
+@router.post("/auth/password/forgot", response_model=EmailCodeRequestResponse)
+async def forgot_password(payload: EmailCodeRequest, request: Request) -> EmailCodeRequestResponse:
+    enforce_auth_rate_limit("password_recovery", request, account_identifier=payload.email)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="password_forgot",
+    )
+    challenge_id, expires_in_seconds = auth_service.request_password_reset(payload.email)
+    return EmailCodeRequestResponse(
+        challenge_id=challenge_id,
+        expires_in_seconds=expires_in_seconds,
+        message="如果该邮箱已注册，重置验证码已发送",
+    )
+
+
+@router.post("/auth/password/reset", response_model=AuthMessageResponse)
+async def reset_password(payload: PasswordResetRequest, request: Request) -> AuthMessageResponse:
+    enforce_auth_rate_limit("password_recovery", request, account_identifier=payload.challenge_id)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="password_reset",
+    )
+    auth_service.reset_password(payload.challenge_id, payload.code, payload.password)
+    return AuthMessageResponse(message="密码已重置，请重新登录")
+
+
+@router.post("/auth/email/verification/request", response_model=EmailCodeRequestResponse)
+async def request_email_verification(
+    payload: HumanVerificationRequest,
+    request: Request,
+    user: UserView = Depends(current_user),
+) -> EmailCodeRequestResponse:
+    enforce_auth_rate_limit("password_recovery", request, account_identifier=user.id)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="email_verification_request",
+    )
+    challenge_id, expires_in_seconds = auth_service.request_email_verification(user.id)
+    return EmailCodeRequestResponse(
+        challenge_id=challenge_id,
+        expires_in_seconds=expires_in_seconds,
+        message="邮箱验证码已发送",
+    )
+
+
+@router.post("/auth/email/verification/confirm", response_model=UserView)
+async def confirm_email_verification(
+    payload: EmailCodeVerifyRequest,
+    request: Request,
+    user: UserView = Depends(current_user),
+) -> UserView:
+    enforce_auth_rate_limit("password_recovery", request, account_identifier=user.id)
+    await require_turnstile_verification(
+        request,
+        token=payload.turnstile_token,
+        expected_action="email_verification_confirm",
+    )
+    return auth_service.confirm_email_verification(user.id, payload.challenge_id, payload.code)
+
+
+@router.post("/auth/password/change", response_model=AuthSessionResponse)
+def change_password(
+    payload: PasswordChangeRequest,
+    request: Request,
+    response: Response,
+    user: UserView = Depends(current_user),
+) -> AuthSessionResponse:
+    current_token = bearer_token_from_request(request)
+    token, refreshed_user = auth_service.change_password(
+        user.id,
+        current_token,
+        payload.current_password,
+        payload.new_password,
+    )
+    _set_auth_cookie(response, request, token)
+    return AuthSessionResponse(user=refreshed_user)
+
+
+@router.post("/auth/logout", response_model=AuthMessageResponse)
+def logout(request: Request, response: Response) -> AuthMessageResponse:
+    auth_service.logout(bearer_token_from_request(request))
+    _clear_auth_cookie(response, request)
+    return AuthMessageResponse(message="已退出登录")
+
+
+@router.post("/auth/sessions/revoke-all", response_model=AuthMessageResponse)
+def revoke_all_sessions(
+    request: Request,
+    response: Response,
+    user: UserView = Depends(current_user),
+) -> AuthMessageResponse:
+    auth_service.revoke_all_sessions(user.id)
+    _clear_auth_cookie(response, request)
+    return AuthMessageResponse(message="所有会话已撤销，请重新登录")
+
+
+@router.get("/auth/export", response_model=AccountDataExport)
+@router.get("/auth/data-export", response_model=AccountDataExport)
+def export_account_data(user: UserView = Depends(current_user)) -> AccountDataExport:
+    return AccountDataExport.model_validate(auth_service.export_account_data(user.id))
+
+
+@router.delete("/auth/account", response_model=AuthMessageResponse)
+def delete_account(
+    payload: AccountDeleteRequest,
+    request: Request,
+    response: Response,
+    user: UserView = Depends(current_user),
+) -> AuthMessageResponse:
+    auth_service.delete_account(user.id, payload.password, payload.confirmation)
+    _clear_auth_cookie(response, request)
+    return AuthMessageResponse(message="账户已注销")
 
 
 @router.get("/auth/me", response_model=UserView)
@@ -180,8 +383,8 @@ def oauth_start(
     provider: str,
     request: Request,
     next: str = "/",  # noqa: A002
-    guest_token: str | None = None,
 ) -> RedirectResponse:
+    guest_token = request.cookies.get(GUEST_AUTH_COOKIE_NAME)
     return RedirectResponse(
         auth_service.oauth_authorization_url(provider, next, request, guest_token=guest_token),
         status_code=303,
@@ -198,10 +401,12 @@ async def oauth_callback(provider: str, request: Request) -> RedirectResponse:
         target = f"{str(request.base_url).rstrip('/')}/auth/callback?{parse.urlencode({'error': payload.get('error_description') or payload['error']})}"
         return RedirectResponse(target, status_code=303)
     token, user, next_path, frontend_origin = auth_service.complete_oauth_callback(provider, payload, request)
-    return RedirectResponse(
+    response = RedirectResponse(
         auth_service.oauth_frontend_redirect_url(token, user, next_path, frontend_origin, request),
         status_code=303,
     )
+    _set_auth_cookie(response, request, token)
+    return response
 
 
 @router.get("/admin/overview", response_model=AdminOverview)

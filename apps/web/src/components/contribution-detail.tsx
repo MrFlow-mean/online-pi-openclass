@@ -18,7 +18,7 @@ import {
 
 import { BrandMark } from "@/components/brand-mark";
 import { CommunityMarkdown } from "@/components/community/community-markdown";
-import { api, readEffectiveAuthToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { LessonContributionEvent, LessonContributionStatus, LessonContributionView, UserView } from "@/types";
 
 const STATUS_LABELS: Record<LessonContributionStatus, string> = {
@@ -97,12 +97,10 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
       setError(null);
       try {
         let currentUser: UserView | null = null;
-        if (readEffectiveAuthToken()) {
-          try {
-            currentUser = await api.getCurrentUser();
-          } catch {
-            currentUser = null;
-          }
+        try {
+          currentUser = await api.getCurrentUser();
+        } catch {
+          currentUser = null;
         }
         const view = currentUser && currentUser.role !== "guest"
           ? await api.getLessonContribution(contributionId)
@@ -199,7 +197,7 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
               return <article key={event.id} className="rounded-2xl border border-stone-200 p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{event.actor.display_name}</p><p className="mt-1 text-xs text-stone-400">{formatDate(event.created_at)}{event.metadata.edited ? " · 已编辑" : ""}</p></div>{own && !deleted ? <div className="flex gap-1"><button type="button" onClick={() => { setEditingCommentId(event.id); setEditingComment(event.body); }} className="rounded-lg p-2 text-stone-400 hover:bg-stone-100 hover:text-stone-700"><Pencil className="h-4 w-4" /></button><button type="button" disabled={busy} onClick={() => void run((current) => api.deleteLessonContributionComment(current.id, event.id, current.version))} className="rounded-lg p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-700"><Trash2 className="h-4 w-4" /></button></div> : null}</div>{editingCommentId === event.id ? <div className="mt-3 flex gap-2"><input value={editingComment} onChange={(change) => setEditingComment(change.target.value)} className="min-w-0 flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!editingComment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.editLessonContributionComment(current.id, event.id, current.version, editingComment); setEditingCommentId(null); return updated; })} className="rounded-xl bg-stone-950 px-3 py-2 text-sm font-semibold text-white">保存</button></div> : <p className={`mt-3 whitespace-pre-wrap text-sm leading-6 ${deleted ? "italic text-stone-400" : "text-stone-700"}`}>{deleted ? "该评论已删除" : event.body}</p>}</article>;
             })}
           </div>
-          {contribution.viewer_permissions.can_comment ? <div className="mt-5 flex gap-2 border-t border-stone-100 pt-5"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="参与这次课程改进讨论" rows={3} className="min-w-0 flex-1 resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!comment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.addLessonContributionComment(current.id, current.version, comment); setComment(""); return updated; })} className="inline-flex h-11 items-center gap-2 self-end rounded-full bg-stone-950 px-4 text-sm font-semibold text-white disabled:opacity-50"><Send className="h-4 w-4" />发送</button></div> : !readEffectiveAuthToken() ? <p className="mt-5 border-t border-stone-100 pt-5 text-sm text-stone-500"><Link href={`/login?next=${encodeURIComponent(`/contributions/${contribution.id}`)}`} className="font-semibold text-stone-950 underline">登录正式账号</Link> 后参与讨论。</p> : null}
+          {contribution.viewer_permissions.can_comment ? <div className="mt-5 flex gap-2 border-t border-stone-100 pt-5"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="参与这次课程改进讨论" rows={3} className="min-w-0 flex-1 resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!comment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.addLessonContributionComment(current.id, current.version, comment); setComment(""); return updated; })} className="inline-flex h-11 items-center gap-2 self-end rounded-full bg-stone-950 px-4 text-sm font-semibold text-white disabled:opacity-50"><Send className="h-4 w-4" />发送</button></div> : !user || user.role === "guest" ? <p className="mt-5 border-t border-stone-100 pt-5 text-sm text-stone-500"><Link href={`/login?next=${encodeURIComponent(`/contributions/${contribution.id}`)}`} className="font-semibold text-stone-950 underline">登录正式账号</Link> 后参与讨论。</p> : null}
         </section>
       </div>
     </main>

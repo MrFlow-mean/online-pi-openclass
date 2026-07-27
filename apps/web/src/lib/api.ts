@@ -30,6 +30,8 @@ import type {
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
   AIModelSelection,
+  AccountActionResponse,
+  PasswordResetRequest,
   SourceCatalogBatchView,
   SourceCatalogView,
   SourceIngestionRecord,
@@ -44,6 +46,8 @@ export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
 export const OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY = "openclass.guest.auth.token";
 export const OPENCLASS_CONNECTED_GUEST_AUTH_TOKEN_STORAGE_KEY = "openclass.connected-guest.auth.token";
 let guestAuthToken: string | null = null;
+let transientAuthToken: string | null = null;
+let legacyAuthTokenRead = false;
 
 function readCookie(name: string) {
   if (typeof document === "undefined") {
@@ -109,7 +113,21 @@ export function readAuthToken() {
   if (typeof window === "undefined") {
     return null;
   }
-  return window.localStorage.getItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  if (transientAuthToken) {
+    return transientAuthToken;
+  }
+  if (legacyAuthTokenRead) {
+    return null;
+  }
+  legacyAuthTokenRead = true;
+  const legacyLocalToken = window.localStorage.getItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  const legacyCookieToken = readCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  transientAuthToken = legacyLocalToken || legacyCookieToken;
+  window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  if (legacyCookieToken) {
+    clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  }
+  return transientAuthToken;
 }
 
 export function readGuestAuthToken() {
@@ -127,17 +145,17 @@ export function readEffectiveAuthToken() {
   return readAuthToken() || readGuestAuthToken();
 }
 
-export function storeAuthToken(token: string) {
+export function storeAuthToken(token?: string | null) {
   if (typeof window === "undefined") {
     return;
   }
+  transientAuthToken = token || null;
+  legacyAuthTokenRead = true;
   guestAuthToken = null;
   clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
   clearCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
   window.localStorage.removeItem(OPENCLASS_CONNECTED_GUEST_AUTH_TOKEN_STORAGE_KEY);
-  window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
-  const secure = window.location.protocol === "https:" ? "; Secure" : "";
-  document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
+  window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
 }
 
 export function storeGuestAuthToken(token: string) {
@@ -165,6 +183,8 @@ export function persistConnectedGuestAuthToken() {
 }
 
 export function clearAuthToken() {
+  transientAuthToken = null;
+  legacyAuthTokenRead = true;
   guestAuthToken = null;
   if (typeof window === "undefined") {
     return;
@@ -172,7 +192,9 @@ export function clearAuthToken() {
   window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
   window.localStorage.removeItem(OPENCLASS_CONNECTED_GUEST_AUTH_TOKEN_STORAGE_KEY);
   clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
-  clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  if (readCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY)) {
+    clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  }
   clearCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
 }
 
@@ -187,28 +209,15 @@ function authHeaders(headers?: HeadersInit) {
   return nextHeaders;
 }
 
-function withAuthTokenQuery(url: string) {
-  if (typeof window === "undefined") {
-    return url;
-  }
-  const token = readEffectiveAuthToken();
-  if (!token) {
-    return url;
-  }
-  const nextUrl = new URL(url, window.location.href);
-  nextUrl.searchParams.set("access_token", token);
-  return nextUrl.toString();
-}
-
 export function getApiWebSocketUrl(pathOrUrl: string) {
   if (pathOrUrl.startsWith("ws://") || pathOrUrl.startsWith("wss://")) {
-    return withAuthTokenQuery(pathOrUrl);
+    return pathOrUrl;
   }
 
   const apiBase = getApiBase();
   const baseUrl = new URL(apiBase);
   baseUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:";
-  return withAuthTokenQuery(new URL(pathOrUrl, baseUrl).toString());
+  return new URL(pathOrUrl, baseUrl).toString();
 }
 
 async function responseErrorMessage(response: Response, fallback: string) {
@@ -241,6 +250,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
     cache: "no-store",
+    credentials: "include",
   });
 
   if (!response.ok) {
@@ -420,6 +430,7 @@ async function streamRequest(
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       cache: "no-store",
+      credentials: "include",
       signal: options?.signal,
     });
   } catch (fetchError) {
@@ -490,29 +501,92 @@ export const api = {
       body: JSON.stringify({ ...payload, guest_token: readGuestAuthToken() }),
     });
   },
-  login(identifier: string, password: string) {
+  login(identifier: string, password: string, turnstileToken?: string | null) {
     return request<AuthSessionResponse>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
+      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken(), ...(turnstileToken ? { turnstile_token: turnstileToken } : {}) }),
     });
   },
-  requestEmailCode(email: string) {
+  requestEmailCode(email: string, turnstileToken?: string | null) {
     return request<EmailCodeRequestResponse>("/api/auth/email/code", {
       method: "POST",
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, ...(turnstileToken ? { turnstile_token: turnstileToken } : {}) }),
     });
   },
-  requestRegistrationEmailCode(email: string) {
+  requestRegistrationEmailCode(email: string, turnstileToken?: string | null) {
     return request<EmailCodeRequestResponse>("/api/auth/register/email/code", {
       method: "POST",
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, ...(turnstileToken ? { turnstile_token: turnstileToken } : {}) }),
     });
   },
-  verifyEmailCode(challengeId: string, code: string) {
+  verifyEmailCode(challengeId: string, code: string, turnstileToken?: string | null) {
     return request<AuthSessionResponse>("/api/auth/email/verify", {
       method: "POST",
-      body: JSON.stringify({ challenge_id: challengeId, code, guest_token: readGuestAuthToken() }),
+      body: JSON.stringify({
+        challenge_id: challengeId,
+        code,
+        guest_token: readGuestAuthToken(),
+        ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
+      }),
     });
+  },
+  requestPasswordReset(email: string, turnstileToken?: string | null) {
+    return request<EmailCodeRequestResponse>("/api/auth/password/forgot", {
+      method: "POST",
+      body: JSON.stringify({ email, turnstile_token: turnstileToken }),
+    });
+  },
+  resetPassword(payload: PasswordResetRequest) {
+    return request<AccountActionResponse>("/api/auth/password/reset", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  requestEmailVerification(turnstileToken?: string | null) {
+    return request<EmailCodeRequestResponse>("/api/auth/email/verification/request", {
+      method: "POST",
+      body: JSON.stringify({ turnstile_token: turnstileToken }),
+    });
+  },
+  confirmEmailVerification(challengeId: string, code: string, turnstileToken?: string | null) {
+    return request<UserView>("/api/auth/email/verification/confirm", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId, code, turnstile_token: turnstileToken }),
+    });
+  },
+  changePassword(currentPassword: string, newPassword: string, newPasswordConfirmation: string) {
+    return request<AuthSessionResponse>("/api/auth/password/change", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+        new_password_confirmation: newPasswordConfirmation,
+      }),
+    });
+  },
+  logout() {
+    return request<AccountActionResponse>("/api/auth/logout", { method: "POST" });
+  },
+  revokeAllSessions() {
+    return request<AccountActionResponse>("/api/auth/sessions/revoke-all", { method: "POST" });
+  },
+  deleteAccount(password: string) {
+    return request<AccountActionResponse>("/api/auth/account", {
+      method: "DELETE",
+      body: JSON.stringify({ password, confirmation: "DELETE" }),
+    });
+  },
+  async exportAccountData() {
+    const response = await fetch(`${getApiBase()}/api/auth/export`, {
+      method: "GET",
+      headers: authHeaders(),
+      cache: "no-store",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, `Export failed with ${response.status}`));
+    }
+    return response.blob();
   },
   startGuestSession() {
     return request<AuthSessionResponse>("/api/auth/guest", {
@@ -707,6 +781,7 @@ export const api = {
       {
         headers: authHeaders(),
         cache: "no-store",
+        credentials: "include",
         signal: options.signal,
       }
     );
@@ -774,6 +849,7 @@ export const api = {
       return new Promise<SourceIngestionRecord>((resolve, reject) => {
         const request = new XMLHttpRequest();
         request.open("POST", `${getApiBase()}/api/packages/${packageId}/sources`);
+        request.withCredentials = true;
         authHeaders().forEach((value, key) => request.setRequestHeader(key, value));
         request.upload.addEventListener("progress", (event) => {
           if (event.lengthComputable) {
@@ -811,6 +887,7 @@ export const api = {
       body: formData,
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
       const message = await responseErrorMessage(response, `Source import failed with ${response.status}`);
@@ -847,7 +924,7 @@ export const api = {
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "text/plain;charset=UTF-8" });
     return navigator.sendBeacon(
-      withAuthTokenQuery(`${getApiBase()}/api/lessons/${lessonId}/document/save-beacon`),
+      `${getApiBase()}/api/lessons/${lessonId}/document/save-beacon`,
       blob
     );
   },
@@ -857,6 +934,7 @@ export const api = {
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       cache: "no-store",
+      credentials: "include",
       keepalive: true,
     });
   },
@@ -874,6 +952,7 @@ export const api = {
       body: formData,
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
       const text = await response.text();
@@ -885,6 +964,7 @@ export const api = {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
       const text = await response.text();
@@ -896,6 +976,7 @@ export const api = {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-html`, {
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
       const text = await response.text();
@@ -909,6 +990,7 @@ export const api = {
       {
         headers: authHeaders(),
         cache: "no-store",
+        credentials: "include",
       }
     );
     if (!response.ok) {
@@ -924,6 +1006,7 @@ export const api = {
       body: formData,
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
       throw new Error(await responseErrorMessage(response, `RIDOC import failed with ${response.status}`));
@@ -1117,6 +1200,7 @@ export const api = {
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ expected_version: expectedVersion }),
         cache: "no-store",
+        credentials: "include",
         signal: options?.signal,
       }
     );
@@ -1225,7 +1309,7 @@ export const api = {
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
     return navigator.sendBeacon(
-      withAuthTokenQuery(`${getApiBase()}/api/lessons/${lessonId}/realtime/events`),
+      `${getApiBase()}/api/lessons/${lessonId}/realtime/events`,
       blob
     );
   },

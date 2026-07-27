@@ -2,7 +2,18 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const AUTH_COOKIE_NAME = "openclass.auth.token";
 const GUEST_AUTH_COOKIE_NAME = "openclass.guest.auth.token";
-const publicRoutes = ["/login", "/register", "/auth/callback", "/trending", "/community"];
+const publicRoutes = [
+  "/login",
+  "/register",
+  "/forgot-password",
+  "/reset-password",
+  "/auth/callback",
+  "/trending",
+  "/community",
+  "/privacy",
+  "/terms",
+  "/security",
+];
 const publicRoutePrefixes = ["/courses"];
 const productLandingRedirects = ["/admin", "/following", "/profile", "/studio"];
 

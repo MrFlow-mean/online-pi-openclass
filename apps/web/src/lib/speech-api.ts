@@ -48,6 +48,7 @@ export async function getSpeechOptions(signal?: AbortSignal): Promise<SpeechOpti
   const response = await fetch(`${getApiBase()}/api/speech/options`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     cache: "no-store",
+    credentials: "include",
     signal,
   });
   if (!response.ok) {
@@ -74,6 +75,7 @@ export async function synthesizeSpeech(
       speech_rate: options.speechRate,
     }),
     cache: "no-store",
+    credentials: "include",
     signal,
   });
 

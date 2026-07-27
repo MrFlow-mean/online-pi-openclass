@@ -40,6 +40,7 @@ async function visibilityRequest<T>(path: string, init?: RequestInit): Promise<T
     ...init,
     headers,
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;

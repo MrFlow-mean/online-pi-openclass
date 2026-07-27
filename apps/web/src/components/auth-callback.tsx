@@ -5,27 +5,39 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { LoaderCircle, ShieldCheck, TriangleAlert } from "lucide-react";
 
-import { storeAuthToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import { loginRedirectPath } from "@/lib/auth-redirect";
 
 type AuthCallbackProps = {
   error?: string | null;
   nextPath?: string | null;
-  token?: string | null;
 };
 
-export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
+export function AuthCallback({ error, nextPath }: AuthCallbackProps) {
   const router = useRouter();
-  const hasError = Boolean(error || !token);
-  const message = error || (!token ? "第三方登录没有返回有效会话，请重新登录。" : "正在跳转到开放课堂主页。");
+  const hasError = Boolean(error);
+  const message = error || "正在安全地确认登录会话。";
 
   useEffect(() => {
-    if (error || !token) {
+    if (error) {
       return;
     }
-    storeAuthToken(token);
-    router.replace(loginRedirectPath(nextPath));
-  }, [error, nextPath, router, token]);
+    let disposed = false;
+    api.getCurrentUser()
+      .then(() => {
+        if (!disposed) {
+          router.replace(loginRedirectPath(nextPath));
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          router.replace(`/login?error=${encodeURIComponent("第三方登录没有建立有效会话")}`);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [error, nextPath, router]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f7f5ef] px-4 text-stone-950">

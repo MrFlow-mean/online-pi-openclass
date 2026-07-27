@@ -7,7 +7,6 @@ import { ArrowLeft, BookOpen, GitFork, Globe2, LoaderCircle } from "lucide-react
 
 import { BrandMark } from "@/components/brand-mark";
 import { CommunityMarkdown } from "@/components/community/community-markdown";
-import { readEffectiveAuthToken } from "@/lib/api";
 import {
   forkPublicLesson,
   getPublicLesson,
@@ -102,12 +101,6 @@ export default function SharedCoursePage() {
   }, [historyNodeId, params.id, params.kind]);
 
   async function handleRetainLesson(lesson: PublicLesson) {
-    if (!readEffectiveAuthToken()) {
-      const next = `${window.location.pathname}${window.location.search}`;
-      router.push(`/login?next=${encodeURIComponent(next)}`);
-      return;
-    }
-
     setRetainError(null);
     setRetainingLessonId(lesson.id);
     try {

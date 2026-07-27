@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.models import AuthSessionResponse, CodexAccountView, CodexLoginStartResponse, CodexLoginStatusResponse, CodexProviderStatus, UserView
 from app.routers.auth import auth_service, current_user
-from app.services.auth_service import OAuthProfile, bearer_token_from_request
+from app.services.auth_service import (
+    AUTH_COOKIE_NAME,
+    GUEST_AUTH_COOKIE_NAME,
+    OAuthProfile,
+    auth_cookie_max_age,
+    auth_cookie_secure,
+    bearer_token_from_request,
+)
 from app.services.codex_app_server import (
     CodexAppServerError,
     CodexLoginRateLimitError,
@@ -22,6 +29,24 @@ from app.services.codex_app_server import (
 )
 
 router = APIRouter(prefix="/api/codex")
+
+
+def _rotate_platform_cookie(response: Response, request: Request, token: str) -> None:
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=auth_cookie_max_age(),
+        httponly=True,
+        secure=auth_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+    response.delete_cookie(
+        GUEST_AUTH_COOKIE_NAME,
+        secure=auth_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
 
 
 def _codex_error(exc: Exception) -> HTTPException:
@@ -74,6 +99,7 @@ def _completed_chatgpt_account(login_id: str | None, user_id: str) -> CodexAccou
 @router.post("/login/complete", response_model=AuthSessionResponse)
 def complete_platform_login(
     request: Request,
+    response: Response,
     login_id: str | None = None,
     user: UserView = Depends(current_user),
 ) -> AuthSessionResponse:
@@ -82,7 +108,8 @@ def complete_platform_login(
     session_token = bearer_token_from_request(request)
     if user.role != "guest":
         if any(identity.provider == "chatgpt" for identity in user.auth_identities):
-            return AuthSessionResponse(token=session_token, user=user)
+            _rotate_platform_cookie(response, request, session_token)
+            return AuthSessionResponse(user=user)
         raise HTTPException(status_code=409, detail="当前正式账户尚未关联 ChatGPT 身份")
     claimed_login = bool(login_id)
     try:
@@ -111,7 +138,8 @@ def complete_platform_login(
             complete_codex_platform_login_claim(login_id, user.id)
         if platform_user.id != user.id:
             remove_codex_auth(user.id)
-        return AuthSessionResponse(token=token, user=platform_user)
+        _rotate_platform_cookie(response, request, token)
+        return AuthSessionResponse(user=platform_user)
     except CodexAppServerError as exc:
         if claimed_login and login_id:
             release_codex_platform_login_claim(login_id, user.id)

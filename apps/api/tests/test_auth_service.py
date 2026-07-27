@@ -1,6 +1,7 @@
 import io
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -175,17 +176,130 @@ def test_email_code_login_requires_existing_account_and_consumes_code(tmp_path, 
     assert exc_info.value.status_code == 401
 
 
-def test_email_code_login_rejects_unregistered_email(tmp_path, monkeypatch) -> None:
+def test_email_code_login_does_not_disclose_unregistered_email(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     SqliteCourseStore(db_path, legacy_json_path=None)
     auth = AuthService(db_path)
     monkeypatch.setattr("app.services.auth_service.send_email_code", lambda **_: None)
 
-    with pytest.raises(HTTPException) as exc_info:
-        auth.request_email_code("new-student@example.com")
+    challenge_id, expires_in = auth.request_email_code("new-student@example.com")
 
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.detail == "该邮箱尚未注册，请先注册"
+    assert challenge_id.startswith("email_challenge_")
+    assert expires_in == 600
+
+
+def test_password_reset_is_enumeration_safe_and_revokes_sessions(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    first_token, user = auth.register("student@example.com", "correct-password")
+    second_token, _ = auth.login("student@example.com", "correct-password")
+    sent: dict[str, str] = {}
+    monkeypatch.setattr(
+        "app.services.auth_service.send_email_code",
+        lambda **values: sent.update(code=values["code"], purpose=values["purpose"]),
+    )
+
+    challenge_id, expires_in = auth.request_password_reset("student@example.com")
+    unknown_challenge_id, unknown_expires_in = auth.request_password_reset("unknown@example.com")
+
+    assert sent["purpose"] == "password_reset"
+    assert expires_in == unknown_expires_in == 600
+    assert unknown_challenge_id.startswith("email_challenge_")
+    auth.reset_password(challenge_id, sent["code"], "new-correct-password")
+    for token in (first_token, second_token):
+        with pytest.raises(HTTPException) as exc_info:
+            auth.get_user_by_token(token)
+        assert exc_info.value.status_code == 401
+    _, logged_in = auth.login("student@example.com", "new-correct-password")
+    assert logged_in.id == user.id
+
+
+def test_change_password_rotates_session_and_revoke_all_sessions(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    first_token, user = auth.register("student@example.com", "correct-password")
+    second_token, _ = auth.login("student@example.com", "correct-password")
+
+    rotated_token, rotated_user = auth.change_password(
+        user.id,
+        first_token,
+        "correct-password",
+        "new-correct-password",
+    )
+
+    assert rotated_user.id == user.id
+    for token in (first_token, second_token):
+        with pytest.raises(HTTPException):
+            auth.get_user_by_token(token)
+    assert auth.get_user_by_token(rotated_token).id == user.id
+    assert auth.revoke_all_sessions(user.id) == 1
+    with pytest.raises(HTTPException):
+        auth.get_user_by_token(rotated_token)
+
+
+def test_server_session_absolute_and_idle_expiration(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    token, _ = auth.register("student@example.com", "correct-password")
+    token_hash = auth._token_hash(token)
+    old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    with auth.store.transaction() as conn:
+        conn.execute(
+            "UPDATE auth_sessions SET created_at = ?, last_seen_at = ?, expires_at = NULL WHERE token_hash = ?",
+            (old, datetime.now(timezone.utc).isoformat(), token_hash),
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_user_by_token(token)
+    assert exc_info.value.status_code == 401
+
+    fresh_token, _ = auth.login("student@example.com", "correct-password")
+    stale_seen = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    with auth.store.transaction() as conn:
+        conn.execute(
+            "UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?",
+            (stale_seen, auth._token_hash(fresh_token)),
+        )
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_user_by_token(fresh_token)
+    assert exc_info.value.status_code == 401
+
+
+def test_email_verification_export_and_account_deletion(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    _, user = auth.register("student@example.com", "correct-password")
+    workspace = store.load_for_user(user.id)
+    workspace.packages[0].title = "Private course"
+    store.save_for_user(user.id, workspace)
+    sent: dict[str, str] = {}
+    monkeypatch.setattr(
+        "app.services.auth_service.send_email_code",
+        lambda **values: sent.update(code=values["code"]),
+    )
+
+    challenge_id, _ = auth.request_email_verification(user.id)
+    verified = auth.confirm_email_verification(user.id, challenge_id, sent["code"])
+    exported = auth.export_account_data(user.id)
+
+    assert verified.email_verified_at is not None
+    assert exported["user"]["email"] == "student@example.com"
+    assert exported["data"]["course_packages"][0]["title"] == "Private course"
+    assert "password_hash" not in exported["data"]["users"][0]
+
+    summary = auth.delete_account(user.id, "correct-password", "DELETE")
+    assert "course_packages" in summary["deleted_counts"]
+    with auth.store.connection() as conn:
+        assert auth.store.find_user_by_id(conn, user.id) is None
+        event = conn.execute(
+            "SELECT kind FROM account_lifecycle_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user.id,),
+        ).fetchone()
+    assert event["kind"] == "account_deleted"
 
 
 def test_email_registration_requires_code_and_preserves_username(tmp_path, monkeypatch) -> None:

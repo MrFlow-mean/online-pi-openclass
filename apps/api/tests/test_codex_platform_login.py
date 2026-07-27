@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from starlette.requests import Request
 
 from app.models import CodexAccountView, CodexLoginStartResponse
 from app.routers import codex_provider
-from app.services.auth_service import AuthService
+from app.services.auth_service import AUTH_COOKIE_NAME, AuthService
 from app.services.codex_app_server import CodexAppServerError
 from app.services.course_store import SqliteCourseStore
 
@@ -21,6 +21,16 @@ def _request(token: str) -> Request:
             "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
         }
     )
+
+
+def _formal_cookie_token(response: Response) -> str:
+    prefix = f"{AUTH_COOKIE_NAME}="
+    for key, value in response.raw_headers:
+        if key == b"set-cookie":
+            first_part = value.decode("latin-1").split(";", 1)[0]
+            if first_part.startswith(prefix):
+                return first_part.removeprefix(prefix)
+    raise AssertionError("formal auth cookie was not set")
 
 
 @pytest.fixture(autouse=True)
@@ -57,18 +67,24 @@ def test_completed_chatgpt_login_promotes_guest_bearer_atomically(tmp_path, monk
         lambda source_user_id, target_user_id: copied.append((source_user_id, target_user_id)),
     )
 
+    route_response = Response()
     response = codex_provider.complete_platform_login(
         request=_request(guest_token),
+        response=route_response,
         login_id="login_1",
         user=guest,
     )
 
-    assert response.token == guest_token
+    formal_token = _formal_cookie_token(route_response)
+    assert response.token is None
+    assert formal_token != guest_token
     assert response.user.id == guest.id
     assert response.user.role in {"user", "admin"}
     assert response.user.email == "student@example.com"
     assert response.user.auth_identities[0].provider == "chatgpt"
-    assert auth.get_user_by_token(guest_token).id == response.user.id
+    with pytest.raises(HTTPException):
+        auth.get_user_by_token(guest_token)
+    assert auth.get_user_by_token(formal_token).id == response.user.id
     assert store.load_for_user(response.user.id).packages[0].title == "游客课程"
     assert copied == []
 
@@ -95,15 +111,20 @@ def test_chatgpt_login_links_existing_email_and_moves_bearer_and_codex_auth(tmp_
     )
     monkeypatch.setattr(codex_provider, "remove_codex_auth", lambda user_id: removed.append(user_id))
 
+    route_response = Response()
     response = codex_provider.complete_platform_login(
         request=_request(guest_token),
+        response=route_response,
         login_id="login_2",
         user=guest,
     )
 
-    assert response.token == guest_token
+    formal_token = _formal_cookie_token(route_response)
+    assert response.token is None
     assert response.user.id == existing_member.id
-    assert auth.get_user_by_token(guest_token).id == existing_member.id
+    with pytest.raises(HTTPException):
+        auth.get_user_by_token(guest_token)
+    assert auth.get_user_by_token(formal_token).id == existing_member.id
     assert copied == [(guest.id, existing_member.id)]
     assert removed == [guest.id]
     assert {identity.provider for identity in response.user.auth_identities} == {"email", "chatgpt"}
@@ -123,6 +144,7 @@ def test_chatgpt_platform_login_rejects_unfinished_or_unidentified_account(tmp_p
     with pytest.raises(HTTPException) as unfinished:
         codex_provider.complete_platform_login(
             request=_request(guest_token),
+            response=Response(),
             login_id="login_pending",
             user=guest,
         )
@@ -136,6 +158,7 @@ def test_chatgpt_platform_login_rejects_unfinished_or_unidentified_account(tmp_p
     with pytest.raises(HTTPException) as unidentified:
         codex_provider.complete_platform_login(
             request=_request(guest_token),
+            response=Response(),
             login_id="login_no_email",
             user=guest,
         )
@@ -159,9 +182,13 @@ def test_connected_guest_can_resume_platform_login_without_login_id(tmp_path, mo
         ),
     )
 
-    response = codex_provider.complete_platform_login(request=_request(guest_token), user=guest)
+    route_response = Response()
+    response = codex_provider.complete_platform_login(
+        request=_request(guest_token), response=route_response, user=guest
+    )
 
-    assert response.token == guest_token
+    assert response.token is None
+    assert _formal_cookie_token(route_response) != guest_token
     assert response.user.id == guest.id
     assert response.user.email == "student@example.com"
 
@@ -184,14 +211,21 @@ def test_platform_login_completion_is_idempotent_for_promoted_bearer(tmp_path, m
         )
 
     monkeypatch.setattr(codex_provider, "codex_provider_status", provider_status)
-    first = codex_provider.complete_platform_login(request=_request(guest_token), user=guest)
+    first_response = Response()
+    first = codex_provider.complete_platform_login(
+        request=_request(guest_token), response=first_response, user=guest
+    )
+    formal_token = _formal_cookie_token(first_response)
+    second_response = Response()
     second = codex_provider.complete_platform_login(
-        request=_request(guest_token),
+        request=_request(formal_token),
+        response=second_response,
         login_id="response_was_lost",
         user=first.user,
     )
 
-    assert second.token == guest_token
+    assert second.token is None
+    assert _formal_cookie_token(second_response) == formal_token
     assert second.user.id == first.user.id
     assert provider_calls == [guest.id]
 
@@ -205,7 +239,9 @@ def test_platform_login_flag_is_a_server_side_gate(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(codex_provider, "chatgpt_platform_login_enabled", lambda: False)
 
     with pytest.raises(HTTPException) as disabled:
-        codex_provider.complete_platform_login(request=_request(guest_token), user=guest)
+        codex_provider.complete_platform_login(
+            request=_request(guest_token), response=Response(), user=guest
+        )
 
     assert disabled.value.status_code == 403
     assert auth.get_user_by_token(guest_token).role == "guest"

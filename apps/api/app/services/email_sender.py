@@ -57,9 +57,13 @@ def _smtp_config() -> SMTPConfig | None:
 
 def _message_content(*, code: str, purpose: str) -> tuple[str, str, str]:
     safe_code = html.escape(code)
-    is_registration = purpose == "register"
-    subject = "OpenClass 注册验证码" if is_registration else "OpenClass 登录验证码"
-    heading = "注册 OpenClass" if is_registration else "登录 OpenClass"
+    messages = {
+        "register": ("OpenClass 注册验证码", "注册 OpenClass"),
+        "login": ("OpenClass 登录验证码", "登录 OpenClass"),
+        "password_reset": ("OpenClass 重置密码验证码", "重置 OpenClass 密码"),
+        "email_verification": ("OpenClass 邮箱验证码", "验证 OpenClass 邮箱"),
+    }
+    subject, heading = messages.get(purpose, messages["login"])
     plain_text = f"你的 OpenClass 验证码是：{code}\n\n验证码 10 分钟内有效。如果不是你本人操作，请忽略此邮件。"
     html_content = (
         '<div style="font-family:system-ui,sans-serif;line-height:1.6">'

@@ -42,6 +42,7 @@ export default defineConfig({
         OPENCLASS_UPLOAD_DIR: path.join(e2eDataDir, "uploads"),
         OPENCLASS_EXPORT_DIR: path.join(e2eDataDir, "exports"),
         OPENCLASS_PUBLIC_ORIGIN: webBaseUrl,
+        OPENCLASS_CLOUDFLARE_TURNSTILE_ENABLED: "false",
       },
     },
     {
@@ -53,6 +54,7 @@ export default defineConfig({
       env: {
         ...process.env,
         NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
+        NEXT_PUBLIC_OPENCLASS_E2E_MODE: "true",
         OPENCLASS_NEXT_DIST_DIR: ".next-e2e",
       },
     },

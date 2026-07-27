@@ -19,7 +19,6 @@ import {
   KeyRound,
   LinkIcon,
   LoaderCircle,
-  LockKeyhole,
   Mail,
   MapPin,
   MonitorSmartphone,
@@ -32,7 +31,8 @@ import {
 } from "lucide-react";
 
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
-import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY, persistConnectedGuestAuthToken } from "@/lib/api";
+import { AccountSecurityActions } from "@/components/account-security-actions";
+import { api, clearAuthToken, persistConnectedGuestAuthToken } from "@/lib/api";
 import { userAccountLabel, userPublicEmail } from "@/lib/account";
 import type { InterfaceLanguage } from "@/lib/profile-settings-state";
 import {
@@ -202,7 +202,6 @@ export function ProfileSettingsPanel({
   const [codexLogin, setCodexLogin] = useState<CodexLoginStartResponse | null>(null);
   const [codexLoginStatus, setCodexLoginStatus] = useState<string | null>(null);
   const [isCodexBusy, setIsCodexBusy] = useState(false);
-  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] =
     useState<BrowserNotificationPermission>("unsupported");
   const [notificationMessage, setNotificationMessage] = useState<string | null>(null);
@@ -447,10 +446,14 @@ export function ProfileSettingsPanel({
     }
   }
 
-  function handleSignOut() {
-    window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
-    setCurrentUser(null);
-    router.push("/login");
+  async function handleSignOut() {
+    try {
+      await api.logout();
+    } finally {
+      clearAuthToken();
+      setCurrentUser(null);
+      router.push("/login");
+    }
   }
 
   async function refreshCodexModels() {
@@ -504,25 +507,6 @@ export function ProfileSettingsPanel({
     } finally {
       setIsCodexBusy(false);
     }
-  }
-
-  function handlePasswordSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const newPassword = String(formData.get("newPassword") ?? "");
-    const confirmPassword = String(formData.get("confirmPassword") ?? "");
-
-    if (newPassword.length < 8) {
-      setPasswordMessage(s.password.tooShort);
-      return;
-    }
-
-    if (newPassword !== confirmPassword) {
-      setPasswordMessage(s.password.mismatch);
-      return;
-    }
-
-    setPasswordMessage(s.password.notAvailable);
   }
 
   function renderSettingsMenuItem(item: SettingsNavItem) {
@@ -1250,6 +1234,19 @@ export function ProfileSettingsPanel({
               readOnly
             />
           </label>
+          {currentUser?.email_verified_at ? (
+            <p className="mt-4 inline-flex h-10 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-800">
+              <Check className="h-4 w-4" />
+              {settings.interfaceLanguage === "zh-CN" ? "主邮箱已验证" : "Primary email verified"}
+            </p>
+          ) : currentUser && currentUser.role !== "guest" && currentUser.auth_identities.some((identity) => identity.provider === "email") ? (
+            <Link
+              href="/verify-email"
+              className="mt-4 inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+            >
+              {settings.interfaceLanguage === "zh-CN" ? "验证主邮箱" : "Verify primary email"}
+            </Link>
+          ) : null}
         </section>
 
         <ToggleSetting
@@ -1277,49 +1274,10 @@ export function ProfileSettingsPanel({
   }
 
   function renderPasswordSection() {
-    const p = s.password;
-    return (
-      <form className="max-w-3xl space-y-6" onSubmit={handlePasswordSubmit}>
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">{p.currentLabel}</span>
-          <input className={`${settingsInputClass} mt-2 max-w-xl`} type="password" name="currentPassword" autoComplete="current-password" />
-        </label>
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">{p.newLabel}</span>
-          <input className={`${settingsInputClass} mt-2 max-w-xl`} type="password" name="newPassword" autoComplete="new-password" />
-        </label>
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">{p.confirmLabel}</span>
-          <input className={`${settingsInputClass} mt-2 max-w-xl`} type="password" name="confirmPassword" autoComplete="new-password" />
-        </label>
-
-        <section className="flex flex-col gap-3 border-y border-stone-200 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <LockKeyhole className="mt-0.5 h-4 w-4 text-stone-500" />
-            <div>
-              <p className="text-sm font-semibold text-stone-950">{p.sessionTitle}</p>
-              <p className="mt-1 text-sm leading-6 text-stone-500">{p.sessionDesc}</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="inline-flex h-10 items-center justify-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-          >
-            {p.signOutEverywhere}
-          </button>
-        </section>
-
-        {passwordMessage ? <p className="text-sm font-medium text-stone-600">{passwordMessage}</p> : null}
-
-        <button
-          type="submit"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
-        >
-          {p.updateSubmit}
-        </button>
-      </form>
-    );
+    if (!currentUser) {
+      return null;
+    }
+    return <AccountSecurityActions language={settings.interfaceLanguage} user={currentUser} onSignedOut={() => { setCurrentUser(null); router.push("/login"); }} />;
   }
 
   function renderModelsSection() {

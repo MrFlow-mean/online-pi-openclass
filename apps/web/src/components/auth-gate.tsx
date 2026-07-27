@@ -7,7 +7,7 @@ import { LoaderCircle, ShieldCheck } from "lucide-react";
 
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 
-import { api, clearAuthToken, readAuthToken, readEffectiveAuthToken } from "@/lib/api";
+import { api, clearAuthToken } from "@/lib/api";
 import type { UserView } from "@/types";
 
 type AuthGateProps = {
@@ -35,15 +35,6 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
     let disposed = false;
 
     async function verifySession() {
-      if (adminOnly && !readAuthToken()) {
-        router.replace(loginHref());
-        return;
-      }
-      if (!readEffectiveAuthToken()) {
-        router.replace(loginHref());
-        return;
-      }
-
       try {
         const currentUser = await api.getCurrentUser();
         if (disposed) {

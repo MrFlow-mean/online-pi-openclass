@@ -42,6 +42,7 @@ import {
   storeGuestAuthToken,
 } from "@/lib/api";
 import { BrandMark } from "@/components/brand-mark";
+import { TurnstileWidget, turnstileSubmissionReady } from "@/components/turnstile-widget";
 import { userAccountLabel } from "@/lib/account";
 import { loginRedirectPath } from "@/lib/auth-redirect";
 import {
@@ -614,6 +615,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [authProviders, setAuthProviders] = useState<AuthProviderView[]>([]);
   const [codexLogin, setCodexLogin] = useState<CodexLoginStartResponse | null>(null);
   const [codexLoginStatus, setCodexLoginStatus] = useState<string | null>(null);
@@ -655,9 +658,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         if (!disposed) {
           setCurrentUser(user?.role === "guest" ? null : user);
           setAuthProviders(providers);
-          const token = readAuthToken() ?? (user && user.role !== "guest" ? readGuestAuthToken() : null);
-          if (user && token) {
-            storeAuthToken(token);
+          if (user && user.role !== "guest") {
+            storeAuthToken(readAuthToken());
           }
         }
       } catch {
@@ -820,13 +822,14 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setNotice(null);
 
     try {
-      const payload = await api.login(accountIdentifier, password);
+      const payload = await api.login(accountIdentifier, password, turnstileToken);
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
+      setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
     }
@@ -839,11 +842,13 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setEmailCode("");
 
     try {
-      const response = await api.requestRegistrationEmailCode(accountIdentifier);
+      const response = await api.requestRegistrationEmailCode(accountIdentifier, turnstileToken);
       setRegistrationChallengeId(response.challenge_id);
       setNotice(response.message);
+      setTurnstileResetKey((value) => value + 1);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "验证码发送失败");
+      setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
     }
@@ -871,6 +876,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         password_confirmation: passwordConfirmation,
         challenge_id: registrationChallengeId,
         code: emailCode,
+        ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
       });
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
@@ -878,6 +884,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "注册失败");
+      setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
     }
@@ -891,18 +898,20 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
     try {
       if (!emailChallengeId) {
-        const response = await api.requestEmailCode(accountIdentifier);
+        const response = await api.requestEmailCode(accountIdentifier, turnstileToken);
         setEmailChallengeId(response.challenge_id);
         setNotice(response.message);
+        setTurnstileResetKey((value) => value + 1);
         return;
       }
-      const payload = await api.verifyEmailCode(emailChallengeId, emailCode);
+      const payload = await api.verifyEmailCode(emailChallengeId, emailCode, turnstileToken);
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
+      setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
     }
@@ -913,6 +922,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setEmailChallengeId(null);
     setRegistrationChallengeId(null);
     setEmailCode("");
+    setTurnstileToken(null);
+    setTurnstileResetKey((value) => value + 1);
   }
 
   function handleAuthModeChange(nextMode: "register" | "login") {
@@ -933,6 +944,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setNotice(null);
     try {
       const payload = await api.startGuestSession();
+      if (!payload.token) {
+        throw new Error("游客会话未返回有效令牌");
+      }
       storeGuestAuthToken(payload.token);
       const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
       navigateAfterAuth(nextPath);
@@ -954,6 +968,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     try {
       if (!readGuestAuthToken()) {
         const guest = await api.startGuestSession();
+        if (!guest.token) {
+          throw new Error("游客会话未返回有效令牌");
+        }
         storeGuestAuthToken(guest.token);
       }
       const login = await api.startChatGPTPlatformLogin();
@@ -1004,16 +1021,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     const nextPath =
       typeof window !== "undefined" ? loginRedirectPath(new URLSearchParams(window.location.search).get("next")) : "/";
     const params = new URLSearchParams({ next: nextPath });
-    const guestToken = readGuestAuthToken();
-    if (guestToken) {
-      params.set("guest_token", guestToken);
-    }
     window.location.assign(`${getApiBase()}/api/auth/oauth/${option.id}/start?${params.toString()}`);
-  }
-
-  function handleForgotPassword() {
-    setError(null);
-    setNotice("密码找回入口已预留；接入邮件服务后即可发送重置链接。");
   }
 
   const isRegister = mode === "register";
@@ -1303,13 +1311,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                       {!isRegister ? (
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
-                          <button
-                            type="button"
-                            onClick={handleForgotPassword}
+                          <Link
+                            href="/forgot-password"
                             className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
                           >
                             忘记密码？
-                          </button>
+                          </Link>
                         </div>
                       ) : null}
                       <AuthInput
@@ -1358,7 +1365,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                       <button
                         type="button"
                         onClick={() => void handleRegistrationCodeRequest()}
-                        disabled={isAuthBusy}
+                        disabled={isAuthBusy || !turnstileSubmissionReady(turnstileToken)}
                         className="h-[50px] whitespace-nowrap rounded-lg border border-[#d2a878] bg-white px-4 text-sm font-semibold text-[#5c4c3c] shadow-sm transition hover:bg-[#f7f3eb] disabled:cursor-wait disabled:opacity-60"
                       >
                         {registrationChallengeId ? "重新发送" : "发送验证码"}
@@ -1366,13 +1373,19 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     </div>
                   ) : null}
 
+                  <TurnstileWidget
+                    action={isRegister ? "register" : useEmailCode ? "email_code_login" : "login"}
+                    onTokenChange={setTurnstileToken}
+                    resetKey={turnstileResetKey}
+                  />
+
                   {error ? (
                     <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div>
                   ) : null}
 
                   <button
                     type="submit"
-                    disabled={isAuthBusy}
+                    disabled={isAuthBusy || !turnstileSubmissionReady(turnstileToken)}
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
@@ -1402,6 +1415,14 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     游客登录（使用记录不会被缓存）
                   </button>
                 ) : null}
+
+                <p className="mt-5 text-center text-xs leading-5 text-[#5c4c3c]/60">
+                  继续使用即表示你已阅读
+                  <Link href="/terms" className="mx-1 underline transition hover:text-[#3a312b]">服务条款</Link>
+                  与
+                  <Link href="/privacy" className="mx-1 underline transition hover:text-[#3a312b]">隐私政策</Link>
+                  。
+                </p>
               </>
             )}
           </div>

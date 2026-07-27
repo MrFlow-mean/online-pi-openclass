@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import hashlib
+import base64
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -91,7 +93,8 @@ class AuthStore:
                     token_hash TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     created_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL
+                    last_seen_at TEXT NOT NULL,
+                    expires_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
@@ -125,7 +128,8 @@ class AuthStore:
                     token_hash TEXT PRIMARY KEY,
                     guest_user_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL
+                    last_seen_at TEXT NOT NULL,
+                    expires_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_auth_guest_sessions_guest
@@ -145,11 +149,23 @@ class AuthStore:
 
                 CREATE INDEX IF NOT EXISTS idx_auth_email_challenges_email_created
                     ON auth_email_challenges(email, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS account_lifecycle_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_account_lifecycle_events_user_created
+                    ON account_lifecycle_events(user_id, created_at DESC);
                 """
             )
             self._ensure_user_column(conn, "display_name", "TEXT")
             self._ensure_user_column(conn, "avatar_url", "TEXT")
             self._ensure_user_column(conn, "phone", "TEXT")
+            self._ensure_user_column(conn, "email_verified_at", "TEXT")
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL"
             )
@@ -157,6 +173,8 @@ class AuthStore:
             self._ensure_table_column(conn, "auth_oauth_states", "guest_user_id", "TEXT")
             self._ensure_table_column(conn, "auth_oauth_states", "code_verifier", "TEXT")
             self._ensure_table_column(conn, "auth_email_challenges", "purpose", "TEXT NOT NULL DEFAULT 'login'")
+            self._ensure_table_column(conn, "auth_sessions", "expires_at", "TEXT")
+            self._ensure_table_column(conn, "auth_guest_sessions", "expires_at", "TEXT")
             self.ensure_email_identities(conn)
 
     def _ensure_user_column(self, conn: sqlite3.Connection, name: str, definition: str) -> None:
@@ -358,7 +376,10 @@ class AuthStore:
     def find_user_by_session_token(self, conn: sqlite3.Connection, token_hash: str) -> sqlite3.Row | None:
         return conn.execute(
             """
-            SELECT users.*
+            SELECT users.*,
+                   auth_sessions.created_at AS session_created_at,
+                   auth_sessions.last_seen_at AS session_last_seen_at,
+                   auth_sessions.expires_at AS session_expires_at
             FROM auth_sessions
             JOIN users ON users.id = auth_sessions.user_id
             WHERE auth_sessions.token_hash = ?
@@ -385,13 +406,14 @@ class AuthStore:
         token_hash: str,
         guest_user_id: str,
         now: str,
+        expires_at: str,
     ) -> None:
         conn.execute(
             """
-            INSERT INTO auth_guest_sessions(token_hash, guest_user_id, created_at, last_seen_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO auth_guest_sessions(token_hash, guest_user_id, created_at, last_seen_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (token_hash, guest_user_id, now, now),
+            (token_hash, guest_user_id, now, now, expires_at),
         )
 
     def list_users(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -844,11 +866,245 @@ class AuthStore:
             (user_id,),
         ).fetchall()
 
-    def create_session(self, conn: sqlite3.Connection, *, token_hash: str, user_id: str, now: str) -> None:
+    def create_session(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        token_hash: str,
+        user_id: str,
+        now: str,
+        expires_at: str,
+    ) -> None:
         conn.execute(
-            "INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)",
-            (token_hash, user_id, now, now),
+            "INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (token_hash, user_id, now, now, expires_at),
         )
+
+    def delete_session(self, conn: sqlite3.Connection, token_hash: str) -> bool:
+        formal = conn.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
+        guest = conn.execute("DELETE FROM auth_guest_sessions WHERE token_hash = ?", (token_hash,))
+        return formal.rowcount > 0 or guest.rowcount > 0
+
+    def delete_user_sessions(self, conn: sqlite3.Connection, user_id: str) -> int:
+        cursor = conn.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+        return cursor.rowcount
+
+    def update_password(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: str,
+        password_salt: str,
+        password_hash: str,
+    ) -> None:
+        conn.execute(
+            "UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?",
+            (password_salt, password_hash, user_id),
+        )
+
+    def mark_email_verified(self, conn: sqlite3.Connection, *, user_id: str, now: str) -> None:
+        conn.execute(
+            "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?",
+            (now, user_id),
+        )
+
+    def create_lifecycle_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        event_id: str,
+        user_id: str,
+        kind: str,
+        metadata_json: str,
+        created_at: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO account_lifecycle_events(id, user_id, kind, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (event_id, user_id, kind, metadata_json, created_at),
+        )
+
+    def export_account_data(self, conn: sqlite3.Connection, *, user_id: str, email: str) -> dict[str, list[dict[str, object]]]:
+        """Export rows directly scoped to an account without credential material."""
+        exported: dict[str, list[dict[str, object]]] = {}
+        sensitive_columns = {
+            "password_salt",
+            "password_hash",
+            "token_hash",
+            "code_salt",
+            "code_hash",
+            "code_verifier",
+        }
+        ownership_columns = (
+            "owner_user_id",
+            "user_id",
+            "author_user_id",
+            "creator_user_id",
+            "contributor_user_id",
+            "source_owner_user_id",
+            "accepted_by_user_id",
+        )
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        for table_row in tables:
+            table = str(table_row["name"])
+            if table.startswith("fts_") or table.endswith(("_data", "_idx", "_docsize", "_config")):
+                continue
+            columns = _table_columns(conn, table)
+            clauses = [f"{_quoted_identifier(column)} = ?" for column in ownership_columns if column in columns]
+            params: list[str] = [user_id] * len(clauses)
+            if table == "users" and "id" in columns:
+                clauses.append('"id" = ?')
+                params.append(user_id)
+            if table == "auth_email_challenges" and "email" in columns:
+                clauses.append('"email" = ?')
+                params.append(email)
+            if table == "workspace_settings" and "key" in columns:
+                clauses.append('"key" LIKE ?')
+                params.append(f"%:{user_id}")
+            if not clauses:
+                continue
+            quoted_table = _quoted_identifier(table)
+            rows = conn.execute(
+                f"SELECT * FROM {quoted_table} WHERE " + " OR ".join(clauses),
+                params,
+            ).fetchall()
+            if not rows:
+                continue
+            exported[table] = [
+                {
+                    key: (
+                        {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
+                        if isinstance(value, bytes)
+                        else value
+                    )
+                    for key, value in dict(row).items()
+                    if key not in sensitive_columns
+                }
+                for row in rows
+            ]
+        return exported
+
+    def delete_account_data(self, conn: sqlite3.Connection, *, user_id: str, email: str) -> dict[str, object]:
+        """Erase private account data and anonymize records that must keep shared or financial integrity."""
+        pseudonym = f"deleted_{hashlib.sha256(user_id.encode('utf-8')).hexdigest()[:24]}"
+        deleted_counts: dict[str, int] = {}
+        anonymized_counts: dict[str, int] = {}
+
+        financial_tables = {
+            "credit_ledger",
+            "paypal_orders",
+            "credit_reservations",
+            "openrouter_limit_grants",
+        }
+        for table in financial_tables:
+            if not _table_exists(conn, table) or "user_id" not in _table_columns(conn, table):
+                continue
+            cursor = conn.execute(
+                f"UPDATE {_quoted_identifier(table)} SET user_id = ? WHERE user_id = ?",
+                (pseudonym, user_id),
+            )
+            if cursor.rowcount:
+                anonymized_counts[table] = cursor.rowcount
+
+        for table in ("credit_wallets", "openrouter_user_keys"):
+            if not _table_exists(conn, table) or "user_id" not in _table_columns(conn, table):
+                continue
+            cursor = conn.execute(f"DELETE FROM {_quoted_identifier(table)} WHERE user_id = ?", (user_id,))
+            if cursor.rowcount:
+                deleted_counts[table] = cursor.rowcount
+
+        shared_actor_columns = {
+            "community_spaces": ("creator_user_id",),
+            "community_posts": ("author_user_id", "author_display_name"),
+            "community_comments": ("author_user_id", "author_display_name"),
+            "community_answers": ("author_user_id", "author_display_name"),
+            "community_accepted_answers": ("accepted_by_user_id",),
+        }
+        for table, actor_columns in shared_actor_columns.items():
+            if not _table_exists(conn, table):
+                continue
+            columns = _table_columns(conn, table)
+            id_column = actor_columns[0]
+            if id_column not in columns:
+                continue
+            assignments = [f"{_quoted_identifier(id_column)} = ?"]
+            params: list[str] = [pseudonym]
+            for display_column in actor_columns[1:]:
+                if display_column in columns:
+                    assignments.append(f"{_quoted_identifier(display_column)} = ?")
+                    params.append("已注销用户")
+            params.append(user_id)
+            cursor = conn.execute(
+                f"UPDATE {_quoted_identifier(table)} SET {', '.join(assignments)} WHERE {_quoted_identifier(id_column)} = ?",
+                params,
+            )
+            if cursor.rowcount:
+                anonymized_counts[table] = cursor.rowcount
+
+        for table in ("community_reactions", "community_answer_votes", "community_follows"):
+            if not _table_exists(conn, table) or "user_id" not in _table_columns(conn, table):
+                continue
+            cursor = conn.execute(f"DELETE FROM {_quoted_identifier(table)} WHERE user_id = ?", (user_id,))
+            if cursor.rowcount:
+                deleted_counts[table] = cursor.rowcount
+
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        excluded = {
+            "users",
+            "auth_sessions",
+            "auth_identities",
+            "account_lifecycle_events",
+            *financial_tables,
+            *shared_actor_columns,
+            "credit_wallets",
+            "openrouter_user_keys",
+            "community_reactions",
+            "community_answer_votes",
+            "community_follows",
+        }
+        for table_row in tables:
+            table = str(table_row["name"])
+            if table in excluded or table.startswith("fts_"):
+                continue
+            columns = _table_columns(conn, table)
+            if "owner_user_id" not in columns:
+                continue
+            cursor = conn.execute(
+                f"DELETE FROM {_quoted_identifier(table)} WHERE owner_user_id = ?",
+                (user_id,),
+            )
+            if cursor.rowcount:
+                deleted_counts[table] = cursor.rowcount
+
+        if _table_exists(conn, "lesson_contributions"):
+            columns = _table_columns(conn, "lesson_contributions")
+            for column in ("source_owner_user_id", "contributor_user_id"):
+                if column not in columns:
+                    continue
+                cursor = conn.execute(
+                    f"UPDATE lesson_contributions SET {_quoted_identifier(column)} = ? WHERE {_quoted_identifier(column)} = ?",
+                    (pseudonym, user_id),
+                )
+                if cursor.rowcount:
+                    anonymized_counts[f"lesson_contributions.{column}"] = cursor.rowcount
+
+        if _table_exists(conn, "workspace_settings"):
+            cursor = conn.execute("DELETE FROM workspace_settings WHERE key LIKE ?", (f"%:{user_id}",))
+            if cursor.rowcount:
+                deleted_counts["workspace_settings"] = cursor.rowcount
+        conn.execute("DELETE FROM auth_email_challenges WHERE email = ?", (email,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return {
+            "pseudonym": pseudonym,
+            "deleted_counts": deleted_counts,
+            "anonymized_counts": anonymized_counts,
+        }
 
     def latest_email_challenge(
         self,

@@ -1022,11 +1022,12 @@ export interface UserView {
   avatar_url?: string | null;
   created_at: string;
   last_login_at?: string | null;
+  email_verified_at?: string | null;
   auth_identities: AuthIdentityView[];
 }
 
 export interface AuthSessionResponse {
-  token: string;
+  token?: string | null;
   user: UserView;
 }
 
@@ -1043,6 +1044,19 @@ export interface EmailRegistrationRequest {
   password_confirmation: string;
   challenge_id: string;
   code: string;
+  turnstile_token?: string | null;
+}
+
+export interface AccountActionResponse {
+  message: string;
+}
+
+export interface PasswordResetRequest {
+  challenge_id: string;
+  code: string;
+  password: string;
+  password_confirmation: string;
+  turnstile_token?: string | null;
 }
 
 export interface AuthIdentityView {

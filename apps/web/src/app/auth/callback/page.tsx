@@ -11,7 +11,6 @@ type AuthCallbackPageProps = {
   searchParams?: Promise<{
     error?: string | string[];
     next?: string | string[];
-    token?: string | string[];
   }>;
 };
 
@@ -25,7 +24,6 @@ export default async function AuthCallbackPage({ searchParams }: AuthCallbackPag
     <AuthCallback
       error={firstParam(params?.error)}
       nextPath={firstParam(params?.next)}
-      token={firstParam(params?.token)}
     />
   );
 }

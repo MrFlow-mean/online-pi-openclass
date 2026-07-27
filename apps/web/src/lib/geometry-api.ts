@@ -31,6 +31,7 @@ export async function generateGeometryScene(
       headers,
       body: JSON.stringify(payload),
       cache: "no-store",
+      credentials: "include",
       signal: options.signal,
     }
   );

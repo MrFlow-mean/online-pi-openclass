@@ -30,8 +30,13 @@ OAUTH_STATE_TTL = timedelta(minutes=15)
 EMAIL_CODE_TTL = timedelta(minutes=10)
 EMAIL_CODE_RESEND_INTERVAL = timedelta(seconds=60)
 EMAIL_CODE_MAX_ATTEMPTS = 5
+SESSION_ABSOLUTE_TTL = timedelta(days=30)
+SESSION_IDLE_TTL = timedelta(days=7)
+GUEST_SESSION_ABSOLUTE_TTL = timedelta(days=7)
+GUEST_SESSION_IDLE_TTL = timedelta(days=1)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 AUTH_COOKIE_NAME = "openclass.auth.token"
+GUEST_AUTH_COOKIE_NAME = "openclass.guest.auth.token"
 PHONE_EMAIL_DOMAIN = "phone.openclass.local"
 GUEST_EMAIL_DOMAIN = "guest.openclass.local"
 
@@ -46,6 +51,7 @@ class AuthUser:
     display_name: str | None = None
     avatar_url: str | None = None
     last_login_at: str | None = None
+    email_verified_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -293,8 +299,21 @@ def _user_view(row: sqlite3.Row | AuthUser, identities: list[AuthIdentityView] |
         avatar_url=row["avatar_url"] if isinstance(row, sqlite3.Row) and "avatar_url" in row.keys() else (None if isinstance(row, sqlite3.Row) else row.avatar_url),
         created_at=row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
         last_login_at=row["last_login_at"] if isinstance(row, sqlite3.Row) else row.last_login_at,
+        email_verified_at=(
+            row["email_verified_at"]
+            if isinstance(row, sqlite3.Row) and "email_verified_at" in row.keys()
+            else (None if isinstance(row, sqlite3.Row) else row.email_verified_at)
+        ),
         auth_identities=identities or [],
     )
+
+
+def auth_cookie_max_age() -> int:
+    return int(SESSION_ABSOLUTE_TTL.total_seconds())
+
+
+def auth_cookie_secure(request: Request) -> bool:
+    return request.url.scheme == "https" or parse.urlparse(_public_origin(request)).scheme == "https"
 
 
 def _oauth_providers() -> dict[str, OAuthProviderConfig]:
@@ -526,6 +545,7 @@ class AuthService:
                                 created_at=now.isoformat(),
                                 last_login_at=now.isoformat(),
                             )
+                            self.store.mark_email_verified(conn, user_id=user_id, now=now.isoformat())
                         except sqlite3.IntegrityError as exc:
                             raise HTTPException(status_code=409, detail="该邮箱已注册") from exc
                         self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
@@ -553,9 +573,13 @@ class AuthService:
         if account.kind != "email" or not account.email:
             raise HTTPException(status_code=422, detail="请输入有效邮箱")
         with self.store.connection() as conn:
-            if self.store.find_user_by_email(conn, account.email) is None:
-                raise HTTPException(status_code=404, detail="该邮箱尚未注册，请先注册")
-        return self._request_email_code(account.email, purpose="login")
+            should_deliver = self.store.find_user_by_email(conn, account.email) is not None
+        return self._request_email_code(
+            account.email,
+            purpose="login",
+            deliver=should_deliver,
+            suppress_delivery_errors=True,
+        )
 
     def request_registration_email_code(self, email: str) -> tuple[str, int]:
         account = _normalize_account_identifier(email)
@@ -566,7 +590,14 @@ class AuthService:
                 raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录")
         return self._request_email_code(account.email, purpose="register")
 
-    def _request_email_code(self, email: str, *, purpose: str) -> tuple[str, int]:
+    def _request_email_code(
+        self,
+        email: str,
+        *,
+        purpose: str,
+        deliver: bool = True,
+        suppress_delivery_errors: bool = False,
+    ) -> tuple[str, int]:
         now = datetime.now(timezone.utc)
         challenge_id = new_id("email_challenge")
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -590,11 +621,13 @@ class AuthService:
             )
 
         try:
-            send_email_code(email=email, code=code, purpose=purpose)
+            if deliver:
+                send_email_code(email=email, code=code, purpose=purpose)
         except Exception:
             with self.store.transaction() as conn:
                 self.store.delete_email_challenge(conn, challenge_id)
-            raise
+            if not suppress_delivery_errors:
+                raise
         return challenge_id, int(EMAIL_CODE_TTL.total_seconds())
 
     def verify_email_code(
@@ -637,6 +670,7 @@ class AuthService:
                 if row is None:
                     raise HTTPException(status_code=404, detail="该邮箱尚未注册，请先注册")
                 user_id = str(row["id"])
+                self.store.mark_email_verified(conn, user_id=user_id, now=now.isoformat())
                 self.store.touch_password_login(
                     conn,
                     user_id=user_id,
@@ -647,6 +681,193 @@ class AuthService:
                 return self._issue_session_for_user_id(conn, user_id)
 
         raise HTTPException(status_code=401, detail="验证码无效或已过期")
+
+    def request_password_reset(self, email: str) -> tuple[str, int]:
+        account = _normalize_account_identifier(email)
+        if account.kind != "email" or not account.email:
+            raise HTTPException(status_code=422, detail="请输入有效邮箱")
+        with self.store.connection() as conn:
+            should_deliver = self.store.find_user_by_email(conn, account.email) is not None
+        return self._request_email_code(
+            account.email,
+            purpose="password_reset",
+            deliver=should_deliver,
+            suppress_delivery_errors=True,
+        )
+
+    def reset_password(self, challenge_id: str, code: str, password: str) -> None:
+        password_salt, password_hash = _hash_password(password)
+        now = datetime.now(timezone.utc)
+        with self.store.transaction() as conn:
+            challenge = self._valid_email_challenge(
+                conn,
+                challenge_id=challenge_id,
+                code=code,
+                purpose="password_reset",
+                now=now,
+            )
+            row = self.store.find_user_by_email(conn, str(challenge["email"]))
+            if row is None:
+                raise HTTPException(status_code=401, detail="验证码无效或已过期")
+            if not self.store.consume_email_challenge(conn, challenge_id=challenge_id, now=now.isoformat()):
+                raise HTTPException(status_code=401, detail="验证码无效或已过期")
+            self.store.update_password(
+                conn,
+                user_id=str(row["id"]),
+                password_salt=password_salt,
+                password_hash=password_hash,
+            )
+            self.store.mark_email_verified(conn, user_id=str(row["id"]), now=now.isoformat())
+            revoked = self.store.delete_user_sessions(conn, str(row["id"]))
+            self.store.create_lifecycle_event(
+                conn,
+                event_id=new_id("account_event"),
+                user_id=str(row["id"]),
+                kind="password_reset",
+                metadata_json=json.dumps({"revoked_sessions": revoked}, ensure_ascii=False),
+                created_at=now.isoformat(),
+            )
+
+    def request_email_verification(self, user_id: str) -> tuple[str, int]:
+        with self.store.connection() as conn:
+            row = self.store.find_user_by_id(conn, user_id)
+            if row is None:
+                raise HTTPException(status_code=401, detail="请先登录")
+            if row["email_verified_at"]:
+                raise HTTPException(status_code=409, detail="邮箱已验证")
+            email = str(row["email"])
+            if email.endswith((f"@{PHONE_EMAIL_DOMAIN}", f"@{GUEST_EMAIL_DOMAIN}")):
+                raise HTTPException(status_code=422, detail="当前账户没有可验证邮箱")
+        return self._request_email_code(email, purpose="email_verification")
+
+    def confirm_email_verification(self, user_id: str, challenge_id: str, code: str) -> UserView:
+        now = datetime.now(timezone.utc)
+        with self.store.transaction() as conn:
+            row = self.store.find_user_by_id(conn, user_id)
+            if row is None:
+                raise HTTPException(status_code=401, detail="请先登录")
+            challenge = self._valid_email_challenge(
+                conn,
+                challenge_id=challenge_id,
+                code=code,
+                purpose="email_verification",
+                now=now,
+            )
+            if not hmac.compare_digest(str(challenge["email"]), str(row["email"])):
+                raise HTTPException(status_code=401, detail="验证码无效或已过期")
+            if not self.store.consume_email_challenge(conn, challenge_id=challenge_id, now=now.isoformat()):
+                raise HTTPException(status_code=401, detail="验证码无效或已过期")
+            self.store.mark_email_verified(conn, user_id=user_id, now=now.isoformat())
+            refreshed = self.store.find_user_by_id(conn, user_id)
+            return _user_view(refreshed, self._identities_for_user(conn, user_id))
+
+    def change_password(self, user_id: str, current_token: str, current_password: str, new_password: str) -> tuple[str, UserView]:
+        password_salt, password_hash = _hash_password(new_password)
+        with self.store.transaction() as conn:
+            row = self.store.find_user_by_id(conn, user_id)
+            if row is None or not _verify_password(current_password, row["password_salt"], row["password_hash"]):
+                raise HTTPException(status_code=401, detail="当前密码不正确")
+            self.store.update_password(
+                conn,
+                user_id=user_id,
+                password_salt=password_salt,
+                password_hash=password_hash,
+            )
+            revoked = self.store.delete_user_sessions(conn, user_id)
+            self.store.create_lifecycle_event(
+                conn,
+                event_id=new_id("account_event"),
+                user_id=user_id,
+                kind="password_changed",
+                metadata_json=json.dumps({"revoked_sessions": revoked}, ensure_ascii=False),
+                created_at=_now_iso(),
+            )
+            del current_token
+            return self._issue_session_for_user_id(conn, user_id)
+
+    def logout(self, token: str) -> None:
+        with self.store.transaction() as conn:
+            self.store.delete_session(conn, self._token_hash(token))
+
+    def revoke_all_sessions(self, user_id: str) -> int:
+        with self.store.transaction() as conn:
+            revoked = self.store.delete_user_sessions(conn, user_id)
+            self.store.create_lifecycle_event(
+                conn,
+                event_id=new_id("account_event"),
+                user_id=user_id,
+                kind="sessions_revoked",
+                metadata_json=json.dumps({"revoked_sessions": revoked}, ensure_ascii=False),
+                created_at=_now_iso(),
+            )
+            return revoked
+
+    def export_account_data(self, user_id: str) -> dict[str, object]:
+        with self.store.transaction() as conn:
+            row = self.store.find_user_by_id(conn, user_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="用户不存在")
+            data = self.store.export_account_data(conn, user_id=user_id, email=str(row["email"]))
+            self.store.create_lifecycle_event(
+                conn,
+                event_id=new_id("account_event"),
+                user_id=user_id,
+                kind="data_exported",
+                metadata_json="{}",
+                created_at=_now_iso(),
+            )
+            public_user = _user_view(row, self._identities_for_user(conn, user_id)).model_dump(mode="json")
+        return {"exported_at": _now_iso(), "user": public_user, "data": data}
+
+    def delete_account(self, user_id: str, password: str | None, confirmation: str) -> dict[str, object]:
+        if not hmac.compare_digest(confirmation, "DELETE"):
+            raise HTTPException(status_code=422, detail="请输入 DELETE 确认注销")
+        with self.store.transaction() as conn:
+            row = self.store.find_user_by_id(conn, user_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="用户不存在")
+            identities = self.store.identities_for_user(conn, user_id)
+            has_password_identity = any(identity["provider"] in {"email", "phone"} for identity in identities)
+            if has_password_identity and (
+                not password or not _verify_password(password, row["password_salt"], row["password_hash"])
+            ):
+                raise HTTPException(status_code=401, detail="密码不正确")
+            now = _now_iso()
+            self.store.create_lifecycle_event(
+                conn,
+                event_id=new_id("account_event"),
+                user_id=user_id,
+                kind="account_deleted",
+                metadata_json=json.dumps({"confirmation": "explicit"}, ensure_ascii=False),
+                created_at=now,
+            )
+            return self.store.delete_account_data(conn, user_id=user_id, email=str(row["email"]))
+
+    def _valid_email_challenge(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        challenge_id: str,
+        code: str,
+        purpose: str,
+        now: datetime,
+    ) -> sqlite3.Row:
+        challenge = self.store.find_email_challenge(conn, challenge_id)
+        expires_at = _parse_iso(challenge["expires_at"]) if challenge is not None else None
+        if (
+            challenge is None
+            or challenge["purpose"] != purpose
+            or challenge["consumed_at"] is not None
+            or expires_at is None
+            or expires_at <= now
+            or int(challenge["attempts"]) >= EMAIL_CODE_MAX_ATTEMPTS
+        ):
+            raise HTTPException(status_code=401, detail="验证码无效或已过期")
+        candidate_hash = hashlib.sha256(f"{challenge['code_salt']}:{code}".encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(candidate_hash, str(challenge["code_hash"])):
+            self.store.increment_email_challenge_attempts(conn, challenge_id)
+            raise HTTPException(status_code=401, detail="验证码无效或已过期")
+        return challenge
 
     def login_with_oauth(
         self,
@@ -741,24 +962,25 @@ class AuthService:
                 avatar_url=profile.avatar_url,
                 now=now,
             )
+            if profile.email:
+                self.store.mark_email_verified(conn, user_id=str(user_id), now=now)
             if guest_session_token and session_token_hash:
-                if formal_session is None:
-                    self.store.create_session(
-                        conn,
-                        token_hash=session_token_hash,
-                        user_id=user_id,
-                        now=now,
-                    )
-                else:
+                if formal_session is not None:
                     self.store.touch_session(conn, session_token_hash, now)
+                    self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
+                    refreshed = self.store.find_user_by_id(conn, user_id)
+                    if refreshed is None:
+                        raise HTTPException(status_code=404, detail="用户不存在")
+                    return guest_session_token, _user_view(
+                        refreshed,
+                        self._identities_for_user(conn, user_id),
+                    )
+                # A guest token has already been exposed to browser JavaScript. Rotate it
+                # before granting formal-account privileges so the durable session exists
+                # only in the HttpOnly cookie issued by the route.
+                self.store.delete_session(conn, session_token_hash)
                 self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
-                refreshed = self.store.find_user_by_id(conn, user_id)
-                if refreshed is None:
-                    raise HTTPException(status_code=404, detail="用户不存在")
-                return guest_session_token, _user_view(
-                    refreshed,
-                    self._identities_for_user(conn, user_id),
-                )
+                return self._issue_session_for_user_id(conn, user_id)
             self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
             return self._issue_session_for_user_id(conn, user_id)
 
@@ -767,16 +989,56 @@ class AuthService:
 
     def get_user_by_token(self, token: str) -> UserView:
         token_hash = self._token_hash(token)
+        now = datetime.now(timezone.utc)
         with self.store.transaction() as conn:
             row = self.store.find_user_by_session_token(conn, token_hash)
             if row is None:
                 guest = self.store.find_guest_session_by_token(conn, token_hash)
                 if guest is None:
                     raise HTTPException(status_code=401, detail="请先登录")
-                self.store.touch_guest_session(conn, token_hash, _now_iso())
+                if self._session_expired(
+                    guest,
+                    now=now,
+                    absolute_ttl=GUEST_SESSION_ABSOLUTE_TTL,
+                    idle_ttl=GUEST_SESSION_IDLE_TTL,
+                ):
+                    self.store.delete_session(conn, token_hash)
+                    raise HTTPException(status_code=401, detail="会话已过期，请重新登录")
+                self.store.touch_guest_session(conn, token_hash, now.isoformat())
                 return self._guest_user_view(guest["guest_user_id"], guest["created_at"], guest["last_seen_at"])
-            self.store.touch_session(conn, token_hash, _now_iso())
+            if self._session_expired(
+                row,
+                now=now,
+                absolute_ttl=SESSION_ABSOLUTE_TTL,
+                idle_ttl=SESSION_IDLE_TTL,
+                created_key="session_created_at",
+                last_seen_key="session_last_seen_at",
+                expires_key="session_expires_at",
+            ):
+                self.store.delete_session(conn, token_hash)
+                raise HTTPException(status_code=401, detail="会话已过期，请重新登录")
+            self.store.touch_session(conn, token_hash, now.isoformat())
             return _user_view(row, self._identities_for_user(conn, row["id"]))
+
+    @staticmethod
+    def _session_expired(
+        row: sqlite3.Row,
+        *,
+        now: datetime,
+        absolute_ttl: timedelta,
+        idle_ttl: timedelta,
+        created_key: str = "created_at",
+        last_seen_key: str = "last_seen_at",
+        expires_key: str = "expires_at",
+    ) -> bool:
+        created_at = _parse_iso(str(row[created_key]))
+        last_seen_at = _parse_iso(str(row[last_seen_key]))
+        raw_expires = row[expires_key] if expires_key in row.keys() else None
+        expires_at = _parse_iso(str(raw_expires)) if raw_expires else None
+        if created_at is None or last_seen_at is None:
+            return True
+        absolute_deadline = expires_at or created_at + absolute_ttl
+        return now >= absolute_deadline or now >= last_seen_at + idle_ttl
 
     def community_avatar_url(self, user_id: str) -> str:
         normalized_user_id = user_id.strip()
@@ -813,6 +1075,7 @@ class AuthService:
                     token_hash=token_hash,
                     guest_user_id=guest_user_id,
                     now=now,
+                    expires_at=(datetime.now(timezone.utc) + GUEST_SESSION_ABSOLUTE_TTL).isoformat(),
                 )
                 break
             else:
@@ -958,14 +1221,9 @@ class AuthService:
         )
 
     def oauth_frontend_redirect_url(self, token: str, user: UserView, next_path: str, frontend_origin: str, request: Request) -> str:
+        del token, user
         target = parse.urljoin((frontend_origin or _frontend_origin(request)).rstrip("/"), "/auth/callback")
-        query = parse.urlencode(
-            {
-                "token": token,
-                "user_id": user.id,
-                "next": _safe_next_path(next_path),
-            }
-        )
+        query = parse.urlencode({"next": _safe_next_path(next_path)})
         return f"{target}?{query}"
 
     def _issue_session_for_user_id(self, conn: sqlite3.Connection, user_id: str) -> tuple[str, UserView]:
@@ -973,8 +1231,14 @@ class AuthService:
         if row is None:
             raise HTTPException(status_code=404, detail="用户不存在")
         token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
-        now = _now_iso()
-        self.store.create_session(conn, token_hash=self._token_hash(token), user_id=row["id"], now=now)
+        now = datetime.now(timezone.utc)
+        self.store.create_session(
+            conn,
+            token_hash=self._token_hash(token),
+            user_id=row["id"],
+            now=now.isoformat(),
+            expires_at=(now + SESSION_ABSOLUTE_TTL).isoformat(),
+        )
         refreshed = self.store.find_user_by_id(conn, row["id"])
         return token, _user_view(refreshed, self._identities_for_user(conn, row["id"]))
 
@@ -1146,14 +1410,12 @@ def _bearer_token_from_parts(
 def bearer_token_from_request(request: Request) -> str:
     return _bearer_token_from_parts(
         request.headers.get("Authorization", ""),
-        cookie_token=request.cookies.get(AUTH_COOKIE_NAME),
-        query_token=request.query_params.get("access_token"),
+        cookie_token=request.cookies.get(AUTH_COOKIE_NAME) or request.cookies.get(GUEST_AUTH_COOKIE_NAME),
     )
 
 
 def bearer_token_from_websocket(websocket: WebSocket) -> str:
     return _bearer_token_from_parts(
         websocket.headers.get("Authorization", ""),
-        cookie_token=websocket.cookies.get(AUTH_COOKIE_NAME),
-        query_token=websocket.query_params.get("access_token"),
+        cookie_token=websocket.cookies.get(AUTH_COOKIE_NAME) or websocket.cookies.get(GUEST_AUTH_COOKIE_NAME),
     )
