@@ -1504,6 +1504,70 @@ test("uses the top-right profile avatar as the only account menu on the home pag
   await expect(page.getByRole("menuitem", { name: "结束游客访问" })).toBeVisible();
 });
 
+test("manages standalone lessons from the profile project list", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `个人项目管理课程 ${unique}`;
+  const renamedLessonTitle = `${lessonTitle} 已重命名`;
+  const targetPackageTitle = `个人项目目标课程包 ${unique}`;
+  await enterAsGuestThroughApi(page);
+
+  const token = await page.evaluate(() => window.sessionStorage.getItem("openclass.guest.auth.token"));
+  expect(token).toBeTruthy();
+  const authorization = { Authorization: `Bearer ${token}` };
+  const generated = await page.request.post(`${API_BASE_URL}/api/lessons/generate`, {
+    headers: authorization,
+    data: { topic: lessonTitle, start_blank: true },
+  });
+  expect(generated.ok()).toBeTruthy();
+  const createdPackage = await page.request.post(`${API_BASE_URL}/api/packages`, {
+    headers: authorization,
+    data: { title: targetPackageTitle, summary: "" },
+  });
+  expect(createdPackage.ok()).toBeTruthy();
+
+  await page.goto("/profile?tab=repositories");
+  const manageLessonButton = page.getByRole("button", { name: `管理课程 ${lessonTitle}` });
+  await expect(manageLessonButton).toBeVisible();
+  await manageLessonButton.click();
+
+  const lessonMenu = page.locator(`div[aria-label="管理课程 ${lessonTitle}"]`);
+  await expect(lessonMenu).toBeVisible();
+  await expect(lessonMenu.getByRole("button", { name: "课程设为 Private", exact: true })).toBeVisible();
+  await lessonMenu.getByRole("button", { name: "课程设为 Public", exact: true }).click();
+  await expect(lessonMenu.getByText("课程没有上传资料，可以公开。")).toBeVisible();
+  await expect(lessonMenu.getByRole("button", { name: "分享", exact: true })).toBeEnabled();
+  await expect(lessonMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  await expect(lessonMenu.getByRole("button", { name: "导出课程包", exact: true })).toBeVisible();
+
+  await lessonMenu.getByRole("button", { name: "移动到课程包", exact: true }).click();
+  await expect(lessonMenu.getByRole("button", { name: targetPackageTitle, exact: true })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept(renamedLessonTitle));
+  await lessonMenu.getByRole("button", { name: "重命名", exact: true }).click();
+  await expect(page.getByRole("button", { name: `管理课程 ${renamedLessonTitle}` })).toBeVisible();
+
+  const renamedManageLessonButton = page.getByRole("button", { name: `管理课程 ${renamedLessonTitle}` });
+  await renamedManageLessonButton.click();
+  const renamedLessonMenu = page.locator(`div[aria-label="管理课程 ${renamedLessonTitle}"]`);
+  const downloadPromise = page.waitForEvent("download");
+  await renamedLessonMenu.getByRole("button", { name: "导出课程包", exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
+
+  await renamedManageLessonButton.click();
+  await renamedLessonMenu.getByRole("button", { name: "移动到课程包", exact: true }).click();
+  await renamedLessonMenu.getByRole("button", { name: targetPackageTitle, exact: true }).click();
+  await expect(renamedManageLessonButton).toBeHidden();
+
+  await page.getByRole("button", { name: `管理课程包 ${targetPackageTitle}` }).click();
+  const packageMenu = page.locator(`div[aria-label="管理课程包 ${targetPackageTitle}"]`);
+  await expect(packageMenu).toBeVisible();
+  await expect(packageMenu.getByRole("button", { name: "课程包设为 Private", exact: true })).toBeVisible();
+  await expect(packageMenu.getByRole("button", { name: "课程包设为 Public", exact: true })).toBeVisible();
+  await expect(packageMenu.getByRole("button", { name: "分享", exact: true })).toBeDisabled();
+  await expect(packageMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+});
+
 test("shows the configured platform contact email on the home page", async ({ page }) => {
   await enterAsGuest(page);
 

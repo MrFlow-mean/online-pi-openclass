@@ -13,6 +13,8 @@ import {
   Bookmark,
   Building2,
   ChevronDown,
+  ChevronRight,
+  Download,
   FolderClosed,
   GitFork,
   GraduationCap,
@@ -20,13 +22,17 @@ import {
   LinkIcon,
   LoaderCircle,
   MapPin,
+  MoreHorizontal,
+  PencilLine,
   Search,
   Settings,
+  Share2,
   Star,
 } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
+import { ProjectVisibilityControl } from "@/components/project-visibility-control";
 import {
   DEFAULT_PROFILE_SETTINGS,
   PROFILE_SETTINGS_CHANGED_EVENT,
@@ -47,10 +53,21 @@ import {
   courseFullName,
   formatCompactNumber,
 } from "@/lib/open-courses";
+import {
+  publicProjectHref,
+  updateLessonVisibility,
+  updatePackageVisibility,
+  type ProjectVisibility,
+} from "@/lib/project-visibility";
+import { downloadRidoc } from "@/lib/ridoc-file";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
 type ProfileTab = "repositories" | "stars" | "settings";
 type RepositoryTypeFilter = "all" | "lessons" | "packages";
+type ProjectMenuState =
+  | { kind: "lesson"; id: string }
+  | { kind: "package"; id: string }
+  | null;
 
 type ProfileHomeProps = {
   initialTab?: ProfileTab;
@@ -143,6 +160,9 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const [expandedPackageIds, setExpandedPackageIds] = useState<Set<string>>(() => new Set());
   const [starQuery, setStarQuery] = useState("");
   const [openingLessonId, setOpeningLessonId] = useState<string | null>(null);
+  const [projectMenu, setProjectMenu] = useState<ProjectMenuState>(null);
+  const [moveMenuLessonId, setMoveMenuLessonId] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
   );
@@ -173,6 +193,30 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
 
     return () => {
       isDisposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function closeProjectMenu(event: MouseEvent) {
+      if (event.target instanceof Element && event.target.closest("[data-profile-project-menu-root]")) {
+        return;
+      }
+      setProjectMenu(null);
+      setMoveMenuLessonId(null);
+    }
+
+    function closeProjectMenuWithKeyboard(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setProjectMenu(null);
+        setMoveMenuLessonId(null);
+      }
+    }
+
+    document.addEventListener("mousedown", closeProjectMenu);
+    document.addEventListener("keydown", closeProjectMenuWithKeyboard);
+    return () => {
+      document.removeEventListener("mousedown", closeProjectMenu);
+      document.removeEventListener("keydown", closeProjectMenuWithKeyboard);
     };
   }, []);
 
@@ -353,6 +397,140 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
       setError(openError instanceof Error ? openError.message : lessonOpenErrRef.current);
     } finally {
       setOpeningLessonId(null);
+    }
+  }
+
+  async function handleSetLessonVisibility(lesson: Lesson, visibility: ProjectVisibility) {
+    setBusyKey(`visibility:lesson:${lesson.id}`);
+    try {
+      const payload = await updateLessonVisibility(lesson.id, visibility);
+      setWorkspaceState(payload);
+      const updatedLesson = payload.packages
+        .flatMap((coursePackage) => coursePackage.lessons)
+        .find((item) => item.id === lesson.id);
+      setError(
+        visibility === "public" && updatedLesson?.visibility !== "public"
+          ? updatedLesson?.publication_review.message || "资料发布审查未通过，课程保持 Private。"
+          : null
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "更新课程可见权限失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleSetPackageVisibility(coursePackage: CoursePackage, visibility: ProjectVisibility) {
+    setBusyKey(`visibility:package:${coursePackage.id}`);
+    try {
+      const payload = await updatePackageVisibility(coursePackage.id, visibility);
+      setWorkspaceState(payload);
+      const updatedPackage = payload.packages.find((item) => item.id === coursePackage.id);
+      setError(
+        visibility === "public" && updatedPackage?.visibility !== "public"
+          ? updatedPackage?.publication_review.message || "资料发布审查未通过，课程包保持 Private。"
+          : null
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "更新课程包可见权限失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleShareProject(
+    kind: "lesson" | "package",
+    project: Pick<Lesson, "id" | "title" | "visibility"> | Pick<CoursePackage, "id" | "title" | "visibility">
+  ) {
+    if (typeof window === "undefined" || project.visibility !== "public") {
+      return;
+    }
+
+    const url = new URL(publicProjectHref(kind, project.id), window.location.origin).toString();
+    const shareData = {
+      title: project.title,
+      text: kind === "lesson" ? `分享课程：${project.title}` : `分享课程包：${project.title}`,
+      url,
+    };
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share(shareData);
+        return;
+      }
+      window.prompt(kind === "lesson" ? "复制公开课程链接" : "复制课程包链接", url);
+    } catch (shareError) {
+      if (!(shareError instanceof DOMException && shareError.name === "AbortError")) {
+        setError(shareError instanceof Error ? shareError.message : "分享课程项目失败");
+      }
+    }
+  }
+
+  async function handleRenameLesson(lesson: Lesson) {
+    const nextTitle = window.prompt("请输入新的课程名称", lesson.title);
+    if (!nextTitle?.trim() || nextTitle.trim() === lesson.title) {
+      return;
+    }
+
+    setBusyKey(`rename:lesson:${lesson.id}`);
+    setProjectMenu(null);
+    setMoveMenuLessonId(null);
+    try {
+      const payload = await api.renameLesson(lesson.id, nextTitle.trim());
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "重命名课程失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleRenamePackage(coursePackage: CoursePackage) {
+    const nextTitle = window.prompt("请输入新的课程包名称", coursePackage.title);
+    if (!nextTitle?.trim() || nextTitle.trim() === coursePackage.title) {
+      return;
+    }
+
+    setBusyKey(`rename:package:${coursePackage.id}`);
+    setProjectMenu(null);
+    try {
+      const payload = await api.renamePackage(coursePackage.id, nextTitle.trim());
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "重命名课程包失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleExportLessonPackage(lesson: Lesson) {
+    setBusyKey(`export:lesson:${lesson.id}`);
+    setProjectMenu(null);
+    setMoveMenuLessonId(null);
+    try {
+      const blob = await api.exportRidoc(lesson.id);
+      downloadRidoc(blob, lesson);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "导出课程包失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleMoveLesson(lesson: Lesson, targetPackageId: string) {
+    setBusyKey(`move:lesson:${lesson.id}`);
+    setProjectMenu(null);
+    setMoveMenuLessonId(null);
+    try {
+      const payload = await api.moveLesson(lesson.id, targetPackageId);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "移动课程失败");
+    } finally {
+      setBusyKey(null);
     }
   }
 
@@ -557,6 +735,12 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           </div>
         </div>
 
+        {error ? (
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">
+            {error}
+          </div>
+        ) : null}
+
         <div className="space-y-0">
           {isLoading ? (
             Array.from({ length: 5 }).map((_, index) => (
@@ -571,7 +755,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             )
           ) : (
             <div className="rounded-lg border border-dashed border-stone-300 bg-white/82 px-5 py-8 text-sm text-stone-500">
-              {error ? `个人项目暂时无法加载：${error}` : "没有匹配到课程或课程包。"}
+              没有匹配到课程或课程包。
             </div>
           )}
         </div>
@@ -629,13 +813,147 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     );
   }
 
+  function renderLessonProjectMenu(lesson: Lesson) {
+    const isUpdatingVisibility = busyKey === `visibility:lesson:${lesson.id}`;
+    const isReviewingPublication = isUpdatingVisibility && lesson.visibility === "private";
+    const isMoving = busyKey === `move:lesson:${lesson.id}`;
+    const isExporting = busyKey === `export:lesson:${lesson.id}`;
+    const actionBusy = busyKey !== null;
+
+    return (
+      <div
+        className="absolute right-0 top-11 z-30 w-64 rounded-xl border border-stone-200 bg-white p-2 text-left shadow-[0_18px_44px_rgba(15,23,42,0.16)]"
+        aria-label={`管理课程 ${lesson.title}`}
+      >
+        <ProjectVisibilityControl
+          visibility={lesson.visibility}
+          onChange={(visibility) => void handleSetLessonVisibility(lesson, visibility)}
+          disabled={actionBusy}
+          label="可见权限"
+          ariaLabelPrefix="课程设为"
+          review={lesson.publication_review.status === "not_started" ? undefined : lesson.publication_review}
+          reviewing={isReviewingPublication}
+        />
+
+        <div className="my-1 h-px bg-stone-100" />
+
+        <button
+          type="button"
+          onClick={() => void handleShareProject("lesson", lesson)}
+          disabled={lesson.visibility !== "public" || actionBusy}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
+          title={lesson.visibility === "public" ? "分享公开课程" : "设为 Public 后可分享"}
+        >
+          <Share2 className="h-4 w-4" />
+          分享
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleRenameLesson(lesson)}
+          disabled={actionBusy}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <PencilLine className="h-4 w-4" />
+          重命名
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleExportLessonPackage(lesson)}
+          disabled={actionBusy}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isExporting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          导出课程包
+        </button>
+
+        <div className="my-1 h-px bg-stone-100" />
+
+        <button
+          type="button"
+          onClick={() => setMoveMenuLessonId((current) => (current === lesson.id ? null : lesson.id))}
+          disabled={!coursePackageProjects.length || actionBusy}
+          aria-expanded={moveMenuLessonId === lesson.id}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isMoving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FolderClosed className="h-4 w-4" />}
+          <span className="flex-1">移动到课程包</span>
+          <ChevronRight
+            className={clsx("h-4 w-4 text-stone-400 transition", moveMenuLessonId === lesson.id && "rotate-90")}
+          />
+        </button>
+
+        {moveMenuLessonId === lesson.id ? (
+          <div className="mt-1 max-h-44 space-y-1 overflow-y-auto rounded-lg bg-stone-50 p-1.5" aria-label="选择目标课程包">
+            {coursePackageProjects.map((coursePackage) => (
+              <button
+                key={coursePackage.id}
+                type="button"
+                onClick={() => void handleMoveLesson(lesson, coursePackage.id)}
+                disabled={actionBusy}
+                className="block w-full truncate rounded-md px-2.5 py-2 text-left text-xs font-medium text-stone-700 transition hover:bg-white disabled:cursor-wait disabled:opacity-50"
+              >
+                {coursePackage.title}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderPackageProjectMenu(coursePackage: CoursePackage) {
+    const isUpdatingVisibility = busyKey === `visibility:package:${coursePackage.id}`;
+    const isReviewingPublication = isUpdatingVisibility && coursePackage.visibility === "private";
+    const actionBusy = busyKey !== null;
+
+    return (
+      <div
+        className="absolute right-0 top-11 z-30 w-64 rounded-xl border border-stone-200 bg-white p-2 text-left shadow-[0_18px_44px_rgba(15,23,42,0.16)]"
+        aria-label={`管理课程包 ${coursePackage.title}`}
+      >
+        <ProjectVisibilityControl
+          visibility={coursePackage.visibility}
+          onChange={(visibility) => void handleSetPackageVisibility(coursePackage, visibility)}
+          disabled={actionBusy}
+          label="可见权限"
+          ariaLabelPrefix="课程包设为"
+          review={coursePackage.publication_review.status === "not_started" ? undefined : coursePackage.publication_review}
+          reviewing={isReviewingPublication}
+        />
+
+        <div className="my-1 h-px bg-stone-100" />
+
+        <button
+          type="button"
+          onClick={() => void handleShareProject("package", coursePackage)}
+          disabled={coursePackage.visibility !== "public" || actionBusy}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
+          title={coursePackage.visibility === "public" ? "分享公开课程包" : "设为 Public 后可分享"}
+        >
+          <Share2 className="h-4 w-4" />
+          分享
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleRenamePackage(coursePackage)}
+          disabled={actionBusy}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <PencilLine className="h-4 w-4" />
+          重命名
+        </button>
+      </div>
+    );
+  }
+
   function renderLessonCard(lesson: Lesson) {
     const topics = getLessonTopics(lesson);
     const isOpening = openingLessonId === lesson.id;
     const summary = lesson.summary.trim();
+    const isMenuOpen = projectMenu?.kind === "lesson" && projectMenu.id === lesson.id;
 
     return (
-      <article key={lesson.id} className="border-b border-stone-200 bg-white p-5">
+      <article key={lesson.id} className="relative border-b border-stone-200 bg-white p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -648,6 +966,16 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               </button>
               <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
                 单独课程
+              </span>
+              <span
+                className={clsx(
+                  "rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                  lesson.visibility === "public"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-stone-200 bg-stone-50 text-stone-500"
+                )}
+              >
+                {lesson.visibility === "public" ? "Public" : "Private"}
               </span>
             </div>
             {summary ? <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">{summary}</p> : null}
@@ -675,16 +1003,38 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void handleOpenLesson(lesson.id)}
-            disabled={isOpening}
-            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
-          >
-            {isOpening ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-            打开
-            {!isOpening ? <ArrowUpRight className="h-4 w-4" /> : null}
-          </button>
+          <div className="relative flex shrink-0 items-center gap-2" data-profile-project-menu-root>
+            <button
+              type="button"
+              onClick={() => {
+                setMoveMenuLessonId(null);
+                setProjectMenu((current) =>
+                  current?.kind === "lesson" && current.id === lesson.id
+                    ? null
+                    : { kind: "lesson", id: lesson.id }
+                );
+              }}
+              className={clsx(
+                "inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950",
+                isMenuOpen && "border-stone-300 bg-stone-100 text-stone-950"
+              )}
+              aria-label={`管理课程 ${lesson.title}`}
+              aria-expanded={isMenuOpen}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleOpenLesson(lesson.id)}
+              disabled={isOpening}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+            >
+              {isOpening ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+              打开
+              {!isOpening ? <ArrowUpRight className="h-4 w-4" /> : null}
+            </button>
+            {isMenuOpen ? renderLessonProjectMenu(lesson) : null}
+          </div>
         </div>
       </article>
     );
@@ -696,12 +1046,13 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     const isCompact = variant === "compact";
     const isExpanded = !isCompact && expandedPackageIds.has(coursePackage.id);
     const lessonsListId = `package-lessons-${coursePackage.id}`;
+    const isMenuOpen = projectMenu?.kind === "package" && projectMenu.id === coursePackage.id;
 
     return (
       <article
         key={coursePackage.id}
         className={clsx(
-          "border-stone-200 bg-white",
+          "relative border-stone-200 bg-white",
           isCompact ? "min-h-32 rounded-lg border p-4" : "border-b p-5"
         )}
       >
@@ -725,8 +1076,15 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 </span>
                 <ChevronDown className={clsx("h-3 w-3 transition", isExpanded ? "rotate-180" : null)} />
               </button>
-              <span className="rounded-full border border-stone-200 px-2 py-0.5 text-[11px] font-semibold text-stone-500">
-                Public
+              <span
+                className={clsx(
+                  "rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                  coursePackage.visibility === "public"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-stone-200 bg-stone-50 text-stone-500"
+                )}
+              >
+                {coursePackage.visibility === "public" ? "Public" : "Private"}
               </span>
             </div>
             <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">
@@ -757,13 +1115,35 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             </div>
           </div>
 
-          <Link
-            href={`/?package=${coursePackage.id}`}
-            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
-          >
-            打开
-            <ArrowUpRight className="h-4 w-4" />
-          </Link>
+          <div className="relative flex shrink-0 items-center gap-2" data-profile-project-menu-root>
+            <button
+              type="button"
+              onClick={() => {
+                setMoveMenuLessonId(null);
+                setProjectMenu((current) =>
+                  current?.kind === "package" && current.id === coursePackage.id
+                    ? null
+                    : { kind: "package", id: coursePackage.id }
+                );
+              }}
+              className={clsx(
+                "inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950",
+                isMenuOpen && "border-stone-300 bg-stone-100 text-stone-950"
+              )}
+              aria-label={`管理课程包 ${coursePackage.title}`}
+              aria-expanded={isMenuOpen}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+            <Link
+              href={`/?package=${coursePackage.id}`}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
+            >
+              打开
+              <ArrowUpRight className="h-4 w-4" />
+            </Link>
+            {isMenuOpen ? renderPackageProjectMenu(coursePackage) : null}
+          </div>
         </div>
 
         {isExpanded ? (
