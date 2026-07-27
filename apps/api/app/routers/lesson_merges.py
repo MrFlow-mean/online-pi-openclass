@@ -31,6 +31,11 @@ from app.services.lesson_merge import (
     update_merge_session,
 )
 from app.services.lesson_merge_ai import propose_ai_merge
+from app.services.lesson_contribution import (
+    LessonContributionError,
+    complete_lesson_contribution_merge,
+    persist_recomputed_contribution_merge,
+)
 from app.services.workspace_state import (
     find_lesson_package,
     get_store,
@@ -180,7 +185,7 @@ def recompute_lesson_merge_session(
     old_session = _session_for_lesson(user.id, lesson_id, session_id)
     if old_session.version != request.expected_version:
         raise HTTPException(status_code=409, detail="合并草案已更新，请刷新后重试")
-    workspace = load_workspace_for_user(user.id)
+    workspace, workspace_revision = load_workspace_for_user_with_revision(user.id)
     _, lesson = find_lesson_package(workspace, lesson_id)
     try:
         session = create_merge_session(
@@ -193,7 +198,20 @@ def recompute_lesson_merge_session(
         )
     except LessonMergeError as exc:
         raise _merge_http_error(exc) from exc
-    save_merge_session_for_user(session)
+    if old_session.audit.get("lesson_contribution_id"):
+        try:
+            persist_recomputed_contribution_merge(
+                get_store(),
+                user=user,
+                workspace=workspace,
+                expected_workspace_revision=workspace_revision,
+                old_session=old_session,
+                new_session=session,
+            )
+        except LessonContributionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    else:
+        save_merge_session_for_user(session)
     return merge_session_view(session)
 
 
@@ -221,12 +239,24 @@ def submit_lesson_merge_session(
         raise _merge_http_error(exc) from exc
     except LessonMergeError as exc:
         raise _merge_http_error(exc) from exc
-    save_workspace_and_merge_session_for_user_if_revision(
-        user.id,
-        workspace,
-        session,
-        expected_revision=revision,
-    )
+    if session.audit.get("lesson_contribution_id"):
+        try:
+            complete_lesson_contribution_merge(
+                get_store(),
+                user=user,
+                workspace=workspace,
+                expected_workspace_revision=revision,
+                session=session,
+            )
+        except LessonContributionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    else:
+        save_workspace_and_merge_session_for_user_if_revision(
+            user.id,
+            workspace,
+            session,
+            expected_revision=revision,
+        )
     return package_view_for_lesson(workspace, package, lesson.id)
 
 

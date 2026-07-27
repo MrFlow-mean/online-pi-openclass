@@ -214,3 +214,99 @@ def test_author_starts_merge_without_changing_live_lesson_and_can_return(
     assert returned.status_code == 200
     assert returned.json()["status"] == "open"
     assert returned.json()["merge_session_id"] is None
+
+
+def test_contribution_merge_commits_and_updates_status_atomically(api_client: TestClient) -> None:
+    source, personal = _forked_lesson(api_client)
+    created = api_client.post(
+        f"/api/lessons/{personal['id']}/contributions",
+        json={"title": "Merge this proposal"},
+    ).json()
+    _as(AUTHOR)
+    contribution = api_client.post(
+        f"/api/contributions/{created['id']}/merge/start",
+        json={"expected_version": created["version"]},
+    ).json()
+    session = api_client.get(
+        f"/api/lessons/{source['id']}/merge-sessions/{contribution['merge_session_id']}"
+    ).json()
+    assert session["status"] == "ready"
+
+    submitted = api_client.post(
+        f"/api/lessons/{source['id']}/merge-sessions/{session['id']}/submit",
+        json={"expected_version": session["version"]},
+    )
+    assert submitted.status_code == 200
+    merged = api_client.get(f"/api/contributions/{contribution['id']}")
+    assert merged.status_code == 200
+    merged_view = merged.json()
+    assert merged_view["status"] == "merged"
+    assert merged_view["merged_commit_id"]
+    lesson = next(item for item in submitted.json()["lessons"] if item["id"] == source["id"])
+    assert lesson["board_document"]["content_text"].endswith("Learner improvement")
+    merge_commit = next(
+        commit
+        for commit in lesson["history_graph"]["commits"]
+        if commit["id"] == merged_view["merged_commit_id"]
+    )
+    assert len(merge_commit["parent_ids"]) == 2
+    assert merge_commit["metadata"]["lesson_contribution_id"] == contribution["id"]
+
+
+def test_closing_merge_draft_abandons_linked_session(api_client: TestClient) -> None:
+    source, personal = _forked_lesson(api_client)
+    created = api_client.post(
+        f"/api/lessons/{personal['id']}/contributions",
+        json={"title": "Close during review"},
+    ).json()
+    _as(AUTHOR)
+    contribution = api_client.post(
+        f"/api/contributions/{created['id']}/merge/start",
+        json={"expected_version": created["version"]},
+    ).json()
+    session_id = contribution["merge_session_id"]
+    closed = api_client.post(
+        f"/api/contributions/{contribution['id']}/close",
+        json={"expected_version": contribution["version"]},
+    )
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+    assert closed.json()["merge_session_id"] is None
+    session = api_client.get(f"/api/lessons/{source['id']}/merge-sessions/{session_id}")
+    assert session.status_code == 200
+    assert session.json()["status"] == "abandoned"
+
+
+def test_stale_contribution_merge_recomputes_and_relinks(api_client: TestClient) -> None:
+    source, personal = _forked_lesson(api_client)
+    created = api_client.post(
+        f"/api/lessons/{personal['id']}/contributions",
+        json={"title": "Recompute proposal"},
+    ).json()
+    _as(AUTHOR)
+    contribution = api_client.post(
+        f"/api/contributions/{created['id']}/merge/start",
+        json={"expected_version": created["version"]},
+    ).json()
+    old_session = api_client.get(
+        f"/api/lessons/{source['id']}/merge-sessions/{contribution['merge_session_id']}"
+    ).json()
+    _save(api_client, source, "Author changed after review started")
+    stale = api_client.post(
+        f"/api/lessons/{source['id']}/merge-sessions/{old_session['id']}/submit",
+        json={"expected_version": old_session["version"]},
+    )
+    assert stale.status_code == 409
+    stale_session = api_client.get(
+        f"/api/lessons/{source['id']}/merge-sessions/{old_session['id']}"
+    ).json()
+    assert stale_session["status"] == "stale"
+
+    recomputed = api_client.post(
+        f"/api/lessons/{source['id']}/merge-sessions/{old_session['id']}/recompute",
+        json={"expected_version": stale_session["version"]},
+    )
+    assert recomputed.status_code == 200
+    assert recomputed.json()["id"] != old_session["id"]
+    relinked = api_client.get(f"/api/contributions/{contribution['id']}").json()
+    assert relinked["merge_session_id"] == recomputed.json()["id"]

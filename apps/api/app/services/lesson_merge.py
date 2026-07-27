@@ -237,6 +237,9 @@ def submit_merge_session(
             "document_changed": True,
             "teaching_state_invalidated": session.draft_runtime.invalidated_teaching_state,
             "ai_model": session.ai_model.model_dump(mode="json") if session.ai_model else None,
+            "lesson_contribution_id": session.audit.get("lesson_contribution_id"),
+            "lesson_contribution_revision": session.audit.get("lesson_contribution_revision"),
+            "contributor_user_id": session.audit.get("contributor_user_id"),
         },
     )
     session.status = "committed"

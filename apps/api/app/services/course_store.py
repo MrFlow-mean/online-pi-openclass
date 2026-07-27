@@ -554,6 +554,8 @@ class SqliteCourseStore:
         expected_workspace_revision: int,
         expected_contribution_version: int,
         events: list[LessonContributionEvent],
+        guard_session_id: str | None = None,
+        expected_session_version: int | None = None,
     ) -> bool:
         with self._lock:
             with self._connect() as conn:
@@ -562,6 +564,18 @@ class SqliteCourseStore:
                     if self._workspace_revision(conn, owner_user_id) != expected_workspace_revision:
                         conn.rollback()
                         return False
+                    if guard_session_id is not None:
+                        stored_session = conn.execute(
+                            "SELECT version FROM lesson_merge_sessions WHERE id = ? AND owner_user_id = ?",
+                            (guard_session_id, owner_user_id),
+                        ).fetchone()
+                        if (
+                            stored_session is None
+                            or expected_session_version is None
+                            or int(stored_session["version"]) != expected_session_version
+                        ):
+                            conn.rollback()
+                            return False
                     if not _update_contribution_if_version(
                         conn,
                         contribution,

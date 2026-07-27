@@ -241,11 +241,25 @@ def close_lesson_contribution(
     contribution, revision, events = _required_visible_bundle(store, contribution_id, user)
     if user.id not in {contribution.source_owner_user_id, contribution.contributor_user_id}:
         raise LessonContributionPermissionError("只有课程作者或提交者可以关闭改进方案。")
-    if contribution.status != "open":
-        raise LessonContributionConflictError("当前状态不能直接关闭。")
+    if contribution.status not in {"open", "merge_draft"}:
+        raise LessonContributionConflictError("当前状态不能关闭。")
     _require_version(contribution, expected_version)
+    session = None
+    previous_session_version = None
+    if contribution.status == "merge_draft":
+        if not contribution.merge_session_id:
+            raise LessonContributionConflictError("关联的合并草案已不存在。")
+        session = store.load_merge_session_for_user(
+            contribution.source_owner_user_id,
+            contribution.merge_session_id,
+        )
+        if session is None:
+            raise LessonContributionConflictError("关联的合并草案已不存在。")
+        previous_session_version = session.version
+        abandon_merge_session(session)
     previous_version = contribution.version
     contribution.status = "closed"
+    contribution.merge_session_id = None
     contribution.closed_at = now_iso()
     contribution.updated_at = contribution.closed_at
     contribution.version += 1
@@ -254,7 +268,18 @@ def close_lesson_contribution(
         kind="closed",
         actor=_actor_for_user(user, fallback="参与者"),
     )
-    _save(store, contribution, expected_version=previous_version, events=[event])
+    if session is not None and previous_session_version is not None:
+        saved = store.save_merge_session_and_contribution_if_versions(
+            session,
+            contribution,
+            expected_session_version=previous_session_version,
+            expected_contribution_version=previous_version,
+            events=[event],
+        )
+        if not saved:
+            raise LessonContributionConflictError("合并草案或改进方案已更新，请刷新后重试。")
+    else:
+        _save(store, contribution, expected_version=previous_version, events=[event])
     return contribution_view(store, (contribution, revision, [*events, event]), viewer=user)
 
 
@@ -431,6 +456,114 @@ def return_lesson_contribution_for_changes(
     return contribution_view(store, (contribution, revision, [*events, event]), viewer=user)
 
 
+def persist_recomputed_contribution_merge(
+    store: SqliteCourseStore,
+    *,
+    user: UserView,
+    workspace: WorkspaceState,
+    expected_workspace_revision: int,
+    old_session: LessonMergeSession,
+    new_session: LessonMergeSession,
+) -> None:
+    contribution_id = old_session.audit.get("lesson_contribution_id")
+    if not isinstance(contribution_id, str) or not contribution_id:
+        raise LessonContributionConflictError("合并草案没有关联改进方案。")
+    contribution, _revision, _events = _required_bundle(store, contribution_id)
+    if (
+        contribution.source_owner_user_id != user.id
+        or contribution.status != "merge_draft"
+        or contribution.merge_session_id != old_session.id
+    ):
+        raise LessonContributionConflictError("改进方案与合并草案状态不一致。")
+    new_session.audit.update(
+        {
+            key: old_session.audit[key]
+            for key in (
+                "lesson_contribution_id",
+                "lesson_contribution_revision",
+                "contributor_user_id",
+            )
+            if key in old_session.audit
+        }
+    )
+    previous_version = contribution.version
+    contribution.merge_session_id = new_session.id
+    contribution.version += 1
+    contribution.updated_at = now_iso()
+    event = LessonContributionEvent(
+        contribution_id=contribution.id,
+        kind="merge_started",
+        actor=_actor_for_user(user, fallback="课程作者"),
+        metadata={
+            "merge_session_id": new_session.id,
+            "supersedes_session_id": old_session.id,
+            "recomputed": True,
+        },
+    )
+    saved = store.save_workspace_merge_session_and_contribution_if_revision(
+        user.id,
+        workspace,
+        new_session,
+        contribution,
+        expected_workspace_revision=expected_workspace_revision,
+        expected_contribution_version=previous_version,
+        events=[event],
+        guard_session_id=old_session.id,
+        expected_session_version=old_session.version,
+    )
+    if not saved:
+        raise LessonContributionConflictError("课程、合并草案或改进方案已更新，请刷新后重试。")
+
+
+def complete_lesson_contribution_merge(
+    store: SqliteCourseStore,
+    *,
+    user: UserView,
+    workspace: WorkspaceState,
+    expected_workspace_revision: int,
+    session: LessonMergeSession,
+) -> None:
+    contribution_id = session.audit.get("lesson_contribution_id")
+    if not isinstance(contribution_id, str) or not contribution_id:
+        raise LessonContributionConflictError("合并草案没有关联改进方案。")
+    contribution, _revision, _events = _required_bundle(store, contribution_id)
+    if (
+        contribution.source_owner_user_id != user.id
+        or contribution.status != "merge_draft"
+        or contribution.merge_session_id != session.id
+        or session.status != "committed"
+        or not session.committed_commit_id
+    ):
+        raise LessonContributionConflictError("改进方案与合并提交状态不一致。")
+    previous_version = contribution.version
+    contribution.status = "merged"
+    contribution.merged_commit_id = session.committed_commit_id
+    contribution.version += 1
+    contribution.updated_at = now_iso()
+    event = LessonContributionEvent(
+        contribution_id=contribution.id,
+        kind="merged",
+        actor=_actor_for_user(user, fallback="课程作者"),
+        metadata={
+            "merge_session_id": session.id,
+            "merged_commit_id": session.committed_commit_id,
+        },
+    )
+    saved = store.save_workspace_merge_session_and_contribution_if_revision(
+        user.id,
+        workspace,
+        session,
+        contribution,
+        expected_workspace_revision=expected_workspace_revision,
+        expected_contribution_version=previous_version,
+        events=[event],
+        guard_session_id=session.id,
+        expected_session_version=session.version - 1,
+    )
+    if not saved:
+        raise LessonContributionConflictError("课程、合并草案或改进方案已更新，请刷新后重试。")
+
+
 def contribution_view(
     store: SqliteCourseStore,
     bundle: tuple[LessonContribution, LessonContributionRevision, list[LessonContributionEvent]],
@@ -450,7 +583,7 @@ def contribution_view(
     permissions = LessonContributionViewerPermissions(
         can_comment=registered and (source_is_public or participant),
         can_update=registered and viewer.id == contribution.contributor_user_id and contribution.status == "open",
-        can_close=participant and contribution.status == "open",
+        can_close=participant and contribution.status in {"open", "merge_draft"},
         can_reopen=participant and contribution.status == "closed" and source_is_public,
         can_start_merge=(
             registered
