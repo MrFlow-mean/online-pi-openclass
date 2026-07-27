@@ -632,6 +632,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   function renderLessonCard(lesson: Lesson) {
     const topics = getLessonTopics(lesson);
     const isOpening = openingLessonId === lesson.id;
+    const summary = lesson.summary.trim();
 
     return (
       <article key={lesson.id} className="border-b border-stone-200 bg-white p-5">
@@ -649,9 +650,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 单独课程
               </span>
             </div>
-            <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">
-              {lesson.summary || ph.lessonStandaloneHint}
-            </p>
+            {summary ? <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">{summary}</p> : null}
 
             <div className="mt-3 flex flex-wrap gap-1.5">
               {topics.map((topic) => (
@@ -776,6 +775,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             {coursePackage.lessons.length ? (
               coursePackage.lessons.map((lesson, index) => {
                 const isOpening = openingLessonId === lesson.id;
+                const summary = lesson.summary.trim();
 
                 return (
                   <li
@@ -798,9 +798,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                           单独课程
                         </span>
                       </div>
-                      <p className="mt-1 line-clamp-1 text-xs leading-5 text-stone-500">
-                        {lesson.summary || lesson.board_document.title || ph.lessonDocHint}
-                      </p>
+                      {summary ? <p className="mt-1 line-clamp-1 text-xs leading-5 text-stone-500">{summary}</p> : null}
                     </div>
 
                     <button

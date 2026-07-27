@@ -22,6 +22,7 @@ from app.services.blank_board_intake import active_requirement_from_history
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
 from app.services.course_store import SqliteCourseStore
 from app.services.history import commit_operations
+from app.services.lesson_summary import lesson_content_summary
 
 
 def _load_root_dotenv() -> None:
@@ -328,6 +329,7 @@ def _codex_only_lesson(lesson: Lesson) -> Lesson:
     )
     return lesson.model_copy(
         update={
+            "summary": lesson_content_summary(lesson),
             "board_teaching_guide": None,
             "board_teaching_progress": None,
             "learning_requirements": active_requirement,

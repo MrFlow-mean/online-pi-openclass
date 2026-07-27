@@ -256,8 +256,6 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       workspace: z ? "工作台" : "Studio",
       loadWorkspaceError: z ? "加载个人项目失败" : "Could not load your projects",
       avatarAlt: z ? "开放课堂用户头像" : "OpenClass profile avatar",
-      lessonStandaloneHint: z ? "单独课程文档，可进入工作台继续编辑、分支和讲解。" : "Standalone lesson — open the studio to edit, branch, or present.",
-      lessonDocHint: z ? "课程文档，可进入工作台继续编辑。" : "Lesson document — continue editing in the studio.",
       noUpdatesYet: z ? "暂无更新" : "No updates yet",
       tabSettings: z ? "个人设置" : "Settings",
       tabRepositories: z ? "项目" : "Repositories",

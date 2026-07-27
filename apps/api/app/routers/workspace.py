@@ -34,6 +34,7 @@ from app.services.lesson_package_format import (
     read_ridoc,
 )
 from app.services.lesson_package_import import import_ridoc_archive, rollback_imported_assets
+from app.services.lesson_summary import lesson_content_summary
 from app.services.publication_review import review_project_publication
 from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
@@ -59,7 +60,7 @@ def _public_lesson_view(lesson) -> PublicLessonView:
     return PublicLessonView(
         id=lesson.id,
         title=lesson.title,
-        summary=lesson.summary,
+        summary=lesson_content_summary(lesson),
         tags=lesson.tags,
         board_document=lesson.board_document,
         updated_at=lesson.updated_at,
