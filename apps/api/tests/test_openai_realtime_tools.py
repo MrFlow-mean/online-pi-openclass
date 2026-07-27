@@ -6,12 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import (
+    AIModelSelection,
     RealtimeConnectRequest,
     RealtimeToolCallRequest,
     RealtimeTranscriptLogRequest,
     SelectionRef,
 )
-from app.services import chat_service, openai_realtime, workspace_state
+from app.services import ai_model_catalog, chat_service, codex_app_server, openai_realtime, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.realtime_board_context import read_realtime_board_context
@@ -94,6 +95,7 @@ def test_realtime_connect_posts_official_webrtc_session_with_tools(monkeypatch, 
     assert response.tools_enabled is True
     assert captured["url"] == "https://api.openai.com/v1/realtime/calls"
     payload = json.loads(captured["files"]["session"][1])
+    assert payload["type"] == "realtime"
     assert payload["model"] == "gpt-realtime-2.1"
     assert payload["output_modalities"] == ["audio"]
     assert payload["audio"]["input"]["turn_detection"]["type"] == "semantic_vad"
@@ -103,6 +105,199 @@ def test_realtime_connect_posts_official_webrtc_session_with_tools(monkeypatch, 
         "run_chatbot_workflow",
     }
     assert "第三节 情景对话" not in payload["instructions"]
+
+
+def test_catalog_exposes_codex_live_when_shared_proxy_is_configured(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY", "proxy-api-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "disabled")
+    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_personal_api_configured",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: True,
+    )
+
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+
+    codex_live = [
+        option
+        for option in catalog.realtime
+        if option.provider == "openai_codex"
+    ]
+    assert len(codex_live) == 1
+    assert codex_live[0].model == "gpt-live-1-codex"
+    assert codex_live[0].access_method == "chatgpt_subscription"
+    assert codex_live[0].transport == "openai_webrtc"
+    assert codex_live[0].enabled is True
+    assert codex_live[0].configured is True
+    assert codex_live[0].default is True
+    assert catalog.defaults["realtime"] == AIModelSelection(
+        provider="openai_codex",
+        model="gpt-live-1-codex",
+        access_method="chatgpt_subscription",
+    )
+
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: False,
+    )
+    disconnected_catalog = ai_model_catalog.build_model_catalog("disconnected_user")
+    disconnected_codex_live = next(
+        option
+        for option in disconnected_catalog.realtime
+        if option.provider == "openai_codex"
+    )
+    assert disconnected_codex_live.enabled is True
+    assert disconnected_codex_live.configured is True
+    assert disconnected_codex_live.default is True
+    assert disconnected_catalog.defaults["realtime"].provider == "openai_codex"
+
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "false")
+    disabled_catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+    disabled_codex_live = next(
+        option
+        for option in disabled_catalog.realtime
+        if option.provider == "openai_codex"
+    )
+    assert disabled_codex_live.enabled is False
+    assert disabled_codex_live.configured is True
+    assert disabled_codex_live.default is False
+
+
+def test_codex_realtime_credentials_are_user_scoped(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(
+        codex_app_server,
+        "codex_provider_status",
+        lambda user_id, refresh: SimpleNamespace(configured=user_id == TEST_USER_ID, message=""),
+    )
+    home = codex_app_server.codex_home_path(TEST_USER_ID)
+    home.mkdir(parents=True)
+    (home / "auth.json").write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "codex-access-token",
+                    "refresh_token": "codex-refresh-token",
+                    "account_id": "codex-account-id",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    credentials = codex_app_server.codex_realtime_credentials(TEST_USER_ID)
+
+    assert credentials.access_token == "codex-access-token"
+    assert credentials.account_id == "codex-account-id"
+    with pytest.raises(codex_app_server.CodexAppServerError, match="not signed in"):
+        codex_app_server.codex_realtime_credentials("other_user")
+
+
+def test_realtime_connect_posts_codex_subscription_webrtc_session(monkeypatch, isolated_store) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY", "proxy-api-key")
+    monkeypatch.setenv(
+        "OPENCLASS_CODEX_REALTIME_PROXY_URL",
+        "http://127.0.0.1:8317/v1/live",
+    )
+    monkeypatch.setenv("OPENCLASS_REALTIME_TOOLS_ENABLED", "true")
+    lesson = _seed_workspace(isolated_store)
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 201
+        text = "codex-answer-sdp"
+        headers = {
+            "Content-Type": "text/plain",
+            "Location": "/backend-api/codex/realtime/calls/rtc_codex_call",
+        }
+
+        def json(self):
+            return json.loads(self.text)
+
+    class _FakeClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return _FakeResponse()
+
+    monkeypatch.setattr(openai_realtime.httpx, "Client", _FakeClient)
+    response = openai_realtime.connect_openai_realtime_session(
+        lesson.id,
+        RealtimeConnectRequest(
+            offer_sdp="v=0-codex-offer",
+            client_session_id="codex_realtime_test",
+            realtime_model=AIModelSelection(
+                provider="openai_codex",
+                model="gpt-live-1-codex",
+                access_method="chatgpt_subscription",
+            ),
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.answer_sdp == "codex-answer-sdp"
+    assert response.provider == "openai_codex"
+    assert response.model == "gpt-live-1-codex"
+    assert response.tools_enabled is False
+    assert response.call_id == "rtc_codex_call"
+    assert captured["url"] == "http://127.0.0.1:8317/v1/live"
+    assert captured["headers"]["Authorization"] == "Bearer proxy-api-key"
+    assert captured["headers"]["OpenAI-Alpha"] == "quicksilver=v2"
+    assert captured["headers"]["Originator"] == "OpenClass"
+    assert captured["headers"]["Session-Id"] == "codex_realtime_test"
+    assert captured["headers"]["X-Session-Id"] == captured["headers"]["Thread-Id"]
+    assert captured["json"]["sdp"] == "v=0-codex-offer"
+    assert captured["json"]["session"]["model"] == "gpt-live-1-codex"
+    assert "OpenClass Chatbot" in captured["json"]["session"]["instructions"]
+    assert set(captured["json"]["session"]) == {"model", "instructions"}
+
+
+def test_realtime_connect_rejects_codex_live_without_proxy_credentials(monkeypatch, isolated_store) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
+    lesson = _seed_workspace(isolated_store)
+
+    with pytest.raises(openai_realtime.RealtimeServiceError) as exc_info:
+        openai_realtime.connect_openai_realtime_session(
+            lesson.id,
+            RealtimeConnectRequest(
+                offer_sdp="v=0",
+                realtime_model=AIModelSelection(
+                    provider="openai_codex",
+                    model="gpt-live-1-codex",
+                    access_method="chatgpt_subscription",
+                ),
+            ),
+            user_id=TEST_USER_ID,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "代理凭据未配置" in exc_info.value.detail
 
 
 def test_board_context_resolves_heading_range_and_highlight(isolated_store) -> None:

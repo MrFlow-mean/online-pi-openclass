@@ -130,6 +130,12 @@ class CodexParsedResponse:
     source_turn_count: int = 1
 
 
+@dataclass(frozen=True)
+class CodexRealtimeCredentials:
+    access_token: str
+    account_id: str
+
+
 def _env_truthy(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -852,6 +858,37 @@ def codex_provider_status(
         with _status_cache_lock:
             _cached_status[user_id] = (time.monotonic(), status)
         return status
+
+
+def codex_realtime_credentials(user_id: str) -> CodexRealtimeCredentials:
+    """Return refreshed, user-scoped OAuth material for a Codex Live bootstrap.
+
+    The credential remains inside the backend and must never be serialized into
+    an API response or log event.
+    """
+    status = codex_provider_status(user_id, refresh=True)
+    if not status.configured:
+        raise CodexAppServerError(
+            status.message or "ChatGPT/Codex provider is not signed in"
+        )
+    try:
+        raw = json.loads(
+            (codex_home_path(user_id) / "auth.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CodexAppServerError("Codex realtime credential is unavailable") from exc
+    tokens = raw.get("tokens") if isinstance(raw, dict) else None
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    account_id = tokens.get("account_id") if isinstance(tokens, dict) else None
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (access_token, account_id)
+    ):
+        raise CodexAppServerError("Codex realtime credential is unavailable")
+    return CodexRealtimeCredentials(
+        access_token=access_token.strip(),
+        account_id=account_id.strip(),
+    )
 
 
 def list_codex_models(user_id: str) -> list[dict[str, Any]]:
