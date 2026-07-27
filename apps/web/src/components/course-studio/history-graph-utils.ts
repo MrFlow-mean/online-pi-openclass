@@ -1,5 +1,5 @@
 import { compactText, metadataBool, metadataText } from "@/components/course-studio/history-utils";
-import type { CommitRecord, Lesson } from "@/types";
+import type { CommitRecord, Lesson, SelectionRef } from "@/types";
 
 export type HistoryNodeKind = "chat" | "document" | "restore" | "merge" | "system";
 
@@ -130,6 +130,95 @@ export function historyNodeKindLabel(kind: HistoryNodeKind) {
     return "Merge";
   }
   return "System";
+}
+
+function historyNodeContent(commit: CommitRecord) {
+  const userMessage = metadataText(commit, "user_message");
+  const assistantMessage = metadataText(commit, "assistant_message");
+  if (historyNodeKind(commit) === "chat" && (userMessage || assistantMessage)) {
+    return [
+      userMessage ? `学习者：${userMessage}` : "",
+      assistantMessage ? `OpenClass：${assistantMessage}` : "",
+    ].filter(Boolean).join("\n\n");
+  }
+  return commit.snapshot.content_text.trim() || historyNodeSummary(commit) || commit.message.trim();
+}
+
+function boundedText(value: string, maxLength: number) {
+  const normalized = value.trim();
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength).trimEnd()}…`;
+}
+
+export function historyNodeSelection(lesson: Lesson, commit: CommitRecord): SelectionRef {
+  const title = historyNodeTitle(commit);
+  const excerpt = boundedText(
+    [
+      `历史节点：${title}`,
+      `类型：${historyNodeKindLabel(historyNodeKind(commit))}`,
+      `分支：${commit.branch_name}`,
+      "",
+      historyNodeContent(commit),
+    ].join("\n"),
+    12_000
+  );
+  return {
+    kind: "chat",
+    excerpt,
+    lesson_id: lesson.id,
+    document_id: commit.snapshot.id,
+    segment_id: commit.id,
+    heading_path: [lesson.title, title],
+    before_text: `历史节点 ${commit.id}`,
+    after_text: `创建于 ${commit.created_at}`,
+  };
+}
+
+function answerPrefillValue(value: string) {
+  // Answer decodes the query once through URLSearchParams and once in its prefill parser.
+  return encodeURIComponent(value.replaceAll("%", "%25"));
+}
+
+function boundedCommunityDraft(prefix: string, content: string, suffix: string) {
+  const maxEncodedLength = 6_800;
+  if (answerPrefillValue(`${prefix}${content}${suffix}`).length <= maxEncodedLength) {
+    return `${prefix}${content}${suffix}`;
+  }
+  const truncatedSuffix = "\n\n> 节点内容较长，草稿中展示了可供讨论的节选。";
+  let lower = 0;
+  let upper = content.length;
+  while (lower < upper) {
+    const middle = Math.ceil((lower + upper) / 2);
+    const candidate = `${prefix}${content.slice(0, middle).trimEnd()}${truncatedSuffix}`;
+    if (answerPrefillValue(candidate).length <= maxEncodedLength) {
+      lower = middle;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  return `${prefix}${content.slice(0, lower).trimEnd()}${truncatedSuffix}`;
+}
+
+export function historyNodeCommunityShareHref(lesson: Lesson, commit: CommitRecord) {
+  const nodeTitle = historyNodeTitle(commit);
+  const postTitle = compactText(`${lesson.title} · ${nodeTitle}`, 140);
+  const prefix = [
+    "---",
+    `title: ${JSON.stringify(postTitle)}`,
+    "---",
+    "",
+    "> OpenClass 课堂历史节点",
+    `> 课程：${lesson.title}`,
+    `> 节点：${nodeTitle}`,
+    `> 类型：${historyNodeKindLabel(historyNodeKind(commit))}`,
+    `> 分支：${commit.branch_name}`,
+    `> 时间：${commit.created_at}`,
+    "",
+    "## 节点内容",
+    "",
+  ].join("\n");
+  const suffix = "\n\n---\n\n请围绕这个课堂节点补充你的问题、理解或建议。";
+  const prefill = boundedCommunityDraft(prefix, historyNodeContent(commit), suffix);
+  return `/community/questions/add?prefill=${answerPrefillValue(prefill)}`;
 }
 
 export function buildHistoryGraphRows(

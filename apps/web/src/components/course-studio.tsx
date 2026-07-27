@@ -871,6 +871,7 @@ export function CourseStudio() {
           onPreviewCommit={(commit) => handlePreviewCommit(commit)}
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
+          onReferenceHistoryNode={(historySelection) => focusComposerWithSelection("ask", historySelection)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onMergeBranch={(branchName) => lessonMerge.startMerge(branchName)}
           lessonPackageControls={{

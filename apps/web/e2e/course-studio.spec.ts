@@ -140,14 +140,32 @@ async function openHistoryPanel(page: Page) {
 
 test("creates a package and lesson, edits the document, and persists a version", async ({ page }) => {
   const unique = Date.now();
+  const lessonTitle = `主流程页面 ${unique}`;
+  const documentText = `第一版讲义内容 ${unique} · 完成度 100%`;
   await enterAsGuest(page);
   await createPackageFromHome(page, `维护性测试课程包 ${unique}`);
-  await createLessonFromEmptyStudio(page, `主流程页面 ${unique}`);
+  await createLessonFromEmptyStudio(page, lessonTitle);
 
-  await writeEditorTextAndWaitForSave(page, `第一版讲义内容 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, documentText);
   await openHistoryPanel(page);
 
-  await expect(page.getByText("Auto Save").first()).toBeVisible();
+  const historyNode = page.locator("[data-history-node-id]").filter({ hasText: "Auto Save" });
+  await expect(historyNode).toHaveCount(1);
+  await expect(historyNode.getByRole("button", { name: "Preview" })).toBeVisible();
+  await expect(historyNode.getByRole("button", { name: "Restore" })).toBeVisible();
+  await expect(historyNode.getByRole("button", { name: "Branch" })).toBeVisible();
+  await historyNode.getByRole("button", { name: "引用到输入框" }).click();
+  await expect(page.getByText("引用 1 · 对话引用")).toBeVisible();
+  await expect(page.getByText(/历史节点：Auto Save 类型：Document/)).toBeVisible();
+
+  const shareHref = await historyNode.getByRole("link", { name: "分享到社区" }).getAttribute("href");
+  expect(shareHref).toBeTruthy();
+  const encodedPrefill = new URL(shareHref!, "http://localhost").searchParams.get("prefill");
+  expect(encodedPrefill).toBeTruthy();
+  const prefill = decodeURIComponent(encodedPrefill!);
+  expect(prefill).toContain(`title: "${lessonTitle} · Auto Save"`);
+  expect(prefill).toContain("> 分支：main");
+  expect(prefill).toContain(documentText);
 });
 
 test("sets standalone lessons and course packages to public or private", async ({ page }) => {

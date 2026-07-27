@@ -7,7 +7,9 @@ import {
   GitCommitHorizontal,
   GitMerge,
   MessageCircle,
+  Quote,
   RotateCcw,
+  Share2,
 } from "lucide-react";
 import type { CSSProperties } from "react";
 
@@ -18,7 +20,9 @@ import {
 } from "@/lib/learning-requirement-display";
 import {
   buildHistoryGraphRows,
+  historyNodeCommunityShareHref,
   historyNodeKindLabel,
+  historyNodeSelection,
   type HistoryGraphLane,
   type HistoryGraphRow,
   type HistoryNodeKind,
@@ -28,7 +32,7 @@ import {
   LessonPackageControls,
   type LessonPackageControlsProps,
 } from "@/components/course-studio/lesson-package-controls";
-import type { BoardDecision, CommitRecord, Lesson } from "@/types";
+import type { BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
 
 type VersionControlPanelProps = {
   activeLesson: Lesson;
@@ -43,6 +47,7 @@ type VersionControlPanelProps = {
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
+  onReferenceHistoryNode: (selection: SelectionRef) => void;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onMergeBranch: (branchName: string) => void | Promise<void>;
   lessonPackageControls: LessonPackageControlsProps;
@@ -162,22 +167,27 @@ function GraphCell({ row, lanes }: { row: HistoryGraphRow; lanes: HistoryGraphLa
 function HistoryGraphRowItem({
   row,
   lanes,
+  activeLesson,
   currentBranchName,
   onPreviewCommit,
   onRestoreCommit,
   onCreateBranchFromCommit,
+  onReferenceHistoryNode,
   onSwitchBranch,
 }: {
   row: HistoryGraphRow;
   lanes: HistoryGraphLane[];
+  activeLesson: Lesson;
   currentBranchName: string;
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
+  onReferenceHistoryNode: (selection: SelectionRef) => void;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
 }) {
   return (
     <div
+      data-history-node-id={row.commit.id}
       onClick={() => void onPreviewCommit(row.commit)}
       className={clsx(
         "group grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-md px-2 py-2 text-left font-mono transition",
@@ -223,6 +233,29 @@ function HistoryGraphRowItem({
           >
             <Eye className="h-3.5 w-3.5" />
           </button>
+          <button
+            type="button"
+            aria-label="引用到输入框"
+            title="引用到输入框"
+            onClick={(event) => {
+              event.stopPropagation();
+              onReferenceHistoryNode(historyNodeSelection(activeLesson, row.commit));
+            }}
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-black"
+          >
+            <Quote className="h-3.5 w-3.5" />
+          </button>
+          <a
+            href={historyNodeCommunityShareHref(activeLesson, row.commit)}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="分享到社区"
+            title="分享到社区"
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </a>
           <button
             type="button"
             aria-label="Restore"
@@ -288,6 +321,7 @@ export function VersionControlPanel({
   onPreviewCommit,
   onRestoreCommit,
   onCreateBranchFromCommit,
+  onReferenceHistoryNode,
   onSwitchBranch,
   onMergeBranch,
   lessonPackageControls,
@@ -368,10 +402,12 @@ export function VersionControlPanel({
               key={row.commit.id}
               row={row}
               lanes={lanes}
+              activeLesson={activeLesson}
               currentBranchName={activeLesson.history_graph.current_branch}
               onPreviewCommit={onPreviewCommit}
               onRestoreCommit={onRestoreCommit}
               onCreateBranchFromCommit={onCreateBranchFromCommit}
+              onReferenceHistoryNode={onReferenceHistoryNode}
               onSwitchBranch={onSwitchBranch}
             />
           ))}

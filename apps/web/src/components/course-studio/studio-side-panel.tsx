@@ -45,6 +45,7 @@ type CourseStudioSidePanelProps = {
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
+  onReferenceHistoryNode: (selection: SelectionRef) => void;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onMergeBranch: (branchName: string) => void | Promise<void>;
   lessonPackageControls: LessonPackageControlsProps;
@@ -112,6 +113,7 @@ export function CourseStudioSidePanel({
   onPreviewCommit,
   onRestoreCommit,
   onCreateBranchFromCommit,
+  onReferenceHistoryNode,
   onSwitchBranch,
   onMergeBranch,
   lessonPackageControls,
@@ -286,6 +288,7 @@ export function CourseStudioSidePanel({
             onPreviewCommit={onPreviewCommit}
             onRestoreCommit={onRestoreCommit}
             onCreateBranchFromCommit={onCreateBranchFromCommit}
+            onReferenceHistoryNode={onReferenceHistoryNode}
             onSwitchBranch={onSwitchBranch}
             onMergeBranch={onMergeBranch}
             lessonPackageControls={lessonPackageControls}
