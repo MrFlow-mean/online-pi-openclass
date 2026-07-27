@@ -15,6 +15,7 @@ import type {
   CodexProviderStatus,
   DocumentAIEditPayload,
   DocumentSavePayload,
+  EmailCodeRequestResponse,
   GoogleRealtimeSessionPayload,
   GoogleRealtimeSessionResponse,
   LessonMergeResolution,
@@ -490,6 +491,18 @@ export const api = {
     return request<AuthSessionResponse>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
+    });
+  },
+  requestEmailCode(email: string) {
+    return request<EmailCodeRequestResponse>("/api/auth/email/code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+  verifyEmailCode(challengeId: string, code: string) {
+    return request<AuthSessionResponse>("/api/auth/email/verify", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId, code, guest_token: readGuestAuthToken() }),
     });
   },
   startGuestSession() {

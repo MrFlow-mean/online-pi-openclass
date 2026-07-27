@@ -16,6 +16,7 @@ import {
   Hexagon,
   LoaderCircle,
   LockKeyhole,
+  Mail,
   Magnet,
   Microscope,
   Network,
@@ -593,6 +594,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [mode, setMode] = useState(initialMode);
   const [accountIdentifier, setAccountIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [emailCode, setEmailCode] = useState("");
+  const [emailChallengeId, setEmailChallengeId] = useState<string | null>(null);
+  const [useEmailCode, setUseEmailCode] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserView | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
@@ -815,6 +819,44 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     } finally {
       setIsLoading(false);
     }
+  }
+
+  async function handleEmailCodeSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      if (!emailChallengeId) {
+        const response = await api.requestEmailCode(accountIdentifier);
+        setEmailChallengeId(response.challenge_id);
+        setNotice(response.message);
+        return;
+      }
+      const payload = await api.verifyEmailCode(emailChallengeId, emailCode);
+      storeAuthToken(payload.token);
+      setCurrentUser(payload.user);
+      const nextPath = new URLSearchParams(window.location.search).get("next");
+      navigateAfterAuth(loginDestination(nextPath));
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "操作失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function resetEmailCodeFlow() {
+    setUseEmailCode(false);
+    setEmailChallengeId(null);
+    setEmailCode("");
+  }
+
+  function handleAuthModeChange(nextMode: "register" | "login") {
+    setMode(nextMode);
+    setError(null);
+    setNotice(null);
+    resetEmailCodeFlow();
   }
 
   function handleLogout() {
@@ -1081,11 +1123,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     <Link
                       key={item}
                       href={`/${item}${authModeSearch}`}
-                      onClick={() => {
-                        setMode(item);
-                        setError(null);
-                        setNotice(null);
-                      }}
+                      onClick={() => handleAuthModeChange(item)}
                       className={clsx(
                         "flex h-10 items-center justify-center rounded-lg text-sm font-bold transition",
                         mode === item ? "bg-white text-[#3a312b] shadow-sm" : "text-[#8d8377] hover:text-[#3a312b]"
@@ -1096,19 +1134,80 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   ))}
                 </div>
 
-                <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
+                {!isRegister ? (
+                  <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg border border-[#ebe2d2] bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetEmailCodeFlow();
+                        setError(null);
+                        setNotice(null);
+                      }}
+                      className={clsx(
+                        "h-9 rounded-lg text-sm font-semibold transition",
+                        !useEmailCode ? "bg-[#f7f3eb] text-[#3a312b]" : "text-[#8d8377] hover:text-[#3a312b]"
+                      )}
+                    >
+                      密码登录
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUseEmailCode(true);
+                        setEmailChallengeId(null);
+                        setEmailCode("");
+                        setError(null);
+                        setNotice(null);
+                      }}
+                      className={clsx(
+                        "h-9 rounded-lg text-sm font-semibold transition",
+                        useEmailCode ? "bg-[#f7f3eb] text-[#3a312b]" : "text-[#8d8377] hover:text-[#3a312b]"
+                      )}
+                    >
+                      邮箱验证码
+                    </button>
+                  </div>
+                ) : null}
+
+                <form
+                  onSubmit={(event) =>
+                    void (useEmailCode && !isRegister ? handleEmailCodeSubmit(event) : handleSubmit(event))
+                  }
+                  className="space-y-4"
+                >
                   <AuthInput
                     id="account"
-                    label="邮箱或手机号"
-                    type="text"
+                    label={useEmailCode && !isRegister ? "邮箱" : "邮箱或手机号"}
+                    type={useEmailCode && !isRegister ? "email" : "text"}
                     value={accountIdentifier}
-                    onChange={setAccountIdentifier}
+                    onChange={(value) => {
+                      setAccountIdentifier(value);
+                      if (emailChallengeId) {
+                        setEmailChallengeId(null);
+                        setEmailCode("");
+                        setNotice(null);
+                      }
+                    }}
                     autoComplete="username"
-                    placeholder="name@company.com / 13800138000"
-                    Icon={User}
+                    placeholder={useEmailCode && !isRegister ? "name@company.com" : "name@company.com / 13800138000"}
+                    Icon={useEmailCode && !isRegister ? Mail : User}
                   />
 
-                  <div className="space-y-2">
+                  {useEmailCode && !isRegister && emailChallengeId ? (
+                    <AuthInput
+                      id="email-code"
+                      label="6 位验证码"
+                      type="text"
+                      value={emailCode}
+                      onChange={setEmailCode}
+                      minLength={6}
+                      autoComplete="one-time-code"
+                      placeholder="000000"
+                      Icon={LockKeyhole}
+                    />
+                  ) : null}
+
+                  {!useEmailCode || isRegister ? <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
                       <button
@@ -1130,7 +1229,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                       placeholder={isRegister ? "至少 8 位" : "••••••••"}
                       Icon={LockKeyhole}
                     />
-                  </div>
+                  </div> : null}
 
                   {error ? (
                     <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div>
@@ -1142,7 +1241,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
-                    {isRegister ? "创建账号" : "进入工作台"}
+                    {isRegister ? "创建账号" : useEmailCode ? (emailChallengeId ? "验证并登录" : "发送验证码") : "进入工作台"}
                   </button>
                 </form>
 
@@ -1150,11 +1249,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   {isRegister ? "已有账号？" : "还没有账号？"}
                   <Link
                     href={`/${alternateMode}${authModeSearch}`}
-                    onClick={() => {
-                      setMode(alternateMode);
-                      setError(null);
-                      setNotice(null);
-                    }}
+                    onClick={() => handleAuthModeChange(alternateMode)}
                     className="ml-1 border-b border-[#3a312b] pb-0.5 font-semibold text-[#3a312b] transition hover:border-[#d2a878] hover:text-[#b88952]"
                   >
                     {isRegister ? "返回登录" : "免费注册"}

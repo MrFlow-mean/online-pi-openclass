@@ -6,7 +6,16 @@ from urllib import parse
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import RedirectResponse
 
-from app.models import AdminOverview, AuthProviderView, AuthRequest, AuthSessionResponse, UserView
+from app.models import (
+    AdminOverview,
+    AuthProviderView,
+    AuthRequest,
+    AuthSessionResponse,
+    EmailCodeRequest,
+    EmailCodeRequestResponse,
+    EmailCodeVerifyRequest,
+    UserView,
+)
 from app.services.auth_service import AuthService, bearer_token_from_request, bearer_token_from_websocket
 from app.services.community_oauth import community_oauth_service
 from app.services.workspace_state import DATABASE_PATH
@@ -41,6 +50,26 @@ def register(payload: AuthRequest) -> AuthSessionResponse:
 @router.post("/auth/login", response_model=AuthSessionResponse)
 def login(payload: AuthRequest) -> AuthSessionResponse:
     token, user = auth_service.login(payload.account_identifier(), payload.password, guest_token=payload.guest_token)
+    return AuthSessionResponse(token=token, user=user)
+
+
+@router.post("/auth/email/code", response_model=EmailCodeRequestResponse)
+def request_email_code(payload: EmailCodeRequest) -> EmailCodeRequestResponse:
+    challenge_id, expires_in_seconds = auth_service.request_email_code(payload.email)
+    return EmailCodeRequestResponse(
+        challenge_id=challenge_id,
+        expires_in_seconds=expires_in_seconds,
+        message="验证码已发送，请检查邮箱",
+    )
+
+
+@router.post("/auth/email/verify", response_model=AuthSessionResponse)
+def verify_email_code(payload: EmailCodeVerifyRequest) -> AuthSessionResponse:
+    token, user = auth_service.verify_email_code(
+        payload.challenge_id,
+        payload.code,
+        guest_token=payload.guest_token,
+    )
     return AuthSessionResponse(token=token, user=user)
 
 

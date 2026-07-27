@@ -150,6 +150,70 @@ def test_login_rejects_wrong_password(tmp_path) -> None:
     assert exc_info.value.status_code == 401
 
 
+def test_email_code_login_creates_account_and_consumes_code(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    sent: dict[str, str] = {}
+
+    def capture_email(*, email: str, code: str) -> None:
+        sent.update(email=email, code=code)
+
+    monkeypatch.setattr("app.services.auth_service.send_login_code", capture_email)
+
+    challenge_id, expires_in = auth.request_email_code("Student@Example.com")
+    token, user = auth.verify_email_code(challenge_id, sent["code"])
+
+    assert sent["email"] == "student@example.com"
+    assert expires_in == 600
+    assert user.email == "student@example.com"
+    assert auth.get_user_by_token(token).id == user.id
+    with pytest.raises(HTTPException) as exc_info:
+        auth.verify_email_code(challenge_id, sent["code"])
+    assert exc_info.value.status_code == 401
+
+
+def test_email_code_login_rejects_bad_code_and_rate_limits_resend(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    sent: dict[str, str] = {}
+    monkeypatch.setattr(
+        "app.services.auth_service.send_login_code",
+        lambda **values: sent.update(code=values["code"]),
+    )
+
+    challenge_id, _ = auth.request_email_code("student@example.com")
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.verify_email_code(challenge_id, "000000" if sent["code"] != "000000" else "000001")
+    assert exc_info.value.status_code == 401
+
+    with auth.store.connection() as conn:
+        assert auth.store.find_email_challenge(conn, challenge_id)["attempts"] == 1
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.request_email_code("student@example.com")
+    assert exc_info.value.status_code == 429
+
+
+def test_email_challenge_consumption_is_atomic(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    monkeypatch.setattr("app.services.auth_service.send_login_code", lambda **_: None)
+
+    challenge_id, _ = auth.request_email_code("student@example.com")
+
+    with auth.store.transaction() as conn:
+        assert auth.store.consume_email_challenge(conn, challenge_id=challenge_id, now="2026-07-27T00:00:00+00:00")
+        assert not auth.store.consume_email_challenge(
+            conn,
+            challenge_id=challenge_id,
+            now="2026-07-27T00:00:01+00:00",
+        )
+
+
 def test_provider_list_includes_supported_social_logins(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     SqliteCourseStore(db_path, legacy_json_path=None)

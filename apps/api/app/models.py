@@ -1834,6 +1834,22 @@ class AuthSessionResponse(BaseModel):
     user: UserView
 
 
+class EmailCodeRequest(BaseModel):
+    email: str
+
+
+class EmailCodeRequestResponse(BaseModel):
+    challenge_id: str
+    expires_in_seconds: int
+    message: str
+
+
+class EmailCodeVerifyRequest(BaseModel):
+    challenge_id: str
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    guest_token: str | None = None
+
+
 class AuthProviderView(BaseModel):
     id: str
     label: str

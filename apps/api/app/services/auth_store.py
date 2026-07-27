@@ -130,6 +130,20 @@ class AuthStore:
 
                 CREATE INDEX IF NOT EXISTS idx_auth_guest_sessions_guest
                     ON auth_guest_sessions(guest_user_id);
+
+                CREATE TABLE IF NOT EXISTS auth_email_challenges (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    code_salt TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    consumed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_auth_email_challenges_email_created
+                    ON auth_email_challenges(email, created_at DESC);
                 """
             )
             self._ensure_user_column(conn, "display_name", "TEXT")
@@ -833,6 +847,53 @@ class AuthStore:
             "INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)",
             (token_hash, user_id, now, now),
         )
+
+    def latest_email_challenge(self, conn: sqlite3.Connection, *, email: str) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT * FROM auth_email_challenges WHERE email = ? ORDER BY created_at DESC LIMIT 1",
+            (email,),
+        ).fetchone()
+
+    def create_email_challenge(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        challenge_id: str,
+        email: str,
+        code_salt: str,
+        code_hash: str,
+        created_at: str,
+        expires_at: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO auth_email_challenges(id, email, code_salt, code_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (challenge_id, email, code_salt, code_hash, created_at, expires_at),
+        )
+
+    def find_email_challenge(self, conn: sqlite3.Connection, challenge_id: str) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT * FROM auth_email_challenges WHERE id = ?",
+            (challenge_id,),
+        ).fetchone()
+
+    def increment_email_challenge_attempts(self, conn: sqlite3.Connection, challenge_id: str) -> None:
+        conn.execute(
+            "UPDATE auth_email_challenges SET attempts = attempts + 1 WHERE id = ?",
+            (challenge_id,),
+        )
+
+    def consume_email_challenge(self, conn: sqlite3.Connection, *, challenge_id: str, now: str) -> bool:
+        cursor = conn.execute(
+            "UPDATE auth_email_challenges SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL",
+            (now, challenge_id),
+        )
+        return cursor.rowcount == 1
+
+    def delete_email_challenge(self, conn: sqlite3.Connection, challenge_id: str) -> None:
+        conn.execute("DELETE FROM auth_email_challenges WHERE id = ?", (challenge_id,))
 
     def consume_oauth_state(
         self,

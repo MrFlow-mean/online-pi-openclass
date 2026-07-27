@@ -20,12 +20,16 @@ from fastapi import HTTPException, Request, WebSocket
 
 from app.models import AdminOverview, AdminStats, AuthIdentityView, AuthProviderView, UserView, new_id
 from app.services.auth_store import AuthStore
+from app.services.email_sender import send_login_code
 
 
 PBKDF2_ITERATIONS = 210_000
 SESSION_TOKEN_BYTES = 32
 OAUTH_STATE_BYTES = 24
 OAUTH_STATE_TTL = timedelta(minutes=15)
+EMAIL_CODE_TTL = timedelta(minutes=10)
+EMAIL_CODE_RESEND_INTERVAL = timedelta(seconds=60)
+EMAIL_CODE_MAX_ATTEMPTS = 5
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 AUTH_COOKIE_NAME = "openclass.auth.token"
 PHONE_EMAIL_DOMAIN = "phone.openclass.local"
@@ -462,6 +466,113 @@ class AuthService:
             self.store.touch_password_login(conn, user_id=row["id"], provider=account.kind, now=now)
             self._claim_guest_workspace(conn, guest_token=guest_token, user_id=row["id"])
             return self._issue_session_for_user_id(conn, row["id"])
+
+    def request_email_code(self, email: str) -> tuple[str, int]:
+        account = _normalize_account_identifier(email)
+        if account.kind != "email" or not account.email:
+            raise HTTPException(status_code=422, detail="请输入有效邮箱")
+        now = datetime.now(timezone.utc)
+        challenge_id = new_id("email_challenge")
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        code_salt = secrets.token_hex(16)
+        code_hash = hashlib.sha256(f"{code_salt}:{code}".encode("utf-8")).hexdigest()
+
+        with self.store.transaction() as conn:
+            latest = self.store.latest_email_challenge(conn, email=account.email)
+            latest_created = _parse_iso(latest["created_at"]) if latest is not None else None
+            if latest_created and now - latest_created < EMAIL_CODE_RESEND_INTERVAL:
+                raise HTTPException(status_code=429, detail="验证码发送过于频繁，请稍后重试")
+            self.store.create_email_challenge(
+                conn,
+                challenge_id=challenge_id,
+                email=account.email,
+                code_salt=code_salt,
+                code_hash=code_hash,
+                created_at=now.isoformat(),
+                expires_at=(now + EMAIL_CODE_TTL).isoformat(),
+            )
+
+        try:
+            send_login_code(email=account.email, code=code)
+        except Exception:
+            with self.store.transaction() as conn:
+                self.store.delete_email_challenge(conn, challenge_id)
+            raise
+        return challenge_id, int(EMAIL_CODE_TTL.total_seconds())
+
+    def verify_email_code(
+        self,
+        challenge_id: str,
+        code: str,
+        *,
+        guest_token: str | None = None,
+    ) -> tuple[str, UserView]:
+        now = datetime.now(timezone.utc)
+        with self.store.transaction() as conn:
+            challenge = self.store.find_email_challenge(conn, challenge_id)
+            expires_at = _parse_iso(challenge["expires_at"]) if challenge is not None else None
+            if (
+                challenge is None
+                or challenge["consumed_at"] is not None
+                or expires_at is None
+                or expires_at <= now
+                or int(challenge["attempts"]) >= EMAIL_CODE_MAX_ATTEMPTS
+            ):
+                raise HTTPException(status_code=401, detail="验证码无效或已过期")
+
+            candidate_hash = hashlib.sha256(
+                f"{challenge['code_salt']}:{code}".encode("utf-8")
+            ).hexdigest()
+            if not hmac.compare_digest(candidate_hash, challenge["code_hash"]):
+                self.store.increment_email_challenge_attempts(conn, challenge_id)
+            else:
+                consumed = self.store.consume_email_challenge(
+                    conn,
+                    challenge_id=challenge_id,
+                    now=now.isoformat(),
+                )
+                if not consumed:
+                    raise HTTPException(status_code=401, detail="验证码无效或已过期")
+
+                email = str(challenge["email"])
+                row = self.store.find_user_by_email(conn, email)
+                if row is None:
+                    user_id = new_id("user")
+                    password_salt, password_hash = _hash_password(secrets.token_urlsafe(32))
+                    role = "admin" if self.store.user_count(conn) == 0 or email in _admin_emails() else "user"
+                    self.store.create_password_user(
+                        conn,
+                        user_id=user_id,
+                        email=email,
+                        phone=None,
+                        password_salt=password_salt,
+                        password_hash=password_hash,
+                        role=role,
+                        display_name=email.split("@", 1)[0],
+                        created_at=now.isoformat(),
+                    )
+                    self.store.create_identity(
+                        conn,
+                        provider="email",
+                        provider_subject=email,
+                        user_id=user_id,
+                        email=email,
+                        display_name=email.split("@", 1)[0],
+                        created_at=now.isoformat(),
+                        last_login_at=now.isoformat(),
+                    )
+                else:
+                    user_id = str(row["id"])
+                    self.store.touch_password_login(
+                        conn,
+                        user_id=user_id,
+                        provider="email",
+                        now=now.isoformat(),
+                    )
+                self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
+                return self._issue_session_for_user_id(conn, user_id)
+
+        raise HTTPException(status_code=401, detail="验证码无效或已过期")
 
     def login_with_oauth(
         self,
