@@ -56,12 +56,14 @@ case "${OPENCLASS_ANSWER_THEME_ENABLED:-true}" in
       esac
       openclass_theme_stylesheet_url="${OPENCLASS_COMMUNITY_PUBLIC_URL%/}/custom.css"
     fi
+    openclass_community_entry_url="$openclass_home_origin/community"
 
     sqlite3 /data/answer.db \
       -cmd ".parameter init" \
       -cmd ".parameter set @openclass_home_url \"$openclass_home_url\"" \
       -cmd ".parameter set @openclass_favicon_url \"$openclass_favicon_url\"" \
-      -cmd ".parameter set @openclass_theme_stylesheet_url \"$openclass_theme_stylesheet_url\"" <<'SQL'
+      -cmd ".parameter set @openclass_theme_stylesheet_url \"$openclass_theme_stylesheet_url\"" \
+      -cmd ".parameter set @openclass_community_entry_url \"$openclass_community_entry_url\"" <<'SQL'
 BEGIN IMMEDIATE;
 DELETE FROM site_info WHERE type IN ('css-html', 'custom_css_html');
 INSERT INTO site_info (created_at, updated_at, type, content, status)
@@ -70,7 +72,9 @@ VALUES (
   datetime('now'),
   'css-html',
   json_object(
-    'custom_head', '<link rel="stylesheet" href="' || @openclass_theme_stylesheet_url || '">',
+    'custom_head', '<link rel="stylesheet" href="' || @openclass_theme_stylesheet_url || '">' ||
+      '<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:"' || @openclass_community_entry_url || '"};</script>' ||
+      '<script>' || CAST(readfile('/opt/openclass/openclass-sso-bridge.js') AS TEXT) || '</script>',
     'custom_css', CAST(readfile('/opt/openclass/openclass-theme.css') AS TEXT),
     'custom_header', '<a class="openclass-home-link" href="' || @openclass_home_url || '" aria-label="返回 OpenClass 主页"><span aria-hidden="true">←</span><span>返回主页</span></a>',
     'custom_footer', '',

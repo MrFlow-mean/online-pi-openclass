@@ -32,6 +32,11 @@ responsive layout while matching the warm OpenClass visual system. Set
 The entrypoint also places an explicit theme stylesheet link in Answer's
 server-rendered document head so OAuth login and authenticated navigation keep
 the same appearance as the public community page.
+For same-origin deployments, the document head also includes a small session
+bridge. If OpenClass is still authenticated while Answer has no valid session,
+the bridge returns through the OpenClass `/community` entry and completes SSO
+automatically. A short per-tab cooldown prevents redirect loops when the
+connector is unavailable.
 The theme also adds a top-left link back to OpenClass. Set `OPENCLASS_HOME_URL`
 to the public `/home` URL in deployed environments; it defaults to
 `http://127.0.0.1:3000/home` for local development.

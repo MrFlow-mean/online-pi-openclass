@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 
 const readyIntegration = {
@@ -9,6 +11,11 @@ const readyIntegration = {
   sso_enabled: true,
   setup_required: false,
 };
+
+const answerSsoBridge = readFileSync(
+  resolve(process.cwd(), "../../deploy/answer/openclass-sso-bridge.js"),
+  "utf8",
+);
 
 
 test("sends a registered OpenClass user through Answer single sign-on", async ({ page }) => {
@@ -95,6 +102,60 @@ test("keeps a same-origin OpenClass entry separate from the public Answer mount"
 
   await expect(page).toHaveURL(`${publicUrl}/`);
   await expect(page.getByRole("heading", { name: "Public Answer" })).toBeVisible();
+});
+
+
+test("repairs a missing Answer session from a same-origin OpenClass session", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ id: "user-author", role: "user" }),
+  }));
+  await page.route(/\/community\/$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerSsoBridge}</script><h1>Anonymous Answer</h1>`,
+  }));
+  await page.route(/\/community$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: "<h1>OpenClass SSO entry</h1>",
+  }));
+
+  await page.goto("/community/");
+
+  await expect(page).toHaveURL(entryUrl);
+  await expect(page.getByRole("heading", { name: "OpenClass SSO entry" })).toBeVisible();
+});
+
+
+test("keeps an existing Answer session without restarting SSO", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const entryUrl = `${baseURL}/community`;
+  let openClassSessionChecks = 0;
+  await page.addInitScript(() => window.localStorage.setItem("_a_ltk_", "valid-answer-token"));
+  await page.route("**/answer/api/v1/user/info", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: { username: "learner" } }),
+  }));
+  await page.route("**/api/auth/me", (route) => {
+    openClassSessionChecks += 1;
+    return route.fulfill({ status: 500 });
+  });
+  await page.route(/\/community\/$/, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerSsoBridge}</script><h1>Authenticated Answer</h1>`,
+  }));
+
+  await page.goto("/community/");
+
+  await expect(page).toHaveURL(`${entryUrl}/`);
+  await expect(page.getByRole("heading", { name: "Authenticated Answer" })).toBeVisible();
+  expect(openClassSessionChecks).toBe(0);
 });
 
 
