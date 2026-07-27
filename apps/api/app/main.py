@@ -15,6 +15,7 @@ from app.routers import (
     chat,
     codex_provider,
     communities,
+    contributions,
     documents,
     geometry,
     lesson_merges,
@@ -73,6 +74,7 @@ app.include_router(workspace.router)
 app.include_router(auth.router)
 app.include_router(billing.router)
 app.include_router(communities.router)
+app.include_router(contributions.router)
 app.include_router(documents.router)
 app.include_router(lesson_merges.router)
 app.include_router(model_credentials.router)
