@@ -25,7 +25,7 @@ const pageSettings = {
   footer_text: "",
 };
 
-function document(id: string, text: string) {
+function boardDocument(id: string, text: string) {
   return {
     id,
     title: "协作课程",
@@ -55,8 +55,8 @@ function contribution(overrides: Record<string, unknown> = {}) {
       id: "revision_browser",
       revision_number: 1,
       source_commit_id: "commit_base",
-      base_document: document("document_base", "第一节\n原始解释"),
-      proposed_document: document("document_proposal", "第一节\n改进后的解释\n新增示例"),
+      base_document: boardDocument("document_base", "第一节\n原始解释"),
+      proposed_document: boardDocument("document_proposal", "第一节\n改进后的解释\n新增示例"),
       created_at: "2026-07-27T01:00:00+00:00",
     },
     events: [
