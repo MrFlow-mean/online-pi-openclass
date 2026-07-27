@@ -21,6 +21,8 @@ import type {
   GoogleRealtimeSessionResponse,
   LessonMergeResolution,
   LessonMergeSessionView,
+  LessonContributionStatus,
+  LessonContributionView,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeToolCallPayload,
@@ -1011,6 +1013,92 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ expected_version: expectedVersion }),
     });
+  },
+  createLessonContribution(lessonId: string, title: string, description = "") {
+    return request<LessonContributionView>(`/api/lessons/${lessonId}/contributions`, {
+      method: "POST",
+      body: JSON.stringify({ title, description }),
+    });
+  },
+  listLessonContributions(
+    role: "received" | "submitted",
+    status?: LessonContributionStatus | null
+  ) {
+    const params = new URLSearchParams({ role });
+    if (status) {
+      params.set("status", status);
+    }
+    return request<LessonContributionView[]>(`/api/contributions?${params.toString()}`);
+  },
+  getLessonContribution(contributionId: string) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}`
+    );
+  },
+  getPublicLessonContribution(contributionId: string) {
+    return request<LessonContributionView>(
+      `/api/public/contributions/${encodeURIComponent(contributionId)}`
+    );
+  },
+  updateLessonContribution(
+    contributionId: string,
+    payload: { expected_version: number; title?: string; description?: string }
+  ) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/revisions`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+  },
+  addLessonContributionComment(contributionId: string, expectedVersion: number, body: string) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/comments`,
+      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion, body }) }
+    );
+  },
+  editLessonContributionComment(
+    contributionId: string,
+    commentId: string,
+    expectedVersion: number,
+    body: string
+  ) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: "PATCH", body: JSON.stringify({ expected_version: expectedVersion, body }) }
+    );
+  },
+  deleteLessonContributionComment(
+    contributionId: string,
+    commentId: string,
+    expectedVersion: number
+  ) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: "DELETE", body: JSON.stringify({ expected_version: expectedVersion }) }
+    );
+  },
+  closeLessonContribution(contributionId: string, expectedVersion: number) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/close`,
+      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) }
+    );
+  },
+  reopenLessonContribution(contributionId: string, expectedVersion: number) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/reopen`,
+      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) }
+    );
+  },
+  startLessonContributionMerge(contributionId: string, expectedVersion: number) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/merge/start`,
+      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) }
+    );
+  },
+  returnLessonContributionForChanges(contributionId: string, expectedVersion: number) {
+    return request<LessonContributionView>(
+      `/api/contributions/${encodeURIComponent(contributionId)}/merge/return`,
+      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) }
+    );
   },
   async streamMergeProposal(
     lessonId: string,

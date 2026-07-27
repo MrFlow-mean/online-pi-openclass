@@ -369,6 +369,75 @@ export interface LessonMergeSessionView {
   updated_at: string;
 }
 
+export type LessonContributionStatus = "open" | "merge_draft" | "merged" | "closed";
+export type LessonContributionEventKind =
+  | "opened"
+  | "revision_submitted"
+  | "commented"
+  | "comment_edited"
+  | "comment_deleted"
+  | "merge_started"
+  | "returned_for_changes"
+  | "merged"
+  | "closed"
+  | "reopened";
+
+export interface LessonContributionActor {
+  user_id: string;
+  display_name: string;
+  avatar_url?: string | null;
+}
+
+export interface LessonContributionRevisionView {
+  id: string;
+  revision_number: number;
+  source_commit_id: string;
+  base_document: BoardDocument;
+  proposed_document: BoardDocument;
+  created_at: string;
+}
+
+export interface LessonContributionEvent {
+  id: string;
+  contribution_id: string;
+  kind: LessonContributionEventKind;
+  actor: LessonContributionActor;
+  body: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface LessonContributionViewerPermissions {
+  can_comment: boolean;
+  can_update: boolean;
+  can_close: boolean;
+  can_reopen: boolean;
+  can_start_merge: boolean;
+  can_return_for_changes: boolean;
+}
+
+export interface LessonContributionView {
+  id: string;
+  source_lesson_id: string;
+  source_title: string;
+  title: string;
+  description: string;
+  status: LessonContributionStatus;
+  version: number;
+  current_revision: number;
+  source_author: LessonContributionActor;
+  contributor: LessonContributionActor;
+  revision: LessonContributionRevisionView;
+  events: LessonContributionEvent[];
+  viewer_permissions: LessonContributionViewerPermissions;
+  source_is_public: boolean;
+  merge_session_id?: string | null;
+  merged_commit_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  closed_at?: string | null;
+}
+
 export interface BranchRef {
   name: string;
   head_commit_id: string;
