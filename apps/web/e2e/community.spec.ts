@@ -12,6 +12,17 @@ const readyIntegration = {
   setup_required: false,
 };
 
+const registeredUser = {
+  id: "user-author",
+  email: "author@example.com",
+  role: "user",
+  display_name: "学习者甲",
+  avatar_url: null,
+  created_at: "2026-07-27T10:00:00+00:00",
+  last_login_at: "2026-07-27T10:00:00+00:00",
+  auth_identities: [],
+};
+
 const answerSsoBridge = readFileSync(
   resolve(process.cwd(), "../../deploy/answer/openclass-sso-bridge.js"),
   "utf8",
@@ -52,6 +63,69 @@ test("sends a registered OpenClass user through Answer single sign-on", async ({
 
   await expect(page).toHaveURL(readyIntegration.entry_url);
   await expect(page.getByRole("heading", { name: "Answer" })).toBeVisible();
+});
+
+
+test("preserves a same-origin history-node draft through Answer single sign-on", async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const publicUrl = `${baseURL}/community`;
+  const entryUrl = `${publicUrl}/answer/api/v1/connector/login/basic`;
+  const prefill = "---\ntitle: \"History node\"\n---\n节点完成度 100%";
+  const encodedPrefill = encodeURIComponent(prefill.replaceAll("%", "%25"));
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(registeredUser),
+  }));
+  await page.route("**/api/community/integration", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ...readyIntegration, public_url: publicUrl, entry_url: entryUrl }),
+  }));
+  await page.route(entryUrl, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: "<h1>Answer SSO</h1>",
+  }));
+
+  await page.goto(`/community?prefill=${encodedPrefill}`);
+
+  await expect(page).toHaveURL(entryUrl);
+  const redirectPath = await page.evaluate(() => window.localStorage.getItem("_a_rp_"));
+  expect(redirectPath).toBeTruthy();
+  const storedPrefill = new URL(redirectPath!, "http://answer.local").searchParams.get("prefill");
+  expect(storedPrefill).toBeTruthy();
+  expect(decodeURIComponent(storedPrefill!)).toBe(prefill);
+});
+
+
+test("sends a cross-origin history-node draft to the configured Answer site", async ({ page }) => {
+  const prefill = "---\ntitle: \"History node\"\n---\nA reusable lesson node";
+  const encodedPrefill = encodeURIComponent(prefill);
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(registeredUser),
+  }));
+  await page.route("**/api/community/integration", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(readyIntegration),
+  }));
+  await page.route("https://community.example.com/questions/add**", (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: "<h1>Prefilled Answer draft</h1>",
+  }));
+
+  await page.goto(`/community?prefill=${encodedPrefill}`);
+
+  await expect(page).toHaveURL((url) => (
+    url.origin === readyIntegration.public_url
+    && url.pathname === "/questions/add"
+    && url.searchParams.get("prefill") === prefill
+  ));
+  await expect(page.getByRole("heading", { name: "Prefilled Answer draft" })).toBeVisible();
 });
 
 

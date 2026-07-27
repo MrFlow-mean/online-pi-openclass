@@ -218,7 +218,7 @@ export function historyNodeCommunityShareHref(lesson: Lesson, commit: CommitReco
   ].join("\n");
   const suffix = "\n\n---\n\n请围绕这个课堂节点补充你的问题、理解或建议。";
   const prefill = boundedCommunityDraft(prefix, historyNodeContent(commit), suffix);
-  return `/community/questions/add?prefill=${answerPrefillValue(prefill)}`;
+  return `/community?prefill=${answerPrefillValue(prefill)}`;
 }
 
 export function buildHistoryGraphRows(

@@ -31,6 +31,34 @@ function publicCommunityDestination(publicUrl: string) {
   return publicUrl;
 }
 
+function communityShareDestination(
+  integration: CommunityIntegration,
+  useSingleSignOn: boolean
+) {
+  const encodedPrefill = new URLSearchParams(window.location.search).get("prefill");
+  if (!encodedPrefill || !integration.public_url) {
+    return null;
+  }
+  try {
+    const current = new URL(window.location.href);
+    const communityRoot = new URL(integration.public_url, current);
+    const communityPath = communityRoot.pathname.replace(/\/+$/, "");
+    const destination = new URL(communityRoot);
+    destination.pathname = `${communityPath}/questions/add`;
+    destination.search = "";
+    destination.searchParams.set("prefill", encodedPrefill);
+
+    if (useSingleSignOn && destination.origin === current.origin) {
+      const answerPath = `${destination.pathname.slice(communityPath.length)}${destination.search}`;
+      window.localStorage.setItem("_a_rp_", answerPath);
+      return integration.entry_url;
+    }
+    return destination.toString();
+  } catch {
+    return null;
+  }
+}
+
 
 function CommunityStatusPage({
   integration,
@@ -120,11 +148,16 @@ export function CommunityHome() {
     if (!integration || !authChecked) return;
     const registeredUser = user?.role === "user" || user?.role === "admin";
     const ssoReady = integration.available && integration.sso_enabled && !integration.setup_required;
-    const destination = registeredUser && ssoReady
-      ? integration.entry_url
-      : integration.available
-        ? integration.public_url && publicCommunityDestination(integration.public_url)
-        : null;
+    const shareDestination = integration.available
+      ? communityShareDestination(integration, Boolean(registeredUser && ssoReady))
+      : null;
+    const destination = shareDestination ?? (
+      registeredUser && ssoReady
+        ? integration.entry_url
+        : integration.available
+          ? integration.public_url && publicCommunityDestination(integration.public_url)
+          : null
+    );
     if (destination) {
       window.location.replace(destination);
     }
