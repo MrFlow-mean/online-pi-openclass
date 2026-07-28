@@ -234,7 +234,7 @@ def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isola
     assert response.answer_sdp == "codex-answer-sdp"
     assert response.provider == "openai_codex"
     assert response.model == "gpt-live-1-codex"
-    assert response.tools_enabled is False
+    assert response.tools_enabled is True
     assert response.call_id == "rtc_codex_call"
     assert captured["url"] == "http://127.0.0.1:8317/v1/live"
     assert captured["headers"]["Authorization"] == "Bearer proxy-api-key"
@@ -245,7 +245,37 @@ def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isola
     assert captured["json"]["sdp"] == "v=0-codex-offer"
     assert captured["json"]["session"]["model"] == "gpt-live-1-codex"
     assert "OpenClass Chatbot" in captured["json"]["session"]["instructions"]
-    assert set(captured["json"]["session"]) == {"model", "instructions"}
+    assert captured["json"]["session"]["tool_choice"] == "auto"
+    assert {tool["name"] for tool in captured["json"]["session"]["tools"]} == {
+        "read_board_context",
+        "run_chatbot_workflow",
+    }
+    assert set(captured["json"]["session"]) == {
+        "model",
+        "instructions",
+        "tools",
+        "tool_choice",
+    }
+
+
+def test_codex_live_respects_shared_realtime_tools_switch(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_TOOLS_ENABLED", "false")
+
+    config = openai_realtime.build_openai_realtime_session_config(
+        lesson_title="Any lesson",
+        request=RealtimeConnectRequest(
+            offer_sdp="v=0",
+            realtime_model=AIModelSelection(
+                provider="openai_codex",
+                model="gpt-live-1-codex",
+                access_method="platform_credits",
+            ),
+        ),
+    )
+
+    assert config.tools_enabled is False
+    assert "tools" not in config.session_payload
+    assert "tool_choice" not in config.session_payload
 
 
 def test_realtime_connect_rejects_codex_live_without_proxy_credentials(monkeypatch, isolated_store) -> None:

@@ -168,10 +168,7 @@ def build_openai_realtime_session_config(
     )
     voice = (os.getenv("OPENAI_REALTIME_VOICE") or "marin").strip()
     client_session_id = request.client_session_id or new_id("realtime")
-    tools_enabled = (
-        selected.provider == "openai"
-        and _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
-    )
+    tools_enabled = _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
     session_payload: dict[str, Any] = {
         "type": "realtime",
         "model": model,
