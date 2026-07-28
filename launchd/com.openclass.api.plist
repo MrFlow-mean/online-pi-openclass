@@ -23,7 +23,7 @@
     <key>OPENCLASS_ENV_FILE</key>
     <string>__OPENCLASS_ENV_FILE__</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>__OPENCLASS_RUNTIME_PATH__</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/tmp/openclass-api.log</string>
