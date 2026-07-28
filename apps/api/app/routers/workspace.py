@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from app.models import (
     BatchLessonActionRequest,
+    CourseSearchResponse,
     CourseGraphEdge,
     CoursePackage,
     CoursePackageView,
@@ -332,6 +333,23 @@ def search_public_courses(
         q,
         exclude_owner_user_id=user.id,
         limit=limit,
+    )
+
+
+@router.get("/api/courses/search", response_model=CourseSearchResponse)
+def search_courses(
+    q: str = Query(min_length=1, max_length=200),
+    limit: int = Query(default=30, ge=1, le=50),
+    user: UserView = Depends(current_user),
+) -> CourseSearchResponse:
+    store = get_course_store()
+    return CourseSearchResponse(
+        owned_courses=store.search_owned_courses(q, owner_user_id=user.id, limit=limit),
+        public_courses=store.search_public_courses(
+            q,
+            exclude_owner_user_id=user.id,
+            limit=limit,
+        ),
     )
 
 

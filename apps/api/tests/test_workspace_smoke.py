@@ -851,19 +851,45 @@ def test_public_course_search_returns_real_projects_from_other_users(
     )
     assert private_response.status_code == 200
 
+    owned_search_response = api_client.get(
+        "/api/courses/search",
+        params={"q": "Discoverable project"},
+    )
+    assert owned_search_response.status_code == 200
+    owned_payload = owned_search_response.json()
+    assert {
+        (result["title"], result["visibility"])
+        for result in owned_payload["owned_courses"]
+    } == {
+        ("Discoverable public project", "public"),
+        ("Discoverable private project", "private"),
+    }
+    assert owned_payload["public_courses"] == []
+
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: OTHER_USER
     search_response = api_client.get(
-        "/api/public/courses/search",
+        "/api/courses/search",
         params={"q": "Discoverable project"},
     )
 
     assert search_response.status_code == 200
-    results = search_response.json()
+    search_payload = search_response.json()
+    assert search_payload["owned_courses"] == []
+    results = search_payload["public_courses"]
     assert [(result["kind"], result["title"]) for result in results] == [
         ("lesson", "Discoverable public project")
     ]
     assert results[0]["lesson_count"] == 1
     assert "board_document" not in results[0]
+
+    public_only_response = api_client.get(
+        "/api/public/courses/search",
+        params={"q": "Discoverable project"},
+    )
+    assert public_only_response.status_code == 200
+    assert [result["title"] for result in public_only_response.json()] == [
+        "Discoverable public project"
+    ]
 
 
 def test_standalone_lesson_publication_stream_reports_real_review_stage(

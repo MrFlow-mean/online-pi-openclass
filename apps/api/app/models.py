@@ -1811,6 +1811,12 @@ class PublicCourseSearchResult(BaseModel):
     tags: list[str] = Field(default_factory=list)
     lesson_count: int
     updated_at: str | None = None
+    visibility: Literal["private", "public"] = "public"
+
+
+class CourseSearchResponse(BaseModel):
+    owned_courses: list[PublicCourseSearchResult] = Field(default_factory=list)
+    public_courses: list[PublicCourseSearchResult] = Field(default_factory=list)
 
 
 class WorkspaceStateView(BaseModel):

@@ -28,7 +28,7 @@ const workspace = {
   ],
 };
 
-test("search mode hides the home chrome and shows real public course results", async ({
+test("search mode hides the home chrome and groups owned and public course results", async ({
   context,
   page,
 }) => {
@@ -69,24 +69,41 @@ test("search mode hides the home chrome and shows real public course results", a
   );
 
   let requestedQuery = "";
-  await page.route("**/api/public/courses/search?*", (route) => {
+  await page.route("**/api/courses/search?*", (route) => {
     requestedQuery = new URL(route.request().url()).searchParams.get("q") ?? "";
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify([
-        {
-          id: "lesson_public_search",
-          kind: "lesson",
-          owner_display_name: "公开课作者",
-          owner_avatar_url: null,
-          title: "真实公开课程",
-          summary: "这条结果来自公开课程搜索 API。",
-          tags: ["公开", "可检索"],
-          lesson_count: 1,
-          updated_at: "2026-07-28T01:00:00+00:00",
-        },
-      ]),
+      body: JSON.stringify({
+        owned_courses: [
+          {
+            id: "lesson_owned_search",
+            kind: "lesson",
+            owner_display_name: "搜索用户",
+            owner_avatar_url: null,
+            title: "我的私有课程",
+            summary: "这条本人课程可以被当前用户搜索到。",
+            tags: ["个人"],
+            lesson_count: 1,
+            updated_at: "2026-07-28T02:00:00+00:00",
+            visibility: "private",
+          },
+        ],
+        public_courses: [
+          {
+            id: "lesson_public_search",
+            kind: "lesson",
+            owner_display_name: "公开课作者",
+            owner_avatar_url: null,
+            title: "真实公开课程",
+            summary: "这条结果来自课程搜索 API。",
+            tags: ["公开", "可检索"],
+            lesson_count: 1,
+            updated_at: "2026-07-28T01:00:00+00:00",
+            visibility: "public",
+          },
+        ],
+      }),
     });
   });
 
@@ -101,9 +118,13 @@ test("search mode hides the home chrome and shows real public course results", a
   await expect(page.getByLabel("添加课程包")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "打开积分与充值" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "打开 GitHub 仓库" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "搜索其他用户的公开课程" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "搜索课程" })).toBeVisible();
 
   await search.fill("真实内容");
+  await expect(page.getByRole("heading", { name: "我的课程" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "我的私有课程" })).toBeVisible();
+  await expect(page.getByText("私有", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "其他用户的公开课程" })).toBeVisible();
   await expect(page.getByRole("link", { name: "真实公开课程" })).toBeVisible();
   expect(requestedQuery).toBe("真实内容");
   await expect(page.getByText("公开课作者")).toBeVisible();

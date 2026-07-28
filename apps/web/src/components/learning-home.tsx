@@ -50,7 +50,7 @@ import {
   PublicationReviewNotice,
   PublicationReviewProgress,
 } from "@/components/project-visibility-control";
-import { PublicCourseSearchResults } from "@/components/public-course-search-results";
+import { CourseSearchResults } from "@/components/public-course-search-results";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import {
@@ -59,6 +59,7 @@ import {
   updatePackageVisibility,
   type PublicationReviewProgressUpdate,
   type ProjectVisibility,
+  type PublicCourseSearchResult,
 } from "@/lib/project-visibility";
 import { homeRelativeFormat, type HomeUiBundle } from "@/lib/i18n/product-ui";
 import { downloadRidoc, RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
@@ -417,6 +418,34 @@ export function LearningHome() {
       router.push("/studio");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : errMsgs.current.lessonOpenError);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleOpenOwnedSearchCourse(course: PublicCourseSearchResult) {
+    setSearchQuery("");
+    setSearchMode(false);
+    if (course.kind === "lesson") {
+      await handleOpenLesson(course.id);
+      return;
+    }
+
+    const packageItem = coursePackages.find((item) => item.id === course.id);
+    if (!packageItem) {
+      setError(language === "en" ? "This course package is no longer available." : "这个课程包已不存在。");
+      return;
+    }
+    setSelectedPackageId(packageItem.id);
+    setSelectedLessonId(null);
+    setPackageLessonsExpanded(true);
+    setBusyKey(`package:${packageItem.id}`);
+    try {
+      const payload = await api.openPackage(packageItem.id);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.openPackageFail);
     } finally {
       setBusyKey(null);
     }
@@ -1246,7 +1275,11 @@ export function LearningHome() {
             </section>
 
             {isSearchMode ? (
-              <PublicCourseSearchResults query={deferredQuery} language={language} />
+              <CourseSearchResults
+                query={deferredQuery}
+                language={language}
+                onOpenOwnedCourse={handleOpenOwnedSearchCourse}
+              />
             ) : (
               <>
             <LearningActivityCalendar

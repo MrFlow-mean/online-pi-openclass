@@ -282,6 +282,9 @@ def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None
     own_lesson = _append_lesson(own_workspace, "Own public retrieval course")
     own_lesson.visibility = "public"
     own_lesson.board_document.content_text = "retrieval anchor"
+    own_private_lesson = _append_lesson(own_workspace, "Own private retrieval course")
+    own_private_lesson.visibility = "private"
+    own_private_lesson.board_document.content_text = "retrieval anchor"
     store.save_for_user("searcher", own_workspace)
 
     author_workspace = build_initial_workspace_state()
@@ -334,10 +337,18 @@ def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None
         "collaborative phrase",
         exclude_owner_user_id="searcher",
     )
+    owned_results = store.search_owned_courses(
+        "retrieval anchor",
+        owner_user_id="searcher",
+    )
 
     assert [(result.kind, result.title) for result in body_results] == [
         ("lesson", "Other public course")
     ]
+    assert {(result.title, result.visibility) for result in owned_results} == {
+        ("Own public retrieval course", "public"),
+        ("Own private retrieval course", "private"),
+    }
     assert body_results[0].owner_display_name == "Course Author"
     assert body_results[0].owner_avatar_url == "https://example.com/author.png"
     assert body_results[0].tags == ["retrieval", "public"]

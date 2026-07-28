@@ -43,6 +43,12 @@ export interface PublicCourseSearchResult {
   tags: string[];
   lesson_count: number;
   updated_at?: string | null;
+  visibility: ProjectVisibility;
+}
+
+export interface CourseSearchResponse {
+  owned_courses: PublicCourseSearchResult[];
+  public_courses: PublicCourseSearchResult[];
 }
 
 export class ProjectVisibilityRequestError extends Error {
@@ -185,10 +191,10 @@ export function getPublicPackage(packageId: string) {
   return visibilityRequest<PublicCoursePackage>(`/api/public/packages/${packageId}`);
 }
 
-export function searchPublicCourses(query: string, signal?: AbortSignal) {
+export function searchCourses(query: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ q: query });
-  return visibilityRequest<PublicCourseSearchResult[]>(
-    `/api/public/courses/search?${params.toString()}`,
+  return visibilityRequest<CourseSearchResponse>(
+    `/api/courses/search?${params.toString()}`,
     { signal },
   );
 }
