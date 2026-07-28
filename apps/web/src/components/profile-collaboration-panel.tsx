@@ -16,7 +16,10 @@ import {
 } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { projectCollaborationApi } from "@/lib/project-collaboration-api";
+import { ProjectGovernancePanel } from "@/components/project-governance-panel";
 import type { LessonContributionStatus, LessonContributionView } from "@/types";
+import type { IncomingProjectInvitation, ProjectGovernanceSummary } from "@/types/project-collaboration";
 
 export type CollaborationProject = {
   key: string;
@@ -78,6 +81,8 @@ export function ProfileCollaborationPanel({
   const [status, setStatus] = useState<LessonContributionStatus | "all">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [governedProjects, setGovernedProjects] = useState<ProjectGovernanceSummary[]>([]);
+  const [incomingInvitations, setIncomingInvitations] = useState<IncomingProjectInvitation[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -124,16 +129,52 @@ export function ProfileCollaborationPanel({
     };
   }, []);
 
+  const loadGovernanceIndex = useCallback(async () => {
+    try {
+      const [nextProjects, nextInvitations] = await Promise.all([
+        projectCollaborationApi.listProjects(),
+        projectCollaborationApi.listInvitations(),
+      ]);
+      setGovernedProjects(nextProjects);
+      setIncomingInvitations(nextInvitations);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "暂时无法载入项目成员与邀请");
+    }
+  }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => void loadGovernanceIndex(), 0);
+    return () => window.clearTimeout(timeout);
+  }, [loadGovernanceIndex]);
+
   useEffect(() => {
     const handleFocus = () => void load();
     window.addEventListener("focus", handleFocus);
     return () => window.removeEventListener("focus", handleFocus);
   }, [load]);
 
-  const selectedProject = projects.find((project) => project.key === selectedProjectKey) ?? null;
+  const availableProjects = useMemo(() => {
+    const result = new Map(projects.map((project) => [project.key, project]));
+    for (const project of governedProjects) {
+      const key = `${project.project_kind}:${project.project_id}`;
+      if (!result.has(key)) {
+        result.set(key, {
+          key,
+          kind: project.project_kind,
+          id: project.project_id,
+          title: project.title,
+          visibility: "private",
+          lessonIds: project.project_kind === "lesson" ? [project.project_id] : [],
+          lessonCount: project.project_kind === "lesson" ? 1 : 0,
+        });
+      }
+    }
+    return Array.from(result.values());
+  }, [governedProjects, projects]);
+  const selectedProject = availableProjects.find((project) => project.key === selectedProjectKey) ?? null;
   const projectSummaries = useMemo(
     () =>
-      projects.map((project) => {
+      availableProjects.map((project) => {
         const projectReceived = received.filter((item) => belongsToProject(item, "received", project));
         const projectSubmitted = submitted.filter((item) => belongsToProject(item, "submitted", project));
         return {
@@ -145,7 +186,7 @@ export function ProfileCollaborationPanel({
           ).length,
         };
       }),
-    [projects, received, submitted]
+    [availableProjects, received, submitted]
   );
   const selectedItems = useMemo(() => {
     if (!selectedProject) {
@@ -185,6 +226,32 @@ export function ProfileCollaborationPanel({
         {error ? (
           <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">
             {error}
+          </div>
+        ) : null}
+
+        {incomingInvitations.length ? (
+          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <p className="text-sm font-semibold text-blue-950">项目邀请</p>
+            <div className="mt-2 space-y-2">
+              {incomingInvitations.map((invitation) => (
+                <div key={invitation.id} className="flex flex-col gap-2 rounded-md bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-stone-900">{invitation.project_title}</p>
+                    <p className="mt-1 text-xs text-stone-500">邀请角色：{invitation.role}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void projectCollaborationApi.acceptInvitation(invitation.id).then(async () => {
+                      await loadGovernanceIndex();
+                      onSelectProject(`${invitation.project_kind}:${invitation.project_id}`);
+                    }).catch((failure: unknown) => setError(failure instanceof Error ? failure.message : "接受项目邀请失败"))}
+                    className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                  >
+                    接受邀请
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -361,6 +428,7 @@ export function ProfileCollaborationPanel({
             ))
           : null}
       </section>
+      <ProjectGovernancePanel projectKind={selectedProject.kind} projectId={selectedProject.id} />
     </div>
   );
 }

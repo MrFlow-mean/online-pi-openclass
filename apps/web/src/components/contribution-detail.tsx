@@ -12,6 +12,8 @@ import {
   Pencil,
   RotateCcw,
   Send,
+  ShieldCheck,
+  ThumbsUp,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -19,7 +21,9 @@ import {
 import { BrandMark } from "@/components/brand-mark";
 import { CommunityMarkdown } from "@/components/community/community-markdown";
 import { api } from "@/lib/api";
+import { projectCollaborationApi } from "@/lib/project-collaboration-api";
 import type { LessonContributionEvent, LessonContributionStatus, LessonContributionView, UserView } from "@/types";
+import type { ProjectGovernance, ProjectReview } from "@/types/project-collaboration";
 
 const STATUS_LABELS: Record<LessonContributionStatus, string> = {
   open: "等待审查",
@@ -86,6 +90,9 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
   const [comment, setComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingComment, setEditingComment] = useState("");
+  const [governance, setGovernance] = useState<ProjectGovernance | null>(null);
+  const [reviews, setReviews] = useState<ProjectReview[]>([]);
+  const [reviewBody, setReviewBody] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,9 +112,24 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
         const view = currentUser && currentUser.role !== "guest"
           ? await api.getLessonContribution(contributionId)
           : await api.getPublicLessonContribution(contributionId);
+        let projectGovernance: ProjectGovernance | null = null;
+        let projectReviews: ProjectReview[] = [];
+        if (currentUser && currentUser.role !== "guest") {
+          try {
+            [projectGovernance, projectReviews] = await Promise.all([
+              projectCollaborationApi.governance("lesson", view.source_lesson_id),
+              projectCollaborationApi.listReviews("lesson", view.source_lesson_id, view.id),
+            ]);
+          } catch {
+            projectGovernance = null;
+            projectReviews = [];
+          }
+        }
         if (active) {
           setUser(currentUser);
           setContribution(view);
+          setGovernance(projectGovernance);
+          setReviews(projectReviews);
         }
       } catch (failure) {
         if (active) setError(failure instanceof Error ? failure.message : "改进方案不存在或已停止公开");
@@ -149,6 +171,38 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
     return updated;
   }
 
+  async function submitReview(decision: ProjectReview["decision"]) {
+    if (!contribution || !governance) return;
+    if (decision === "request_changes" && !reviewBody.trim()) {
+      setError("请说明需要修改的内容。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await projectCollaborationApi.submitReview(
+        "lesson",
+        contribution.source_lesson_id,
+        contribution.id,
+        decision,
+        reviewBody,
+        contribution.current_revision
+      );
+      setReviews(
+        await projectCollaborationApi.listReviews(
+          "lesson",
+          contribution.source_lesson_id,
+          contribution.id
+        )
+      );
+      setReviewBody("");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "审查结论提交失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading) {
     return <main className="flex min-h-screen items-center justify-center gap-2 bg-[#f7f5ef] text-sm text-stone-500"><LoaderCircle className="h-5 w-5 animate-spin" />正在载入改进方案…</main>;
   }
@@ -186,6 +240,36 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
         </section>
 
         <DocumentDiff contribution={contribution} />
+
+        {governance ? (
+          <section className="rounded-[26px] border border-stone-200 bg-white p-5 sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="flex items-center gap-2 text-lg font-semibold"><ShieldCheck className="h-5 w-5" />多人审查</h2>
+              <span className="text-xs text-stone-500">当前版本 revision {contribution.current_revision} · 需要 {governance.policy.required_approvals} 个批准</span>
+            </div>
+            <div className="mt-4 space-y-2">
+              {reviews.length ? reviews.map((review) => (
+                <article key={review.id} className="rounded-2xl border border-stone-200 px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p><span className="font-semibold">{review.reviewer_display_name}</span><span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${review.decision === "approve" ? "bg-emerald-50 text-emerald-700" : review.decision === "request_changes" ? "bg-rose-50 text-rose-700" : "bg-stone-100 text-stone-600"}`}>{review.decision === "approve" ? "已批准" : review.decision === "request_changes" ? "请求修改" : "留言"}</span></p>
+                    <span className="text-xs text-stone-400">revision {review.revision_number} · {formatDate(review.updated_at)}</span>
+                  </div>
+                  {review.body ? <p className="mt-2 whitespace-pre-wrap leading-6 text-stone-600">{review.body}</p> : null}
+                </article>
+              )) : <p className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-500">还没有审查结论。</p>}
+            </div>
+            {governance.capabilities.review_changes && contribution.status === "open" ? (
+              <div className="mt-5 border-t border-stone-100 pt-5">
+                <textarea value={reviewBody} onChange={(event) => setReviewBody(event.target.value)} rows={3} placeholder="审查意见（请求修改时必填）" className="w-full resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" disabled={busy || contribution.contributor.user_id === user?.id} onClick={() => void submitReview("approve")} className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><ThumbsUp className="h-4 w-4" />批准当前版本</button>
+                  <button type="button" disabled={busy || contribution.contributor.user_id === user?.id} onClick={() => void submitReview("request_changes")} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50">请求修改</button>
+                  <button type="button" disabled={busy} onClick={() => void submitReview("comment")} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold disabled:opacity-50">仅留言</button>
+                </div>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="rounded-[26px] border border-stone-200 bg-white p-5 sm:p-6">
           <h2 className="flex items-center gap-2 text-lg font-semibold"><MessageCircle className="h-5 w-5" />讨论与时间线</h2>

@@ -234,7 +234,7 @@ async function responseErrorMessage(response: Response, fallback: string) {
   return message;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData) && !(init?.body instanceof Blob)) {
     headers.set("Content-Type", "application/json");

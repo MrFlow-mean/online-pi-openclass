@@ -337,6 +337,15 @@ def start_lesson_contribution_merge(
     if contribution.status != "open":
         raise LessonContributionConflictError("当前改进方案不能开始新的合并审查。")
     _require_version(contribution, expected_version)
+    from app.services.project_collaboration import (
+        ProjectCollaborationError,
+        ProjectCollaborationStore,
+    )
+
+    try:
+        ProjectCollaborationStore(store.path).assert_merge_allowed(contribution)
+    except ProjectCollaborationError as exc:
+        raise LessonContributionConflictError(str(exc)) from exc
     source_record = store.load_lesson_with_owner(source_lesson.id)
     if source_record is None or source_record[0] != user.id or not source_record[2]:
         raise LessonContributionConflictError("来源课程当前不可公开协作。")
@@ -562,6 +571,18 @@ def complete_lesson_contribution_merge(
     )
     if not saved:
         raise LessonContributionConflictError("课程、合并草案或改进方案已更新，请刷新后重试。")
+    from app.services.project_collaboration import ProjectCollaborationStore
+
+    ProjectCollaborationStore(store.path).record_event(
+        "lesson",
+        contribution.source_lesson_id,
+        user.id,
+        "merge.completed",
+        {
+            "contribution_id": contribution.id,
+            "merged_commit_id": session.committed_commit_id,
+        },
+    )
 
 
 def contribution_view(
