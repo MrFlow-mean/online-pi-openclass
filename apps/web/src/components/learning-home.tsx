@@ -1519,7 +1519,7 @@ export function LearningHome() {
       ) : null}
 
       {!isSearchMode ? (
-        <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[42rem] xl:right-8 xl:top-6">
+        <div className="fixed right-4 top-5 z-[130] w-[calc(100vw-2rem)] max-w-[42rem] xl:right-8 xl:top-7">
           {renderNotificationPanel()}
         </div>
       ) : null}
