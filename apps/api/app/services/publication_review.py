@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -31,6 +32,51 @@ from app.services.source_structure_store import source_structure_store
 _MAX_UNIT_CHARACTERS = 6_000
 _MAX_BATCH_CHARACTERS = 24_000
 _MAX_BATCH_UNITS = 12
+
+PublicationReviewProgressStage = Literal[
+    "checking_references",
+    "reading_sources",
+    "reviewing_units",
+    "verifying_sources",
+]
+
+
+class PublicationReviewProgressUpdate(BaseModel):
+    stage: PublicationReviewProgressStage
+    completed_items: int = Field(default=0, ge=0)
+    total_items: int = Field(default=0, ge=0)
+    batch_index: int = Field(default=0, ge=0)
+    batch_count: int = Field(default=0, ge=0)
+
+
+PublicationReviewProgressCallback = Callable[[PublicationReviewProgressUpdate], None]
+
+
+def _report_progress(
+    callback: PublicationReviewProgressCallback | None,
+    stage: PublicationReviewProgressStage,
+    *,
+    completed_items: int = 0,
+    total_items: int = 0,
+    batch_index: int = 0,
+    batch_count: int = 0,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(
+            PublicationReviewProgressUpdate(
+                stage=stage,
+                completed_items=completed_items,
+                total_items=total_items,
+                batch_index=batch_index,
+                batch_count=batch_count,
+            )
+        )
+    except Exception:
+        # Progress transport is observational and must never change the
+        # fail-closed publication decision.
+        return
 
 
 class _PublicationUnitDecision(BaseModel):
@@ -72,11 +118,22 @@ def scan_publication_units(
     source_count: int,
     source_fingerprint: str,
     adapter: AIExecutionAdapter,
+    progress_callback: PublicationReviewProgressCallback | None = None,
 ) -> PublicationReview:
     started_at = now_iso()
     findings: list[PublicationReviewFinding] = []
     try:
-        for batch in _unit_batches(units):
+        batches = list(_unit_batches(units))
+        completed_units = 0
+        for batch_index, batch in enumerate(batches, start=1):
+            _report_progress(
+                progress_callback,
+                "reviewing_units",
+                completed_items=completed_units,
+                total_items=len(units),
+                batch_index=batch_index,
+                batch_count=len(batches),
+            )
             result = adapter.parse_structured(
                 system_prompt=_PUBLICATION_REVIEW_PROMPT,
                 user_prompt=json.dumps(
@@ -127,6 +184,15 @@ def scan_publication_units(
                         reason=decision.reason.strip(),
                     )
                 )
+            completed_units += len(batch)
+            _report_progress(
+                progress_callback,
+                "reviewing_units",
+                completed_items=completed_units,
+                total_items=len(units),
+                batch_index=batch_index,
+                batch_count=len(batches),
+            )
     except Exception as exc:
         return PublicationReview(
             status="error",
@@ -166,7 +232,9 @@ def review_project_publication(
     package: CoursePackage,
     lesson_id: str | None = None,
     adapter: AIExecutionAdapter | None = None,
+    progress_callback: PublicationReviewProgressCallback | None = None,
 ) -> PublicationReview:
+    _report_progress(progress_callback, "checking_references")
     all_sources = source_ingestion_service.list_sources(
         owner_user_id=owner_user_id,
         package_id=package.id,
@@ -254,7 +322,13 @@ def review_project_publication(
 
     try:
         units: list[PublicationSourceUnit] = []
-        for source in sources:
+        for source_index, source in enumerate(sources, start=1):
+            _report_progress(
+                progress_callback,
+                "reading_sources",
+                completed_items=source_index - 1,
+                total_items=source_count,
+            )
             if source.source_type == "local_file":
                 view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
                 units.extend(
@@ -266,8 +340,26 @@ def review_project_publication(
                 )
             else:
                 units.extend(_source_ingestion_units(source))
-        for resource in legacy_resources:
+            _report_progress(
+                progress_callback,
+                "reading_sources",
+                completed_items=source_index,
+                total_items=source_count,
+            )
+        for resource_index, resource in enumerate(legacy_resources, start=len(sources) + 1):
+            _report_progress(
+                progress_callback,
+                "reading_sources",
+                completed_items=resource_index - 1,
+                total_items=source_count,
+            )
             units.extend(_legacy_resource_units(resource))
+            _report_progress(
+                progress_callback,
+                "reading_sources",
+                completed_items=resource_index,
+                total_items=source_count,
+            )
     except Exception as exc:
         stamp = now_iso()
         return PublicationReview(
@@ -288,6 +380,7 @@ def review_project_publication(
             source_count=source_count,
             source_fingerprint=fingerprint,
             adapter=selected_adapter,
+            progress_callback=progress_callback,
         )
     except Exception:
         stamp = now_iso()
@@ -303,6 +396,12 @@ def review_project_publication(
             started_at=stamp,
             completed_at=stamp,
         )
+    _report_progress(
+        progress_callback,
+        "verifying_sources",
+        completed_items=len(units),
+        total_items=len(units),
+    )
     current_sources = source_ingestion_service.list_sources(
         owner_user_id=owner_user_id,
         package_id=package.id,

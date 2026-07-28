@@ -61,9 +61,10 @@ import {
   publicProjectHref,
   updateLessonVisibility,
   updatePackageVisibility,
+  type PublicationReviewProgressUpdate,
   type ProjectVisibility,
 } from "@/lib/project-visibility";
-import { homeRelativeFormat } from "@/lib/i18n/product-ui";
+import { homeRelativeFormat, type HomeUiBundle } from "@/lib/i18n/product-ui";
 import { downloadRidoc, RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
 import { useHomeLessonBatch } from "@/hooks/use-home-lesson-batch";
 import {
@@ -113,6 +114,42 @@ type LessonMenuState = {
   top: number;
   left: number;
 };
+
+function publicationReviewProgressText(
+  progress: PublicationReviewProgressUpdate,
+  texts: HomeUiBundle,
+): { label: string; detail: string } {
+  switch (progress.stage) {
+    case "checking_references":
+      return {
+        label: texts.publicationReviewCheckingReferences,
+        detail: texts.publicationReviewCheckingReferencesDetail,
+      };
+    case "reading_sources":
+      return {
+        label: texts.publicationReviewReadingSources,
+        detail: texts.publicationReviewReadingSourcesDetail(
+          progress.completed_items,
+          progress.total_items,
+        ),
+      };
+    case "reviewing_units":
+      return {
+        label: texts.publicationReviewReviewingUnits,
+        detail: texts.publicationReviewReviewingUnitsDetail(
+          progress.completed_items,
+          progress.total_items,
+          progress.batch_index,
+          progress.batch_count,
+        ),
+      };
+    case "verifying_sources":
+      return {
+        label: texts.publicationReviewVerifyingSources,
+        detail: texts.publicationReviewVerifyingSourcesDetail(progress.total_items),
+      };
+  }
+}
 
 function countOpenCourseFacet(courses: OpenCourse[], getValue: (course: OpenCourse) => string, collatorLocale: string) {
   const counts = new Map<string, number>();
@@ -228,6 +265,8 @@ export function LearningHome() {
   const [coursePackagesCollapsed, setCoursePackagesCollapsed] = useState(false);
   const [standaloneLessonsCollapsed, setStandaloneLessonsCollapsed] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [publicationReviewProgress, setPublicationReviewProgress] =
+    useState<PublicationReviewProgressUpdate | null>(null);
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
   const [isCreatingPackageInline, setIsCreatingPackageInline] = useState(false);
@@ -553,8 +592,23 @@ export function LearningHome() {
 
   async function handleSetLessonVisibility(lesson: Lesson, visibility: ProjectVisibility) {
     setBusyKey(`visibility:lesson:${lesson.id}`);
+    setPublicationReviewProgress(
+      visibility === "public"
+        ? {
+            stage: "checking_references",
+            completed_items: 0,
+            total_items: 0,
+            batch_index: 0,
+            batch_count: 0,
+          }
+        : null,
+    );
     try {
-      const payload = await updateLessonVisibility(lesson.id, visibility);
+      const payload = await updateLessonVisibility(
+        lesson.id,
+        visibility,
+        visibility === "public" ? setPublicationReviewProgress : undefined,
+      );
       setWorkspaceState(payload);
       const updatedLesson = payload.packages
         .flatMap((packageItem) => packageItem.lessons)
@@ -567,6 +621,7 @@ export function LearningHome() {
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "更新课程可见权限失败");
     } finally {
+      setPublicationReviewProgress(null);
       setBusyKey(null);
     }
   }
@@ -1095,6 +1150,10 @@ export function LearningHome() {
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
                     const isReviewingPublication =
                       busyKey === `visibility:lesson:${lesson.id}` && lesson.visibility === "private";
+                    const reviewProgressText =
+                      isReviewingPublication && publicationReviewProgress
+                        ? publicationReviewProgressText(publicationReviewProgress, h)
+                        : null;
                     const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
                       <article
@@ -1186,7 +1245,8 @@ export function LearningHome() {
                         {isReviewingPublication ? (
                           <PublicationReviewProgress
                             className="px-4 pb-3"
-                            label={h.publicationReviewScanning}
+                            label={reviewProgressText?.label ?? h.publicationReviewScanning}
+                            detail={reviewProgressText?.detail}
                             ariaLabel={h.publicationReviewProgressAria}
                           />
                         ) : null}

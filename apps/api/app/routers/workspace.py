@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.models import (
     BatchLessonActionRequest,
@@ -36,7 +41,10 @@ from app.services.lesson_package_format import (
 from app.services.lesson_package_import import import_ridoc_archive, rollback_imported_assets
 from app.services.lesson_summary import lesson_content_summary
 from app.services.personal_lesson_copy import retain_public_lesson_as_personal_copy
-from app.services.publication_review import review_project_publication
+from app.services.publication_review import (
+    PublicationReviewProgressUpdate,
+    review_project_publication,
+)
 from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
     find_lesson_package,
@@ -203,6 +211,72 @@ def update_lesson_visibility(
         )
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
+
+
+@router.post("/api/lessons/{lesson_id}/visibility/stream")
+def stream_lesson_visibility_update(
+    lesson_id: str,
+    request: UpdateVisibilityRequest,
+    user: UserView = Depends(current_user),
+) -> StreamingResponse:
+    if request.visibility != "public":
+        raise HTTPException(status_code=400, detail="Streaming review is only used when publishing")
+
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    if not workspace.packages or package.id != workspace.packages[0].id:
+        raise HTTPException(status_code=400, detail="Packaged lessons inherit their package visibility")
+
+    event_queue: Queue[dict[str, object] | None] = Queue()
+
+    def report_progress(progress: PublicationReviewProgressUpdate) -> None:
+        event_queue.put(
+            {
+                "type": "progress",
+                "progress": progress.model_dump(mode="json"),
+            }
+        )
+
+    def run_review() -> None:
+        try:
+            lesson.publication_review = review_project_publication(
+                owner_user_id=user.id,
+                package=package,
+                lesson_id=lesson.id,
+                progress_callback=report_progress,
+            )
+            lesson.visibility = (
+                "public" if lesson.publication_review.status == "approved" else "private"
+            )
+            save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+            event_queue.put(
+                {
+                    "type": "result",
+                    "workspace": workspace_view(workspace).model_dump(mode="json"),
+                }
+            )
+        except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else "更新课程可见权限失败"
+            event_queue.put({"type": "error", "detail": str(detail)})
+        finally:
+            event_queue.put(None)
+
+    def event_stream() -> Iterator[str]:
+        Thread(target=run_review, name=f"publication-review-{lesson.id}", daemon=True).start()
+        while True:
+            event = event_queue.get()
+            if event is None:
+                return
+            yield f"{json.dumps(event, ensure_ascii=False, separators=(',', ':'))}\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/api/lessons/{lesson_id}/rename", response_model=WorkspaceStateView)

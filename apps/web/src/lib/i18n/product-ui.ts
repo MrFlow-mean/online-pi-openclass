@@ -133,6 +133,24 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       lessonMoreTitle: z ? "更多操作" : "More actions",
       publicationReviewScanning: z ? "资料扫描中" : "Scanning materials",
       publicationReviewProgressAria: z ? "课程发布扫描进度" : "Course publication scan progress",
+      publicationReviewCheckingReferences: z ? "正在核对课程引用范围" : "Checking referenced materials",
+      publicationReviewCheckingReferencesDetail: z ? "正在定位课程实际引用的资料" : "Locating materials actually referenced by this course",
+      publicationReviewReadingSources: z ? "正在读取原始资料" : "Reading original materials",
+      publicationReviewReadingSourcesDetail: (completed: number, total: number) =>
+        z ? `已读取 ${completed}/${total} 份资料` : `Read ${completed}/${total} materials`,
+      publicationReviewReviewingUnits: z ? "AI 正在审查资料片段" : "AI is reviewing material sections",
+      publicationReviewReviewingUnitsDetail: (
+        completed: number,
+        total: number,
+        batchIndex: number,
+        batchCount: number,
+      ) =>
+        z
+          ? `第 ${batchIndex}/${batchCount} 批 · 已完成 ${completed}/${total} 个片段`
+          : `Batch ${batchIndex}/${batchCount} · ${completed}/${total} sections completed`,
+      publicationReviewVerifyingSources: z ? "正在确认资料未发生变化" : "Verifying materials are unchanged",
+      publicationReviewVerifyingSourcesDetail: (total: number) =>
+        z ? `已完成 ${total} 个片段的审查，正在做最终一致性检查` : `${total} sections reviewed; running the final consistency check`,
       noLessonMatch: z ? "还没有匹配到课程。试试换个关键词，或者去工作台创建一节新课。" : "No matching lessons — try another keyword or create one in Studio.",
       noStandalone: z ? "现在没有未被存入课程包的单独课程。你可以先新建课程，或者把包内课程移回单独课程池。" : "No standalone lessons yet — create one or move lessons out of packages.",
       loadError: z ? "加载主页数据失败" : "Could not load home data",

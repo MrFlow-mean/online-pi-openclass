@@ -501,6 +501,7 @@ def test_publication_review_scans_only_sources_referenced_by_the_lesson(
         lambda **_kwargs: [used, unused],
     )
     scanned_source_ids: list[str] = []
+    progress_stages: list[str] = []
 
     def fake_units(source: SourceIngestionRecord) -> list[PublicationSourceUnit]:
         scanned_source_ids.append(source.id)
@@ -522,11 +523,20 @@ def test_publication_review_scans_only_sources_referenced_by_the_lesson(
                 }
             ]
         ),
+        progress_callback=lambda progress: progress_stages.append(progress.stage),
     )
 
     assert review.status == "approved"
     assert review.scanned_source_count == 1
     assert scanned_source_ids == ["used"]
+    assert progress_stages == [
+        "checking_references",
+        "reading_sources",
+        "reading_sources",
+        "reviewing_units",
+        "reviewing_units",
+        "verifying_sources",
+    ]
 
 
 def test_publication_review_resolves_historical_source_bundle_records(
@@ -813,6 +823,45 @@ def test_standalone_lessons_and_packages_have_revocable_public_visibility(
     )
     assert private_package.status_code == 200
     assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
+
+
+def test_standalone_lesson_publication_stream_reports_real_review_stage(
+    api_client: TestClient,
+) -> None:
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Streaming publication review", "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+
+    response = api_client.post(
+        f"/api/lessons/{lesson['id']}/visibility/stream",
+        json={"visibility": "public"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[0] == {
+        "type": "progress",
+        "progress": {
+            "stage": "checking_references",
+            "completed_items": 0,
+            "total_items": 0,
+            "batch_index": 0,
+            "batch_count": 0,
+        },
+    }
+    assert events[-1]["type"] == "result"
+    published_lesson = next(
+        item
+        for package in events[-1]["workspace"]["packages"]
+        for item in package["lessons"]
+        if item["id"] == lesson["id"]
+    )
+    assert published_lesson["visibility"] == "public"
+    assert published_lesson["publication_review"]["status"] == "approved"
 
 
 def test_public_lesson_fork_is_personal_idempotent_and_restorable(

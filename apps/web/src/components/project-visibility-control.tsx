@@ -19,6 +19,7 @@ type ProjectVisibilityControlProps = {
 
 type PublicationReviewProgressProps = {
   label: string;
+  detail?: string;
   ariaLabel: string;
   className?: string;
 };
@@ -98,7 +99,7 @@ export function PublicationReviewNotice({
     return (
       <div className="mt-2 flex items-start gap-2 rounded-xl bg-blue-50 px-2.5 py-2 text-[11px] leading-4 text-blue-700">
         <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-        AI 正在扫描所有上传资料的非正文内容。扫描完成前课程保持 Private。
+        AI 正在核对课程实际引用资料的非正文范围。扫描完成前课程保持 Private。
       </div>
     );
   }
@@ -132,6 +133,7 @@ export function PublicationReviewNotice({
 
 export function PublicationReviewProgress({
   label,
+  detail,
   ariaLabel,
   className,
 }: PublicationReviewProgressProps) {
@@ -141,10 +143,11 @@ export function PublicationReviewProgress({
         <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
         <span>{label}</span>
       </div>
+      {detail ? <p className="mb-1.5 text-[10px] leading-4 text-stone-500">{detail}</p> : null}
       <div
         role="progressbar"
         aria-label={ariaLabel}
-        aria-valuetext={label}
+        aria-valuetext={detail ? `${label}：${detail}` : label}
         className="h-1.5 w-full overflow-hidden rounded-full bg-blue-100"
       >
         <div className="source-processing-progress__indeterminate h-full rounded-full bg-blue-500" />

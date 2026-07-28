@@ -191,7 +191,7 @@ test("sets standalone lessons and course packages to public or private", async (
   await expect(lessonCard).toBeVisible();
   await lessonCard.getByLabel("打开课程操作菜单").click();
   await page.route(
-    `**/api/lessons/${lesson.id}/visibility`,
+    `**/api/lessons/${lesson.id}/visibility/stream`,
     async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 500));
       await route.continue();
@@ -199,12 +199,13 @@ test("sets standalone lessons and course packages to public or private", async (
     { times: 1 }
   );
   const lessonVisibilityResponse = page.waitForResponse(
-    (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility`) && response.request().method() === "POST"
+    (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility/stream`) && response.request().method() === "POST"
   );
   await page.getByRole("button", { name: "Public", exact: true }).click();
-  await expect(lessonCard.getByText("资料扫描中")).toBeVisible();
+  await expect(lessonCard.getByText("正在核对课程引用范围")).toBeVisible();
+  await expect(lessonCard.getByText("正在定位课程实际引用的资料")).toBeVisible();
   await expect(lessonCard.getByRole("progressbar", { name: "课程发布扫描进度" })).toBeVisible();
-  await expect(page.getByText(/AI 正在扫描所有上传资料的非正文内容/)).toBeVisible();
+  await expect(page.getByText(/AI 正在核对课程实际引用资料的非正文范围/)).toBeVisible();
   expect((await lessonVisibilityResponse).ok()).toBeTruthy();
   await expect(page.getByText("课程没有上传资料，可以公开。")).toBeVisible();
   await expect(lessonCard.getByLabel("Public")).toBeVisible();
@@ -245,7 +246,7 @@ test("sets standalone lessons and course packages to public or private", async (
   const blockedLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
   await blockedLessonCard.getByLabel("打开课程操作菜单").click();
   await page.route(
-    `**/api/lessons/${lesson.id}/visibility`,
+    `**/api/lessons/${lesson.id}/visibility/stream`,
     async (route) => {
       const authHeader = route.request().headers().authorization;
       const workspaceResponse = await page.request.get(`${API_BASE_URL}/api/workspace`, {
@@ -278,7 +279,21 @@ test("sets standalone lessons and course packages to public or private", async (
         started_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
       };
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(workspace) });
+      const progress = {
+        type: "progress",
+        progress: {
+          stage: "reviewing_units",
+          completed_items: 3,
+          total_items: 3,
+          batch_index: 1,
+          batch_count: 1,
+        },
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${JSON.stringify(progress)}\n${JSON.stringify({ type: "result", workspace })}\n`,
+      });
     },
     { times: 1 }
   );

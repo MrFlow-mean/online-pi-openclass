@@ -3,6 +3,20 @@ import type { BoardDocument, CoursePackage, WorkspaceState } from "@/types";
 
 export type ProjectVisibility = "private" | "public";
 
+export type PublicationReviewProgressStage =
+  | "checking_references"
+  | "reading_sources"
+  | "reviewing_units"
+  | "verifying_sources";
+
+export interface PublicationReviewProgressUpdate {
+  stage: PublicationReviewProgressStage;
+  completed_items: number;
+  total_items: number;
+  batch_index: number;
+  batch_count: number;
+}
+
 export interface PublicLesson {
   id: string;
   title: string;
@@ -52,7 +66,84 @@ async function visibilityRequest<T>(path: string, init?: RequestInit): Promise<T
   return response.json() as Promise<T>;
 }
 
-export function updateLessonVisibility(lessonId: string, visibility: ProjectVisibility) {
+async function streamingVisibilityRequest(
+  path: string,
+  visibility: ProjectVisibility,
+  onProgress: (progress: PublicationReviewProgressUpdate) => void,
+): Promise<WorkspaceState> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const token = readEffectiveAuthToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const response = await fetch(`${getApiBase()}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ visibility }),
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+    throw new ProjectVisibilityRequestError(
+      typeof payload?.detail === "string" ? payload.detail : `Request failed (${response.status})`,
+      response.status,
+    );
+  }
+  if (!response.body) {
+    throw new ProjectVisibilityRequestError("Publication review stream was unavailable", response.status);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let workspace: WorkspaceState | null = null;
+
+  const readEvent = (line: string) => {
+    const event = JSON.parse(line) as
+      | { type: "progress"; progress: PublicationReviewProgressUpdate }
+      | { type: "result"; workspace: WorkspaceState }
+      | { type: "error"; detail: string };
+    if (event.type === "progress") {
+      onProgress(event.progress);
+    } else if (event.type === "result") {
+      workspace = event.workspace;
+    } else {
+      throw new ProjectVisibilityRequestError(event.detail, response.status);
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffered += decoder.decode(value, { stream: !done });
+    const lines = buffered.split("\n");
+    buffered = lines.pop() ?? "";
+    lines.filter(Boolean).forEach(readEvent);
+    if (done) {
+      break;
+    }
+  }
+  if (buffered.trim()) {
+    readEvent(buffered);
+  }
+  if (!workspace) {
+    throw new ProjectVisibilityRequestError("Publication review ended without a result", response.status);
+  }
+  return workspace;
+}
+
+export function updateLessonVisibility(
+  lessonId: string,
+  visibility: ProjectVisibility,
+  onProgress?: (progress: PublicationReviewProgressUpdate) => void,
+) {
+  if (visibility === "public" && onProgress) {
+    return streamingVisibilityRequest(
+      `/api/lessons/${lessonId}/visibility/stream`,
+      visibility,
+      onProgress,
+    );
+  }
   return visibilityRequest<WorkspaceState>(`/api/lessons/${lessonId}/visibility`, {
     method: "POST",
     body: JSON.stringify({ visibility }),
