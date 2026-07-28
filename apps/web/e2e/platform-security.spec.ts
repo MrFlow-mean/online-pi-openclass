@@ -30,5 +30,7 @@ test("production web responses carry the platform security policy", async ({ pag
   expect(headers["x-frame-options"]).toBe("DENY");
   expect(headers["strict-transport-security"]).toContain("max-age=31536000");
   expect(headers["content-security-policy"]).toContain("https://challenges.cloudflare.com");
+  expect(headers["content-security-policy"]).toContain("https://images.example.com");
+  expect(headers["content-security-policy"]).not.toContain("http://insecure.example.com");
   expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
 });

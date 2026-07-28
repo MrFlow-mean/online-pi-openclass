@@ -55,6 +55,7 @@ export default defineConfig({
         ...process.env,
         NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
         NEXT_PUBLIC_OPENCLASS_E2E_MODE: "true",
+        OPENCLASS_CSP_IMAGE_SOURCES: "https://images.example.com,http://insecure.example.com",
         OPENCLASS_NEXT_DIST_DIR: ".next-e2e",
       },
     },

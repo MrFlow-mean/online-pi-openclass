@@ -33,7 +33,23 @@ function configuredOriginSources() {
   return [...sources];
 }
 
+function configuredHttpsOrigins(value: string | undefined) {
+  const sources = new Set<string>();
+  for (const candidate of value?.split(/[\s,]+/) ?? []) {
+    if (!candidate) continue;
+    try {
+      const url = new URL(candidate);
+      if (url.protocol !== "https:" || url.username || url.password) continue;
+      sources.add(url.origin);
+    } catch {
+      // Invalid deployment input is ignored instead of weakening the policy.
+    }
+  }
+  return [...sources];
+}
+
 const applicationSources = configuredOriginSources();
+const imageSources = configuredHttpsOrigins(process.env.OPENCLASS_CSP_IMAGE_SOURCES);
 const paypalSources = [
   "https://www.paypal.com",
   "https://*.paypal.com",
@@ -45,7 +61,7 @@ const cspDirectives = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""} https://challenges.cloudflare.com ${paypalSources.join(" ")} https://applepay.cdn-apple.com https://pay.google.com`,
   `style-src 'self' 'unsafe-inline' ${paypalSources.join(" ")}`,
-  `img-src 'self' data: blob: https://api.dicebear.com ${paypalSources.join(" ")} https://pay.google.com`,
+  `img-src 'self' data: blob: https://api.dicebear.com ${imageSources.join(" ")} ${paypalSources.join(" ")} https://pay.google.com`,
   `font-src 'self' data: https://www.paypalobjects.com https://*.paypalobjects.com`,
   `connect-src 'self' ${applicationSources.join(" ")} https://challenges.cloudflare.com ${paypalSources.join(" ")} https://pay.google.com https://applepay.cdn-apple.com`,
   `frame-src 'self' https://challenges.cloudflare.com ${paypalSources.join(" ")} https://pay.google.com`,

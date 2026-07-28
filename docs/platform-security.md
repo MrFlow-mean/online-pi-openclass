@@ -22,6 +22,6 @@ The bundled rate limiter is process-local. It is suitable for the current single
 
 ## Browser security policy
 
-The web CSP permits only the app, configured API/WebSocket origins, Cloudflare Turnstile, PayPal/Card Fields, Apple Pay, Google Pay, and the existing DiceBear image source. PayPal popups require `Cross-Origin-Opener-Policy: same-origin-allow-popups`. Review browser console CSP reports during every payment-provider change before production rollout.
+The web CSP permits only the app, configured API/WebSocket origins, Cloudflare Turnstile, PayPal/Card Fields, Apple Pay, Google Pay, and the existing DiceBear image source. Deployments that store profile or media URLs on another trusted service can add exact HTTPS origins through `OPENCLASS_CSP_IMAGE_SOURCES`; invalid and non-HTTPS values are ignored. PayPal popups require `Cross-Origin-Opener-Policy: same-origin-allow-popups`. Review browser console CSP reports during every payment-provider or remote-media change before production rollout.
 
 Do not enable HSTS until the public origin and all required subdomains are HTTPS-ready. `OPENCLASS_ENV=production` enables the API HSTS header; the production Next.js build emits it automatically.
