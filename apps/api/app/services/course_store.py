@@ -25,6 +25,7 @@ from app.models import (
     LessonRuntimeSnapshot,
     LibraryChapter,
     PublicationReview,
+    PublicCourseSearchResult,
     ResourceLibraryItem,
     ResourcePageStructure,
     ResourceSourceUnit,
@@ -45,6 +46,38 @@ def _active_package_setting_key(owner_user_id: str | None) -> str:
 
 def _workspace_revision_setting_key(owner_user_id: str) -> str:
     return f"workspace_revision:{owner_user_id}"
+
+
+def _escaped_like_pattern(value: str) -> str:
+    escaped = value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"%{escaped}%"
+
+
+def _public_course_search_result(row: sqlite3.Row) -> PublicCourseSearchResult:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw_tags in (row["tags_group"] or "").split(chr(31)):
+        try:
+            values = json.loads(raw_tags)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str) and value and value not in seen:
+                seen.add(value)
+                tags.append(value)
+    return PublicCourseSearchResult(
+        id=row["id"],
+        kind=row["kind"],
+        owner_display_name=row["owner_display_name"],
+        owner_avatar_url=row["owner_avatar_url"],
+        title=row["title"],
+        summary=row["summary"],
+        tags=tags[:8],
+        lesson_count=int(row["lesson_count"]),
+        updated_at=row["updated_at"],
+    )
 
 
 class SqliteCourseStore:
@@ -112,6 +145,149 @@ class SqliteCourseStore:
                 if row is None:
                     return None
                 return self._read_lesson(conn, row)
+
+    def search_public_courses(
+        self,
+        query: str,
+        *,
+        exclude_owner_user_id: str,
+        limit: int = 30,
+    ) -> list[PublicCourseSearchResult]:
+        terms = [term.casefold() for term in query.split() if term][:12]
+        if not terms:
+            return []
+
+        with self._lock:
+            with self._connect() as conn:
+                user_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(users)").fetchall()
+                }
+                has_user_profiles = {"id", "display_name", "avatar_url"}.issubset(user_columns)
+                user_join = (
+                    "LEFT JOIN users ON users.id = course_packages.owner_user_id"
+                    if has_user_profiles
+                    else ""
+                )
+                owner_name = (
+                    "COALESCE(NULLIF(users.display_name, ''), 'OpenClass 用户')"
+                    if has_user_profiles
+                    else "'OpenClass 用户'"
+                )
+                owner_avatar = "users.avatar_url" if has_user_profiles else "NULL"
+
+                package_term_clauses: list[str] = []
+                package_params: list[Any] = [exclude_owner_user_id]
+                lesson_term_clauses: list[str] = []
+                lesson_params: list[Any] = [exclude_owner_user_id]
+                for term in terms:
+                    pattern = _escaped_like_pattern(term)
+                    package_term_clauses.append(
+                        f"""
+                        (
+                            LOWER(course_packages.title) LIKE ? ESCAPE '!'
+                            OR LOWER(course_packages.summary) LIKE ? ESCAPE '!'
+                            OR LOWER({owner_name}) LIKE ? ESCAPE '!'
+                            OR EXISTS (
+                                SELECT 1
+                                FROM lessons AS search_lessons
+                                WHERE search_lessons.package_id = course_packages.id
+                                  AND (
+                                      LOWER(search_lessons.title) LIKE ? ESCAPE '!'
+                                      OR LOWER(search_lessons.summary) LIKE ? ESCAPE '!'
+                                      OR LOWER(search_lessons.tags_json) LIKE ? ESCAPE '!'
+                                      OR LOWER(search_lessons.board_document_title) LIKE ? ESCAPE '!'
+                                      OR LOWER(search_lessons.board_content_text) LIKE ? ESCAPE '!'
+                                  )
+                            )
+                        )
+                        """
+                    )
+                    package_params.extend([pattern] * 8)
+                    lesson_term_clauses.append(
+                        f"""
+                        (
+                            LOWER(lessons.title) LIKE ? ESCAPE '!'
+                            OR LOWER(lessons.summary) LIKE ? ESCAPE '!'
+                            OR LOWER(lessons.tags_json) LIKE ? ESCAPE '!'
+                            OR LOWER(lessons.board_document_title) LIKE ? ESCAPE '!'
+                            OR LOWER(lessons.board_content_text) LIKE ? ESCAPE '!'
+                            OR LOWER({owner_name}) LIKE ? ESCAPE '!'
+                        )
+                        """
+                    )
+                    lesson_params.extend([pattern] * 6)
+
+                package_params.append(limit)
+                package_rows = conn.execute(
+                    f"""
+                    SELECT
+                        course_packages.id,
+                        'package' AS kind,
+                        {owner_name} AS owner_display_name,
+                        {owner_avatar} AS owner_avatar_url,
+                        course_packages.title,
+                        course_packages.summary,
+                        COUNT(lessons.id) AS lesson_count,
+                        MAX(lessons.updated_at) AS updated_at,
+                        GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group
+                    FROM course_packages
+                    {user_join}
+                    LEFT JOIN lessons ON lessons.package_id = course_packages.id
+                    WHERE course_packages.visibility = 'public'
+                      AND course_packages.sort_order > 0
+                      AND (
+                          course_packages.owner_user_id IS NULL
+                          OR course_packages.owner_user_id != ?
+                      )
+                      AND {" AND ".join(package_term_clauses)}
+                    GROUP BY
+                        course_packages.id,
+                        owner_display_name,
+                        owner_avatar_url,
+                        course_packages.title,
+                        course_packages.summary
+                    ORDER BY COALESCE(MAX(lessons.updated_at), '') DESC
+                    LIMIT ?
+                    """,
+                    package_params,
+                ).fetchall()
+
+                lesson_params.append(limit)
+                lesson_rows = conn.execute(
+                    f"""
+                    SELECT
+                        lessons.id,
+                        'lesson' AS kind,
+                        {owner_name} AS owner_display_name,
+                        {owner_avatar} AS owner_avatar_url,
+                        lessons.title,
+                        lessons.summary,
+                        1 AS lesson_count,
+                        lessons.updated_at,
+                        lessons.tags_json AS tags_group
+                    FROM lessons
+                    JOIN course_packages ON course_packages.id = lessons.package_id
+                    {user_join}
+                    WHERE course_packages.sort_order = 0
+                      AND lessons.visibility = 'public'
+                      AND (
+                          course_packages.owner_user_id IS NULL
+                          OR course_packages.owner_user_id != ?
+                      )
+                      AND {" AND ".join(lesson_term_clauses)}
+                    ORDER BY lessons.updated_at DESC
+                    LIMIT ?
+                    """,
+                    lesson_params,
+                ).fetchall()
+
+                results = [
+                    _public_course_search_result(row)
+                    for row in [*package_rows, *lesson_rows]
+                ]
+                results.sort(key=lambda item: item.updated_at or "", reverse=True)
+                return results[:limit]
 
     def load_for_user_with_revision(self, owner_user_id: str) -> tuple[WorkspaceState, int]:
         with self._lock:

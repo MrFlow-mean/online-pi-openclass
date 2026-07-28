@@ -59,6 +59,13 @@ TEST_USER = UserView(
     role="user",
     created_at="2026-01-01T00:00:00+00:00",
 )
+OTHER_USER = UserView(
+    id="user_searcher",
+    email="searcher@example.com",
+    role="user",
+    display_name="Searcher",
+    created_at="2026-01-02T00:00:00+00:00",
+)
 
 
 @pytest.fixture
@@ -823,6 +830,40 @@ def test_standalone_lessons_and_packages_have_revocable_public_visibility(
     )
     assert private_package.status_code == 200
     assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
+
+
+def test_public_course_search_returns_real_projects_from_other_users(
+    api_client: TestClient,
+) -> None:
+    public_response = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Discoverable public project", "start_blank": True},
+    )
+    public_lesson = public_response.json()["lessons"][0]
+    assert api_client.post(
+        f"/api/lessons/{public_lesson['id']}/visibility",
+        json={"visibility": "public"},
+    ).status_code == 200
+
+    private_response = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Discoverable private project", "start_blank": True},
+    )
+    assert private_response.status_code == 200
+
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: OTHER_USER
+    search_response = api_client.get(
+        "/api/public/courses/search",
+        params={"q": "Discoverable project"},
+    )
+
+    assert search_response.status_code == 200
+    results = search_response.json()
+    assert [(result["kind"], result["title"]) for result in results] == [
+        ("lesson", "Discoverable public project")
+    ]
+    assert results[0]["lesson_count"] == 1
+    assert "board_document" not in results[0]
 
 
 def test_standalone_lesson_publication_stream_reports_real_review_stage(

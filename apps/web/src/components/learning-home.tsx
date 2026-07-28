@@ -9,22 +9,16 @@ import {
   Activity,
   ArrowUpRight,
   Bell,
-  BookOpen,
   BookText,
-  Bookmark,
   Check,
   ChevronDown,
   ChevronRight,
-  Code2,
   Download,
-  Eye,
   Flame,
   FolderClosed,
   GitFork,
   Globe2,
-  GraduationCap,
   Languages,
-  Layers,
   LoaderCircle,
   LockKeyhole,
   Mail,
@@ -38,6 +32,7 @@ import {
   Trash2,
   WalletCards,
   Upload,
+  X,
 } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
@@ -55,6 +50,7 @@ import {
   PublicationReviewNotice,
   PublicationReviewProgress,
 } from "@/components/project-visibility-control";
+import { PublicCourseSearchResults } from "@/components/public-course-search-results";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import {
@@ -76,14 +72,6 @@ import {
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
-  courseAvatarUrl,
-  courseDetailHref,
-  courseFullName,
-  formatCompactNumber,
-  searchOpenCourses,
-  sortOpenCourses,
-  type OpenCourse,
-  type OpenCourseSort,
 } from "@/lib/open-courses";
 import {
   FOLLOWED_UPDATE_KIND_LABELS,
@@ -99,8 +87,6 @@ import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
 const GITHUB_REPOSITORY_URL = "https://github.com/MrFlow-mean/openclass";
 const PLATFORM_CONTACT_EMAIL = process.env.NEXT_PUBLIC_CONTACT_EMAIL?.trim() || "hello@open-classes.com";
-
-type SearchFacet = { kind: "all" } | { kind: "category" | "language"; value: string };
 
 type LessonShelfItem = {
   lesson: Lesson;
@@ -148,34 +134,6 @@ function publicationReviewProgressText(
         label: texts.publicationReviewVerifyingSources,
         detail: texts.publicationReviewVerifyingSourcesDetail(progress.total_items),
       };
-  }
-}
-
-function countOpenCourseFacet(courses: OpenCourse[], getValue: (course: OpenCourse) => string, collatorLocale: string) {
-  const counts = new Map<string, number>();
-
-  courses.forEach((course) => {
-    const value = getValue(course);
-    counts.set(value, (counts.get(value) ?? 0) + 1);
-  });
-
-  return Array.from(counts, ([value, count]) => ({ value, count })).sort((left, right) => {
-    if (right.count !== left.count) {
-      return right.count - left.count;
-    }
-    return left.value.localeCompare(right.value, collatorLocale);
-  });
-}
-
-function persistCollectedCourseIds(courseIds: Set<string>) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(OPEN_COURSE_COLLECTION_STORAGE_KEY, JSON.stringify(Array.from(courseIds)));
-  } catch {
-    // Local storage can be unavailable in private browsing contexts.
   }
 }
 
@@ -233,7 +191,7 @@ function followedUpdatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) 
 
 export function LearningHome() {
   const router = useRouter();
-  const { language, texts: txt, intlLocale } = useInterfaceLanguage();
+  const { language, texts: txt } = useInterfaceLanguage();
   const h = txt.home;
   const errMsgs = useRef(h);
 
@@ -250,9 +208,8 @@ export function LearningHome() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const deferredQuery = useDeferredValue(searchQuery.trim().toLowerCase());
-  const [openCourseSort, setOpenCourseSort] = useState<OpenCourseSort>("best-match");
-  const [openCourseFacet, setOpenCourseFacet] = useState<SearchFacet>({ kind: "all" });
+  const [searchMode, setSearchMode] = useState(false);
+  const deferredQuery = useDeferredValue(searchQuery.trim());
   const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
   );
@@ -432,29 +389,8 @@ export function LearningHome() {
     deleteConfirmMessage: h.batchDeleteConfirm,
   });
 
-  const matchingOpenCourses = useMemo(() => searchOpenCourses(deferredQuery), [deferredQuery]);
-  const categoryFacetCounts = useMemo(
-    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.category, intlLocale),
-    [matchingOpenCourses, intlLocale]
-  );
-  const languageFacetCounts = useMemo(
-    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.language, intlLocale),
-    [matchingOpenCourses, intlLocale]
-  );
-  const openCourseResults = useMemo(() => {
-    const facetedCourses = matchingOpenCourses.filter((course) => {
-      if (openCourseFacet.kind === "all") {
-        return true;
-      }
-      if (openCourseFacet.kind === "category") {
-        return course.category === openCourseFacet.value;
-      }
-      return course.language === openCourseFacet.value;
-    });
-
-    return sortOpenCourses(facetedCourses, openCourseSort);
-  }, [matchingOpenCourses, openCourseFacet, openCourseSort]);
   const collectedOpenCourseCount = collectedCourseIds.size;
+  const isSearchMode = searchMode || Boolean(searchQuery.trim());
 
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
@@ -813,19 +749,6 @@ export function LearningHome() {
     }
   }
 
-  function handleToggleCollectCourse(courseId: string) {
-    setCollectedCourseIds((current) => {
-      const next = new Set(current);
-      if (next.has(courseId)) {
-        next.delete(courseId);
-      } else {
-        next.add(courseId);
-      }
-      persistCollectedCourseIds(next);
-      return next;
-    });
-  }
-
   function handleToggleInterfaceLanguage() {
     if (typeof window === "undefined") {
       return;
@@ -862,6 +785,7 @@ export function LearningHome() {
       </div>
 
       <div className="relative flex min-h-screen w-full flex-col lg:flex-row">
+        {!isSearchMode ? (
         <aside className="relative z-[90] h-[100dvh] border-b border-stone-200/80 bg-[#fcfbf8]/85 backdrop-blur lg:fixed lg:left-0 lg:top-0 lg:h-screen lg:w-80 lg:border-b-0 lg:border-r">
           <div className="flex h-full min-h-0 flex-col p-4 sm:p-5">
             <div className="mb-8 flex items-center justify-between gap-4 px-2">
@@ -1263,10 +1187,16 @@ export function LearningHome() {
 
           </div>
         </aside>
+        ) : null}
 
-        <main className="relative flex-1 px-4 py-5 sm:px-6 lg:ml-80 lg:px-8 xl:pr-[25rem]">
-          <div className="mx-auto max-w-4xl">
-            {error ? (
+        <main
+          className={clsx(
+            "relative flex-1 px-4 py-5 sm:px-6 lg:px-8",
+            !isSearchMode && "lg:ml-80 xl:pr-[25rem]",
+          )}
+        >
+          <div className={clsx("mx-auto", isSearchMode ? "max-w-6xl" : "max-w-4xl")}>
+            {!isSearchMode && error ? (
               <div className="mb-6 rounded-[24px] border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
                 {error}
               </div>
@@ -1281,19 +1211,42 @@ export function LearningHome() {
                   type="text"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
+                  onFocus={() => setSearchMode(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setSearchQuery("");
+                      setSearchMode(false);
+                      event.currentTarget.blur();
+                    }
+                  }}
                   placeholder={h.searchPlaceholder}
                   className="w-full rounded-[28px] border border-white/70 bg-white/80 py-4 pl-11 pr-24 text-sm text-stone-950 shadow-[0_18px_40px_rgba(15,23,42,0.06)] outline-none transition placeholder:text-stone-400 focus:border-stone-950 focus:bg-white"
                 />
-                <div className="pointer-events-none absolute inset-y-0 right-4 flex items-center">
+                <div className="absolute inset-y-0 right-4 flex items-center">
+                  {isSearchMode ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery("");
+                        setSearchMode(false);
+                      }}
+                      className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-950"
+                      aria-label={language === "en" ? "Close search" : "退出搜索"}
+                      title={language === "en" ? "Close search" : "退出搜索"}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  ) : (
                   <span className="rounded-md border border-stone-200 bg-white px-2 py-1 font-mono text-[10px] text-stone-400">
                     ⌘K
                   </span>
+                  )}
                 </div>
               </div>
             </section>
 
-            {deferredQuery ? (
-              renderOpenCourseSearchResults()
+            {isSearchMode ? (
+              <PublicCourseSearchResults query={deferredQuery} language={language} />
             ) : (
               <>
             <LearningActivityCalendar
@@ -1565,14 +1518,17 @@ export function LearningHome() {
         </div>
       ) : null}
 
-      <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[42rem] xl:right-8 xl:top-6">
-        {renderNotificationPanel()}
-      </div>
+      {!isSearchMode ? (
+        <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[42rem] xl:right-8 xl:top-6">
+          {renderNotificationPanel()}
+        </div>
+      ) : null}
 
-      <nav
-        aria-label={quickLinksLabel}
-        className="fixed bottom-4 right-4 z-[130] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border border-stone-200 bg-white/92 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur xl:bottom-6 xl:right-8"
-      >
+      {!isSearchMode ? (
+        <nav
+          aria-label={quickLinksLabel}
+          className="fixed bottom-4 right-4 z-[130] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border border-stone-200 bg-white/92 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur xl:bottom-6 xl:right-8"
+        >
         <a
           href={`mailto:${PLATFORM_CONTACT_EMAIL}`}
           aria-label={contactLinkLabel}
@@ -1602,271 +1558,10 @@ export function LearningHome() {
           <BookText className="h-4 w-4" />
           <span>{language === "en" ? "Docs" : "项目文档"}</span>
         </Link>
-      </nav>
+        </nav>
+      ) : null}
     </div>
   );
-
-  function renderOpenCourseSearchResults() {
-    const searchText = searchQuery.trim();
-    const activeFacetLabel = openCourseFacet.kind === "all" ? "全部开源课程" : openCourseFacet.value;
-    const totalStars = openCourseResults.reduce((sum, course) => sum + course.stars, 0);
-
-    return (
-      <section className="mb-12">
-        <div className="grid gap-5 lg:grid-cols-[15rem_minmax(0,1fr)] 2xl:grid-cols-[15rem_minmax(0,1fr)_18rem]">
-          <aside className="h-fit rounded-lg border border-stone-200 bg-white/88 p-3 shadow-[0_12px_28px_rgba(15,23,42,0.04)] backdrop-blur">
-            <div className="mb-3 flex items-center gap-2 px-2 text-sm font-semibold text-stone-950">
-              <Code2 className="h-4 w-4" />
-              <span>Filter by</span>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setOpenCourseFacet({ kind: "all" })}
-              className={clsx(
-                "flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition",
-                openCourseFacet.kind === "all"
-                  ? "bg-stone-950 text-white"
-                  : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
-              )}
-            >
-              <span className="inline-flex items-center gap-2">
-                <BookOpen className="h-4 w-4" />
-                Open courses
-              </span>
-              <span
-                className={clsx(
-                  "rounded-full px-2 py-0.5 text-[10px]",
-                  openCourseFacet.kind === "all" ? "bg-white/12 text-white" : "bg-stone-100 text-stone-500"
-                )}
-              >
-                {matchingOpenCourses.length}
-              </span>
-            </button>
-
-            <div className="mt-4 border-t border-stone-200 pt-4">
-              <p className="px-2 text-xs font-semibold text-stone-500">课程方向</p>
-              <div className="mt-2 space-y-1">
-                {categoryFacetCounts.map((facet) => {
-                  const isActive = openCourseFacet.kind === "category" && openCourseFacet.value === facet.value;
-                  return (
-                    <button
-                      key={facet.value}
-                      type="button"
-                      onClick={() => setOpenCourseFacet({ kind: "category", value: facet.value })}
-                      className={clsx(
-                        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition",
-                        isActive ? "bg-stone-100 text-stone-950" : "text-stone-600 hover:bg-stone-50 hover:text-stone-950"
-                      )}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Layers className="h-3.5 w-3.5" />
-                        {facet.value}
-                      </span>
-                      <span className="text-xs text-stone-400">{facet.count}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="mt-4 border-t border-stone-200 pt-4">
-              <p className="px-2 text-xs font-semibold text-stone-500">语言 / 学科</p>
-              <div className="mt-2 space-y-1">
-                {languageFacetCounts.map((facet) => {
-                  const isActive = openCourseFacet.kind === "language" && openCourseFacet.value === facet.value;
-                  const sampleCourse = matchingOpenCourses.find((course) => course.language === facet.value);
-                  return (
-                    <button
-                      key={facet.value}
-                      type="button"
-                      onClick={() => setOpenCourseFacet({ kind: "language", value: facet.value })}
-                      className={clsx(
-                        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition",
-                        isActive ? "bg-stone-100 text-stone-950" : "text-stone-600 hover:bg-stone-50 hover:text-stone-950"
-                      )}
-                    >
-                      <span className="inline-flex min-w-0 items-center gap-2">
-                        <span
-                          className="h-2.5 w-2.5 shrink-0 rounded-full"
-                          style={{ backgroundColor: sampleCourse?.languageColor ?? "#94a3b8" }}
-                        />
-                        <span className="truncate">{facet.value}</span>
-                      </span>
-                      <span className="text-xs text-stone-400">{facet.count}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </aside>
-
-          <div className="min-w-0">
-            <div className="mb-4 flex flex-col gap-3 rounded-lg border border-stone-200 bg-white/88 px-4 py-3 shadow-[0_12px_28px_rgba(15,23,42,0.04)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-base font-semibold text-stone-950">
-                  {openCourseResults.length.toLocaleString("zh-CN")} 个开源课程结果
-                </h2>
-                <p className="mt-1 text-xs text-stone-500">
-                  搜索 “{searchText}” · 当前筛选：{activeFacetLabel}
-                </p>
-              </div>
-
-              <label className="inline-flex items-center gap-2 text-xs font-medium text-stone-500">
-                Sort by
-                <select
-                  value={openCourseSort}
-                  onChange={(event) => setOpenCourseSort(event.target.value as OpenCourseSort)}
-                  className="rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 outline-none transition focus:border-stone-950"
-                >
-                  <option value="best-match">Best match</option>
-                  <option value="stars">Most stars</option>
-                  <option value="updated">Recently updated</option>
-                </select>
-              </label>
-            </div>
-
-            <div className="space-y-3">
-              {openCourseResults.length ? (
-                openCourseResults.map((course) => {
-                  const isCollected = collectedCourseIds.has(course.id);
-                  return (
-                    <article
-                      key={course.id}
-                      className="rounded-lg border border-stone-200 bg-white/92 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)] transition hover:border-stone-300 hover:bg-white"
-                    >
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="flex min-w-0 gap-3">
-                          <Image
-                            src={courseAvatarUrl(course)}
-                            alt=""
-                            className="mt-0.5 h-8 w-8 rounded-md border border-stone-200 bg-stone-100"
-                            width={32}
-                            height={32}
-                            unoptimized
-                          />
-
-                          <div className="min-w-0">
-                            <Link
-                              href={courseDetailHref(course)}
-                              className="block truncate text-base font-semibold text-blue-600 hover:underline"
-                            >
-                              {courseFullName(course)}
-                            </Link>
-                            <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-700">{course.summary}</p>
-
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {course.topics.map((topic) => (
-                                <span
-                                  key={`${course.id}:${topic}`}
-                                  className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700"
-                                >
-                                  {topic}
-                                </span>
-                              ))}
-                            </div>
-
-                            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-stone-500">
-                              <span className="inline-flex items-center gap-1.5">
-                                <span
-                                  className="h-2.5 w-2.5 rounded-full"
-                                  style={{ backgroundColor: course.languageColor }}
-                                />
-                                {course.language}
-                              </span>
-                              <span className="inline-flex items-center gap-1">
-                                <Star className="h-3.5 w-3.5" />
-                                {formatCompactNumber(course.stars)}
-                              </span>
-                              <span className="inline-flex items-center gap-1">
-                                <GitFork className="h-3.5 w-3.5" />
-                                {formatCompactNumber(course.forks)}
-                              </span>
-                              <span className="inline-flex items-center gap-1">
-                                <GraduationCap className="h-3.5 w-3.5" />
-                                {course.lessons} lessons
-                              </span>
-                              <span>{course.license}</span>
-                              <span>Updated {homeRelFmt(course.updatedAt)}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex shrink-0 items-center gap-2">
-                          <Link
-                            href={courseDetailHref(course)}
-                            className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
-                          >
-                            打开
-                            <ArrowUpRight className="h-3.5 w-3.5" />
-                          </Link>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleCollectCourse(course.id)}
-                            className={clsx(
-                              "inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition",
-                              isCollected
-                                ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300"
-                                : "border-stone-200 bg-white text-stone-700 hover:border-stone-300 hover:text-stone-950"
-                            )}
-                          >
-                            <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-                            {isCollected ? "已收藏" : "收藏"}
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })
-              ) : (
-                <div className="rounded-lg border border-dashed border-stone-300 bg-white/88 px-5 py-10 text-sm text-stone-500">
-                  没有找到匹配的开源课程。换个关键词，或清除左侧筛选后再试。
-                </div>
-              )}
-            </div>
-          </div>
-
-          <aside className="hidden h-fit space-y-3 2xl:block">
-            <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
-              <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
-                <Bookmark className="h-4 w-4 text-amber-500" />
-                收藏的开源课程
-              </div>
-              <p className="mt-2 text-sm leading-6 text-stone-600">
-                已收藏 {collectedOpenCourseCount} 个项目，可在个人主页继续查看和管理。
-              </p>
-              <Link
-                href="/profile"
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
-              >
-                打开个人主页
-                <ArrowUpRight className="h-4 w-4" />
-              </Link>
-            </div>
-
-            <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
-              <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
-                <Eye className="h-4 w-4 text-sky-600" />
-                搜索概览
-              </div>
-              <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <dt className="text-xs text-stone-400">Stars</dt>
-                  <dd className="mt-1 font-semibold text-stone-900">{formatCompactNumber(totalStars)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-stone-400">Topics</dt>
-                  <dd className="mt-1 font-semibold text-stone-900">
-                    {new Set(openCourseResults.flatMap((course) => course.topics)).size}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-          </aside>
-        </div>
-      </section>
-    );
-  }
 
   function renderSelectedPackagePanel() {
     if (!selectedCoursePackage) {

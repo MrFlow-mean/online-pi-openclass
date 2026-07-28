@@ -1801,6 +1801,18 @@ class PublicCoursePackageView(BaseModel):
     lessons: list[PublicLessonView] = Field(default_factory=list)
 
 
+class PublicCourseSearchResult(BaseModel):
+    id: str
+    kind: Literal["lesson", "package"]
+    owner_display_name: str
+    owner_avatar_url: str | None = None
+    title: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    lesson_count: int
+    updated_at: str | None = None
+
+
 class WorkspaceStateView(BaseModel):
     packages: list[CoursePackageView] = Field(default_factory=list)
     active_package_id: str | None = None

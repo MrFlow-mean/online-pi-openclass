@@ -33,6 +33,18 @@ export interface PublicCoursePackage {
   lessons: PublicLesson[];
 }
 
+export interface PublicCourseSearchResult {
+  id: string;
+  kind: "lesson" | "package";
+  owner_display_name: string;
+  owner_avatar_url?: string | null;
+  title: string;
+  summary: string;
+  tags: string[];
+  lesson_count: number;
+  updated_at?: string | null;
+}
+
 export class ProjectVisibilityRequestError extends Error {
   readonly status: number;
 
@@ -171,6 +183,14 @@ export function forkPublicLesson(lessonId: string, historyNodeId?: string) {
 
 export function getPublicPackage(packageId: string) {
   return visibilityRequest<PublicCoursePackage>(`/api/public/packages/${packageId}`);
+}
+
+export function searchPublicCourses(query: string, signal?: AbortSignal) {
+  const params = new URLSearchParams({ q: query });
+  return visibilityRequest<PublicCourseSearchResult[]>(
+    `/api/public/courses/search?${params.toString()}`,
+    { signal },
+  );
 }
 
 export function publicProjectHref(kind: "lesson" | "package", id: string) {

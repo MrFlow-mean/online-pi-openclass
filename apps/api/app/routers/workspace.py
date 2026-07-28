@@ -19,6 +19,7 @@ from app.models import (
     GenerateLessonRequest,
     MoveLessonRequest,
     PublicCoursePackageView,
+    PublicCourseSearchResult,
     PublicLessonView,
     ReorderTabsRequest,
     UpdateLessonRequest,
@@ -319,6 +320,19 @@ def get_public_lesson(
             }
         )
     return _public_lesson_view(lesson)
+
+
+@router.get("/api/public/courses/search", response_model=list[PublicCourseSearchResult])
+def search_public_courses(
+    q: str = Query(min_length=1, max_length=200),
+    limit: int = Query(default=30, ge=1, le=50),
+    user: UserView = Depends(current_user),
+) -> list[PublicCourseSearchResult]:
+    return get_course_store().search_public_courses(
+        q,
+        exclude_owner_user_id=user.id,
+        limit=limit,
+    )
 
 
 @router.post("/api/public/lessons/{lesson_id}/fork", response_model=CoursePackageView)

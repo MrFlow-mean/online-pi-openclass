@@ -3,6 +3,7 @@ import sqlite3
 
 from app.models import (
     BoardDocument,
+    CoursePackage,
     LessonContribution,
     LessonContributionActor,
     LessonContributionEvent,
@@ -271,6 +272,82 @@ def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> 
     assert chunk_rows
     assert any("retrieval anchor" in row[1] and "检索标题" in row[1] for row in chunk_rows)
     assert any(len(json.loads(row[0])) >= 2 for row in chunk_rows)
+
+
+def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    own_workspace = build_initial_workspace_state()
+    own_lesson = _append_lesson(own_workspace, "Own public retrieval course")
+    own_lesson.visibility = "public"
+    own_lesson.board_document.content_text = "retrieval anchor"
+    store.save_for_user("searcher", own_workspace)
+
+    author_workspace = build_initial_workspace_state()
+    public_lesson = _append_lesson(author_workspace, "Other public course")
+    public_lesson.summary = "A searchable public summary"
+    public_lesson.tags = ["retrieval", "public"]
+    public_lesson.visibility = "public"
+    public_lesson.board_document.content_text = "A unique retrieval anchor in the course body."
+
+    private_lesson = _append_lesson(author_workspace, "Private retrieval course")
+    private_lesson.visibility = "private"
+    private_lesson.board_document.content_text = "retrieval anchor"
+
+    public_package_lesson = create_empty_lesson("Packaged lesson")
+    public_package_lesson.summary = "Package lesson summary"
+    public_package_lesson.board_document.content_text = "collaborative search phrase"
+    public_package = CoursePackage(
+        title="Public package",
+        summary="A package shared by another user",
+        visibility="public",
+        lessons=[public_package_lesson],
+    )
+    author_workspace.packages.append(public_package)
+    store.save_for_user("author", author_workspace)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                display_name TEXT,
+                avatar_url TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO users(id, display_name, avatar_url) VALUES (?, ?, ?)",
+            ("author", "Course Author", "https://example.com/author.png"),
+        )
+
+    body_results = store.search_public_courses(
+        "retrieval anchor",
+        exclude_owner_user_id="searcher",
+    )
+    author_results = store.search_public_courses(
+        "Course Author",
+        exclude_owner_user_id="searcher",
+    )
+    package_results = store.search_public_courses(
+        "collaborative phrase",
+        exclude_owner_user_id="searcher",
+    )
+
+    assert [(result.kind, result.title) for result in body_results] == [
+        ("lesson", "Other public course")
+    ]
+    assert body_results[0].owner_display_name == "Course Author"
+    assert body_results[0].owner_avatar_url == "https://example.com/author.png"
+    assert body_results[0].tags == ["retrieval", "public"]
+    assert {result.title for result in author_results} == {
+        "Other public course",
+        "Public package",
+    }
+    assert [(result.kind, result.title, result.lesson_count) for result in package_results] == [
+        ("package", "Public package", 1)
+    ]
 
 
 def test_sqlite_store_preserves_rich_json_when_editor_text_is_plain(tmp_path) -> None:
