@@ -38,7 +38,13 @@ class TurnstileConfig:
             os.getenv("OPENCLASS_ENV", "").strip().casefold() == "production"
             or public_origin.startswith("https://")
         )
-        enabled = (
+        local_runtime = os.getenv("OPENCLASS_LOCAL_RUNTIME", "").strip().casefold() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        enabled = False if local_runtime else (
             enabled_value in {"1", "true", "yes", "on"}
             if enabled_value
             else production or bool(secret_key)

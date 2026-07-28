@@ -151,6 +151,22 @@ def test_turnstile_defaults_to_fail_closed_in_production(monkeypatch) -> None:
     assert result.reason == "configuration-error"
 
 
+def test_turnstile_is_disabled_only_for_explicit_local_runtime(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_ENV", "production")
+    monkeypatch.setenv("OPENCLASS_LOCAL_RUNTIME", "true")
+    monkeypatch.setenv("OPENCLASS_CLOUDFLARE_TURNSTILE_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CLOUDFLARE_TURNSTILE_SECRET_KEY", "server-secret")
+
+    config = TurnstileConfig.from_environment()
+
+    assert config.enabled is False
+    result = asyncio.run(
+        TurnstileVerifier(config).verify(None, remote_ip=None, expected_action="login")
+    )
+    assert result.success is True
+    assert result.reason == "disabled"
+
+
 def test_sliding_window_rate_limiter_returns_retry_metadata() -> None:
     limiter = InMemorySlidingWindowRateLimiter()
     policy = RateLimitPolicy(limit=2, window_seconds=60)

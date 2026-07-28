@@ -23,7 +23,9 @@ declare global {
 
 const siteKey = process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY?.trim() || "";
 const localBypassAllowed =
-  process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_OPENCLASS_E2E_MODE === "true";
+  process.env.NODE_ENV !== "production" ||
+  process.env.NEXT_PUBLIC_OPENCLASS_LOCAL_RUNTIME === "true" ||
+  process.env.NEXT_PUBLIC_OPENCLASS_E2E_MODE === "true";
 
 export function turnstileSubmissionReady(token: string | null) {
   return Boolean(token) || (!siteKey && localBypassAllowed);
@@ -80,18 +82,15 @@ export function TurnstileWidget({ action, onTokenChange, resetKey = 0 }: Turnsti
   }, [resetKey]);
 
   if (!siteKey) {
+    if (localBypassAllowed) {
+      return null;
+    }
     return (
       <p
-        className={`rounded-lg border px-3 py-2 text-xs leading-5 ${
-          localBypassAllowed
-            ? "border-amber-200 bg-amber-50 text-amber-800"
-            : "border-rose-200 bg-rose-50 text-rose-700"
-        }`}
-        role={localBypassAllowed ? "status" : "alert"}
+        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700"
+        role="alert"
       >
-        {localBypassAllowed
-          ? "本地开发未配置 Cloudflare Turnstile，已跳过人机验证。"
-          : "人机验证尚未配置，当前无法提交。请联系管理员。"}
+        人机验证尚未配置，当前无法提交。请联系管理员。
       </p>
     );
   }

@@ -12,6 +12,8 @@ cd "$PROJECT_DIR"
 
 export NEXT_TELEMETRY_DISABLED=1
 export NODE_ENV=production
+export OPENCLASS_LOCAL_RUNTIME=true
+export NEXT_PUBLIC_OPENCLASS_LOCAL_RUNTIME=true
 
 log() {
   echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') $*"

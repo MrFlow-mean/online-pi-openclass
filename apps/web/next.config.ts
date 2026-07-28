@@ -3,6 +3,10 @@ import path from "node:path";
 import type { NextConfig } from "next";
 
 const isDevelopment = process.env.NODE_ENV === "development";
+const isLocalRuntime =
+  isDevelopment ||
+  process.env.OPENCLASS_LOCAL_RUNTIME === "true" ||
+  process.env.NEXT_PUBLIC_OPENCLASS_LOCAL_RUNTIME === "true";
 
 function configuredOriginSources() {
   const sources = new Set<string>();
@@ -18,7 +22,7 @@ function configuredOriginSources() {
       // Invalid deployment input is ignored instead of weakening the policy.
     }
   }
-  if (isDevelopment) {
+  if (isLocalRuntime) {
     [
       "http://localhost:8000",
       "http://127.0.0.1:8000",
@@ -52,7 +56,7 @@ const cspDirectives = [
   "base-uri 'self'",
   `form-action 'self' https://www.paypal.com https://*.paypal.com`,
   "frame-ancestors 'none'",
-  ...(!isDevelopment ? ["upgrade-insecure-requests"] : []),
+  ...(!isLocalRuntime ? ["upgrade-insecure-requests"] : []),
 ];
 
 const securityHeaders = [
@@ -66,7 +70,7 @@ const securityHeaders = [
       'camera=(), geolocation=(), microphone=(self), payment=(self "https://www.paypal.com" "https://pay.google.com"), publickey-credentials-get=(self)',
   },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
-  ...(!isDevelopment
+  ...(!isLocalRuntime
     ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]
     : []),
 ];

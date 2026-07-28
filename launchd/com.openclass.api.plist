@@ -18,6 +18,8 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>OPENCLASS_LOCAL_RUNTIME</key>
+    <string>true</string>
     <key>OPENCLASS_ENV_FILE</key>
     <string>__OPENCLASS_ENV_FILE__</string>
     <key>PATH</key>
