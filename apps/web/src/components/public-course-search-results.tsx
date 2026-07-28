@@ -5,12 +5,14 @@ import { useEffect, useState } from "react";
 import {
   ArrowUpRight,
   BookOpen,
+  Download,
   FolderClosed,
   Globe2,
   GraduationCap,
   LoaderCircle,
   LockKeyhole,
   Search,
+  Star,
   UserRound,
 } from "lucide-react";
 
@@ -25,6 +27,8 @@ type CourseSearchResultsProps = {
   query: string;
   language: "en" | "zh-CN";
   onOpenOwnedCourse: (course: PublicCourseSearchResult) => void | Promise<void>;
+  onDownloadPublicCourse: (course: PublicCourseSearchResult) => void | Promise<void>;
+  onTogglePublicCourseStar: (course: PublicCourseSearchResult, isStarred: boolean) => void | Promise<void>;
 };
 
 const EMPTY_RESULTS: CourseSearchResponse = {
@@ -44,6 +48,8 @@ export function CourseSearchResults({
   query,
   language,
   onOpenOwnedCourse,
+  onDownloadPublicCourse,
+  onTogglePublicCourseStar,
 }: CourseSearchResultsProps) {
   const normalizedQuery = query.trim();
 
@@ -69,6 +75,8 @@ export function CourseSearchResults({
       query={normalizedQuery}
       language={language}
       onOpenOwnedCourse={onOpenOwnedCourse}
+      onDownloadPublicCourse={onDownloadPublicCourse}
+      onTogglePublicCourseStar={onTogglePublicCourseStar}
     />
   );
 }
@@ -77,11 +85,14 @@ function CourseSearchMatches({
   query,
   language,
   onOpenOwnedCourse,
+  onDownloadPublicCourse,
+  onTogglePublicCourseStar,
 }: CourseSearchResultsProps) {
   const normalizedQuery = query.trim();
   const [results, setResults] = useState<CourseSearchResponse>(EMPTY_RESULTS);
   const [isLoading, setIsLoading] = useState(true);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [starringKey, setStarringKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -126,6 +137,53 @@ function CourseSearchMatches({
       await onOpenOwnedCourse(course);
     } finally {
       setOpeningKey(null);
+    }
+  }
+
+  async function downloadPublicCourse(course: PublicCourseSearchResult) {
+    const key = `${course.kind}:${course.id}`;
+    setOpeningKey(key);
+    setError(null);
+    try {
+      await onDownloadPublicCourse(course);
+    } catch (downloadError) {
+      setError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : language === "en"
+            ? "The course could not be downloaded."
+            : "暂时无法下载这门课程。",
+      );
+    } finally {
+      setOpeningKey(null);
+    }
+  }
+
+  async function togglePublicCourseStar(course: PublicCourseSearchResult) {
+    const key = `${course.kind}:${course.id}`;
+    const nextIsStarred = !course.is_starred;
+    setStarringKey(key);
+    setError(null);
+    try {
+      await onTogglePublicCourseStar(course, nextIsStarred);
+      setResults((current) => ({
+        ...current,
+        public_courses: current.public_courses.map((item) =>
+          item.kind === course.kind && item.id === course.id
+            ? { ...item, is_starred: nextIsStarred }
+            : item,
+        ),
+      }));
+    } catch (starError) {
+      setError(
+        starError instanceof Error
+          ? starError.message
+          : language === "en"
+            ? "The course could not be starred."
+            : "暂时无法收藏这门课程。",
+      );
+    } finally {
+      setStarringKey(null);
     }
   }
 
@@ -195,7 +253,10 @@ function CourseSearchMatches({
             language={language}
             scope="owned"
             openingKey={openingKey}
+            starringKey={starringKey}
             onOpenOwnedCourse={openOwnedCourse}
+            onDownloadPublicCourse={downloadPublicCourse}
+            onTogglePublicCourseStar={togglePublicCourseStar}
           />
 
           <SearchResultGroup
@@ -215,7 +276,10 @@ function CourseSearchMatches({
             language={language}
             scope="public"
             openingKey={openingKey}
+            starringKey={starringKey}
             onOpenOwnedCourse={openOwnedCourse}
+            onDownloadPublicCourse={downloadPublicCourse}
+            onTogglePublicCourseStar={togglePublicCourseStar}
           />
         </div>
       ) : null}
@@ -232,7 +296,10 @@ type SearchResultGroupProps = {
   language: CourseSearchResultsProps["language"];
   scope: "owned" | "public";
   openingKey: string | null;
+  starringKey: string | null;
   onOpenOwnedCourse: (course: PublicCourseSearchResult) => void | Promise<void>;
+  onDownloadPublicCourse: (course: PublicCourseSearchResult) => void | Promise<void>;
+  onTogglePublicCourseStar: (course: PublicCourseSearchResult) => void | Promise<void>;
 };
 
 function SearchResultGroup({
@@ -244,7 +311,10 @@ function SearchResultGroup({
   language,
   scope,
   openingKey,
+  starringKey,
   onOpenOwnedCourse,
+  onDownloadPublicCourse,
+  onTogglePublicCourseStar,
 }: SearchResultGroupProps) {
   return (
     <section>
@@ -272,7 +342,10 @@ function SearchResultGroup({
               language={language}
               scope={scope}
               isOpening={openingKey === `${course.kind}:${course.id}`}
+              isStarring={starringKey === `${course.kind}:${course.id}`}
               onOpenOwnedCourse={onOpenOwnedCourse}
+              onDownloadPublicCourse={onDownloadPublicCourse}
+              onTogglePublicCourseStar={onTogglePublicCourseStar}
             />
           ))}
         </div>
@@ -290,7 +363,10 @@ type CourseResultCardProps = {
   language: CourseSearchResultsProps["language"];
   scope: "owned" | "public";
   isOpening: boolean;
+  isStarring: boolean;
   onOpenOwnedCourse: (course: PublicCourseSearchResult) => void | Promise<void>;
+  onDownloadPublicCourse: (course: PublicCourseSearchResult) => void | Promise<void>;
+  onTogglePublicCourseStar: (course: PublicCourseSearchResult) => void | Promise<void>;
 };
 
 function CourseResultCard({
@@ -298,7 +374,10 @@ function CourseResultCard({
   language,
   scope,
   isOpening,
+  isStarring,
   onOpenOwnedCourse,
+  onDownloadPublicCourse,
+  onTogglePublicCourseStar,
 }: CourseResultCardProps) {
   const ProjectIcon = course.kind === "package" ? FolderClosed : BookOpen;
   const kindLabel =
@@ -390,13 +469,51 @@ function CourseResultCard({
             {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
           </button>
         ) : (
-          <Link
-            href={publicProjectHref(course.kind, course.id)}
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-stone-200 bg-stone-50 px-4 py-2 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
-          >
-            {language === "en" ? "View" : "查看"}
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </Link>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void onTogglePublicCourseStar(course)}
+              disabled={isOpening || isStarring}
+              aria-label={
+                language === "en"
+                  ? `${course.is_starred ? "Unstar" : "Star"} ${course.title}`
+                  : `${course.is_starred ? "取消收藏" : "收藏"} ${course.title}`
+              }
+              aria-pressed={course.is_starred}
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-xs font-semibold transition disabled:cursor-wait disabled:opacity-60 ${
+                course.is_starred
+                  ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300"
+                  : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-950"
+              }`}
+            >
+              {isStarring ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Star className={`h-3.5 w-3.5 ${course.is_starred ? "fill-current" : ""}`} />
+              )}
+              {language === "en" ? (course.is_starred ? "Starred" : "Star") : course.is_starred ? "已收藏" : "收藏"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onDownloadPublicCourse(course)}
+              disabled={isOpening || isStarring}
+              aria-label={
+                language === "en"
+                  ? `Download ${course.title} and start learning`
+                  : `下载 ${course.title} 并开学`
+              }
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-wait disabled:opacity-60"
+            >
+              {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {isOpening
+                ? language === "en"
+                  ? "Downloading…"
+                  : "正在下载…"
+                : language === "en"
+                  ? "Download & start"
+                  : "下载并开学"}
+            </button>
+          </div>
         )}
       </div>
     </article>

@@ -69,6 +69,8 @@ test("search mode hides the home chrome and groups owned and public course resul
   );
 
   let requestedQuery = "";
+  let downloadedLessonId = "";
+  let starredLessonId = "";
   await page.route("**/api/courses/search?*", (route) => {
     requestedQuery = new URL(route.request().url()).searchParams.get("q") ?? "";
     return route.fulfill({
@@ -87,6 +89,7 @@ test("search mode hides the home chrome and groups owned and public course resul
             lesson_count: 1,
             updated_at: "2026-07-28T02:00:00+00:00",
             visibility: "private",
+            is_starred: false,
           },
         ],
         public_courses: [
@@ -101,8 +104,32 @@ test("search mode hides the home chrome and groups owned and public course resul
             lesson_count: 1,
             updated_at: "2026-07-28T01:00:00+00:00",
             visibility: "public",
+            is_starred: false,
           },
         ],
+      }),
+    });
+  });
+  await page.route("**/api/public/lessons/lesson_public_search/fork", (route) => {
+    downloadedLessonId = "lesson_public_search";
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...workspace.packages[0],
+        active_lesson_id: "lesson_personal_copy",
+      }),
+    });
+  });
+  await page.route("**/api/public/courses/lesson/lesson_public_search/star", (route) => {
+    starredLessonId = "lesson_public_search";
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "lesson_public_search",
+        kind: "lesson",
+        is_starred: true,
       }),
     });
   });
@@ -130,7 +157,15 @@ test("search mode hides the home chrome and groups owned and public course resul
   await expect(page.getByText("公开课作者")).toBeVisible();
   await expect(page.getByText("筛选")).toHaveCount(0);
   await expect(page.getByText("排序方式")).toHaveCount(0);
+  await page.getByRole("button", { name: "收藏 真实公开课程" }).click();
+  await expect.poll(() => starredLessonId).toBe("lesson_public_search");
+  await expect(page.getByRole("button", { name: "取消收藏 真实公开课程" })).toBeVisible();
 
   await page.getByRole("button", { name: "退出搜索" }).click();
   await expect(page.getByLabel("添加课程包")).toBeVisible();
+
+  await search.click();
+  await search.fill("真实内容");
+  await page.getByRole("button", { name: "下载 真实公开课程 并开学" }).click();
+  await expect.poll(() => downloadedLessonId).toBe("lesson_public_search");
 });

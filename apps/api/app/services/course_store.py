@@ -35,7 +35,7 @@ from app.models import (
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -289,8 +289,173 @@ class SqliteCourseStore:
                     _course_search_result(row)
                     for row in [*package_rows, *lesson_rows]
                 ]
+                starred_keys = {
+                    (row["course_kind"], row["course_id"])
+                    for row in conn.execute(
+                        """
+                        SELECT course_kind, course_id
+                        FROM public_course_stars
+                        WHERE owner_user_id = ?
+                        """,
+                        (exclude_owner_user_id,),
+                    ).fetchall()
+                }
+                results = [
+                    item.model_copy(update={"is_starred": (item.kind, item.id) in starred_keys})
+                    for item in results
+                ]
                 results.sort(key=lambda item: item.updated_at or "", reverse=True)
                 return results[:limit]
+
+    def set_public_course_star(
+        self,
+        *,
+        owner_user_id: str,
+        course_kind: str,
+        course_id: str,
+        is_starred: bool,
+    ) -> None:
+        if course_kind not in {"lesson", "package"}:
+            raise ValueError("Unsupported public course kind")
+
+        with self._lock:
+            with self._connect() as conn:
+                if course_kind == "package":
+                    target = conn.execute(
+                        """
+                        SELECT 1
+                        FROM course_packages
+                        WHERE id = ?
+                          AND visibility = 'public'
+                          AND sort_order > 0
+                          AND (owner_user_id IS NULL OR owner_user_id != ?)
+                        """,
+                        (course_id, owner_user_id),
+                    ).fetchone()
+                else:
+                    target = conn.execute(
+                        """
+                        SELECT 1
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        WHERE lessons.id = ?
+                          AND course_packages.sort_order = 0
+                          AND lessons.visibility = 'public'
+                          AND (
+                              course_packages.owner_user_id IS NULL
+                              OR course_packages.owner_user_id != ?
+                          )
+                        """,
+                        (course_id, owner_user_id),
+                    ).fetchone()
+                if target is None:
+                    raise ValueError("Public course not found")
+
+                with conn:
+                    if is_starred:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO public_course_stars(
+                                owner_user_id,
+                                course_kind,
+                                course_id,
+                                created_at
+                            ) VALUES (?, ?, ?, ?)
+                            """,
+                            (owner_user_id, course_kind, course_id, datetime.now().astimezone().isoformat()),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            DELETE FROM public_course_stars
+                            WHERE owner_user_id = ? AND course_kind = ? AND course_id = ?
+                            """,
+                            (owner_user_id, course_kind, course_id),
+                        )
+
+    def list_starred_public_courses(
+        self,
+        *,
+        owner_user_id: str,
+        limit: int = 100,
+    ) -> list[PublicCourseSearchResult]:
+        with self._lock:
+            with self._connect() as conn:
+                user_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(users)").fetchall()
+                }
+                has_user_profiles = {"id", "display_name", "avatar_url"}.issubset(user_columns)
+                user_join = (
+                    "LEFT JOIN users ON users.id = course_packages.owner_user_id"
+                    if has_user_profiles
+                    else ""
+                )
+                owner_name = (
+                    "COALESCE(NULLIF(users.display_name, ''), 'OpenClass 用户')"
+                    if has_user_profiles
+                    else "'OpenClass 用户'"
+                )
+                owner_avatar = "users.avatar_url" if has_user_profiles else "NULL"
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM (
+                        SELECT
+                            course_packages.id,
+                            'package' AS kind,
+                            {owner_name} AS owner_display_name,
+                            {owner_avatar} AS owner_avatar_url,
+                            course_packages.title,
+                            course_packages.summary,
+                            COUNT(lessons.id) AS lesson_count,
+                            MAX(lessons.updated_at) AS updated_at,
+                            GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
+                            course_packages.visibility,
+                            stars.created_at AS starred_at
+                        FROM public_course_stars AS stars
+                        JOIN course_packages
+                          ON stars.course_kind = 'package'
+                         AND stars.course_id = course_packages.id
+                        {user_join}
+                        LEFT JOIN lessons ON lessons.package_id = course_packages.id
+                        WHERE stars.owner_user_id = ?
+                          AND course_packages.visibility = 'public'
+                          AND course_packages.sort_order > 0
+                        GROUP BY course_packages.id, stars.created_at
+
+                        UNION ALL
+
+                        SELECT
+                            lessons.id,
+                            'lesson' AS kind,
+                            {owner_name} AS owner_display_name,
+                            {owner_avatar} AS owner_avatar_url,
+                            lessons.title,
+                            lessons.summary,
+                            1 AS lesson_count,
+                            lessons.updated_at,
+                            lessons.tags_json AS tags_group,
+                            lessons.visibility,
+                            stars.created_at AS starred_at
+                        FROM public_course_stars AS stars
+                        JOIN lessons
+                          ON stars.course_kind = 'lesson'
+                         AND stars.course_id = lessons.id
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        {user_join}
+                        WHERE stars.owner_user_id = ?
+                          AND course_packages.sort_order = 0
+                          AND lessons.visibility = 'public'
+                    )
+                    ORDER BY starred_at DESC
+                    LIMIT ?
+                    """,
+                    (owner_user_id, owner_user_id, limit),
+                ).fetchall()
+                return [
+                    _course_search_result(row).model_copy(update={"is_starred": True})
+                    for row in rows
+                ]
 
     def search_owned_courses(
         self,
@@ -995,6 +1160,17 @@ class SqliteCourseStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS public_course_stars (
+                owner_user_id TEXT NOT NULL,
+                course_kind TEXT NOT NULL CHECK (course_kind IN ('lesson', 'package')),
+                course_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (owner_user_id, course_kind, course_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_public_course_stars_owner_created
+                ON public_course_stars(owner_user_id, created_at);
 
             CREATE TABLE IF NOT EXISTS course_packages (
                 id TEXT PRIMARY KEY,

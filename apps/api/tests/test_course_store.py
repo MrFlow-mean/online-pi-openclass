@@ -189,7 +189,10 @@ def test_sqlite_store_migrates_and_keeps_contribution_snapshots(tmp_path) -> Non
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "14"
+        ).fetchone()[0] == "15"
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'public_course_stars'"
+        ).fetchone() is not None
         tables = {
             row[0]
             for row in conn.execute(

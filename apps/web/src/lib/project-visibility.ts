@@ -44,11 +44,18 @@ export interface PublicCourseSearchResult {
   lesson_count: number;
   updated_at?: string | null;
   visibility: ProjectVisibility;
+  is_starred: boolean;
 }
 
 export interface CourseSearchResponse {
   owned_courses: PublicCourseSearchResult[];
   public_courses: PublicCourseSearchResult[];
+}
+
+export interface PublicCourseStarState {
+  id: string;
+  kind: "lesson" | "package";
+  is_starred: boolean;
 }
 
 export class ProjectVisibilityRequestError extends Error {
@@ -187,6 +194,12 @@ export function forkPublicLesson(lessonId: string, historyNodeId?: string) {
   });
 }
 
+export function forkPublicPackage(packageId: string) {
+  return visibilityRequest<CoursePackage>(`/api/public/packages/${packageId}/fork`, {
+    method: "POST",
+  });
+}
+
 export function getPublicPackage(packageId: string) {
   return visibilityRequest<PublicCoursePackage>(`/api/public/packages/${packageId}`);
 }
@@ -196,6 +209,21 @@ export function searchCourses(query: string, signal?: AbortSignal) {
   return visibilityRequest<CourseSearchResponse>(
     `/api/courses/search?${params.toString()}`,
     { signal },
+  );
+}
+
+export function listStarredPublicCourses() {
+  return visibilityRequest<PublicCourseSearchResult[]>("/api/public/courses/stars");
+}
+
+export function setPublicCourseStar(
+  kind: PublicCourseSearchResult["kind"],
+  id: string,
+  isStarred: boolean,
+) {
+  return visibilityRequest<PublicCourseStarState>(
+    `/api/public/courses/${kind}/${encodeURIComponent(id)}/star`,
+    { method: isStarred ? "PUT" : "DELETE" },
   );
 }
 

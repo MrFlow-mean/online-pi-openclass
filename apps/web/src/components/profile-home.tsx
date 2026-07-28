@@ -16,7 +16,6 @@ import {
   ChevronRight,
   Download,
   FolderClosed,
-  GitFork,
   GitPullRequest,
   GraduationCap,
   Globe2,
@@ -50,19 +49,13 @@ import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import { homeRelativeFormat } from "@/lib/i18n/product-ui";
 import {
-  DEFAULT_COLLECTED_COURSE_IDS,
-  OPEN_COURSE_COLLECTION_STORAGE_KEY,
-  OPEN_SOURCE_COURSES,
-  courseAvatarUrl,
-  courseDetailHref,
-  courseFullName,
-  formatCompactNumber,
-} from "@/lib/open-courses";
-import {
+  listStarredPublicCourses,
   publicProjectHref,
+  setPublicCourseStar,
   updateLessonVisibility,
   updatePackageVisibility,
   type ProjectVisibility,
+  type PublicCourseSearchResult,
 } from "@/lib/project-visibility";
 import { downloadRidoc } from "@/lib/ridoc-file";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
@@ -126,18 +119,6 @@ function matchesQuery(query: string, ...values: Array<string | null | undefined>
   return values.some((value) => value?.toLowerCase().includes(normalized));
 }
 
-function persistCollectedCourseIds(courseIds: Set<string>) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(OPEN_COURSE_COLLECTION_STORAGE_KEY, JSON.stringify(Array.from(courseIds)));
-  } catch {
-    // Local storage may be unavailable in private browsing contexts.
-  }
-}
-
 export function ProfileHome({ initialProjectKey, initialTab = "settings" }: ProfileHomeProps) {
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
@@ -170,20 +151,22 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState>(null);
   const [moveMenuLessonId, setMoveMenuLessonId] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
-    () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
-  );
+  const [starredPublicCourses, setStarredPublicCourses] = useState<PublicCourseSearchResult[]>([]);
 
   useEffect(() => {
     let isDisposed = false;
 
     async function loadWorkspace() {
       try {
-        const payload = await api.getWorkspace();
+        const [payload, starredCourses] = await Promise.all([
+          api.getWorkspace(),
+          listStarredPublicCourses().catch(() => []),
+        ]);
         if (isDisposed) {
           return;
         }
         setWorkspaceState(payload);
+        setStarredPublicCourses(starredCourses);
         setError(null);
       } catch (loadError) {
         if (!isDisposed) {
@@ -232,29 +215,6 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
       return;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      try {
-        const stored = window.localStorage.getItem(OPEN_COURSE_COLLECTION_STORAGE_KEY);
-        if (!stored) {
-          return;
-        }
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-          setCollectedCourseIds(new Set(parsed));
-        }
-      } catch {
-        setCollectedCourseIds(new Set(DEFAULT_COLLECTED_COURSE_IDS));
-      }
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
     const syncProfileSettings = () => {
       setProfileSettings(readStoredProfileSettings());
     };
@@ -291,10 +251,7 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
     () => sortLessonsByUpdatedAt(standalonePackage?.lessons ?? []),
     [standalonePackage]
   );
-  const favoriteProjects = useMemo(
-    () => OPEN_SOURCE_COURSES.filter((course) => collectedCourseIds.has(course.id)),
-    [collectedCourseIds]
-  );
+  const favoriteProjects = starredPublicCourses;
   const repositoryItems = useMemo(
     () =>
       [
@@ -380,7 +337,13 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
   );
   const repositoryCount = repositoryItems.length;
   const filteredFavoriteProjects = favoriteProjects.filter((course) =>
-    matchesQuery(starQuery, courseFullName(course), course.summary, course.topics.join(" "), course.language)
+    matchesQuery(
+      starQuery,
+      course.owner_display_name,
+      course.title,
+      course.summary,
+      course.tags.join(" "),
+    )
   );
 
   const profileTabs = useMemo(
@@ -405,17 +368,20 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
     profileSettings.visibleFocus && "profile-shell--visible-focus"
   );
 
-  function handleToggleCollectCourse(courseId: string) {
-    setCollectedCourseIds((current) => {
-      const next = new Set(current);
-      if (next.has(courseId)) {
-        next.delete(courseId);
-      } else {
-        next.add(courseId);
-      }
-      persistCollectedCourseIds(next);
-      return next;
-    });
+  async function handleUnstarPublicCourse(course: PublicCourseSearchResult) {
+    const key = `star:${course.kind}:${course.id}`;
+    setBusyKey(key);
+    try {
+      await setPublicCourseStar(course.kind, course.id, false);
+      setStarredPublicCourses((current) =>
+        current.filter((item) => item.kind !== course.kind || item.id !== course.id),
+      );
+      setError(null);
+    } catch (starError) {
+      setError(starError instanceof Error ? starError.message : "暂时无法取消收藏这门课程。");
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleOpenLesson(lessonId: string) {
@@ -823,13 +789,15 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
   function renderStars() {
     return (
       <div className="space-y-7">
-        <section className="rounded-lg border border-stone-200 bg-white p-8 text-center">
-          <Star className="mx-auto h-7 w-7 text-stone-400" />
-          <h2 className="mt-4 text-lg font-semibold text-stone-950">Create your first list</h2>
-          <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-stone-600">
-            Stars 只显示你收藏的他人课程包；自己创建的课程包会保留在 Repositories。
-          </p>
-        </section>
+        {!favoriteProjects.length ? (
+          <section className="rounded-lg border border-stone-200 bg-white p-8 text-center">
+            <Star className="mx-auto h-7 w-7 text-stone-400" />
+            <h2 className="mt-4 text-lg font-semibold text-stone-950">还没有收藏课程</h2>
+            <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-stone-600">
+              在主页搜索其他用户的公开课程，点击收藏后会保存在这里。
+            </p>
+          </section>
+        ) : null}
 
         <section>
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -1289,13 +1257,14 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
     );
   }
 
-  function renderStarCard(course: (typeof OPEN_SOURCE_COURSES)[number]) {
+  function renderStarCard(course: PublicCourseSearchResult) {
+    const isUpdating = busyKey === `star:${course.kind}:${course.id}`;
     return (
-      <article key={course.id} className="border-b border-stone-200 bg-white p-5">
+      <article key={`${course.kind}:${course.id}`} className="border-b border-stone-200 bg-white p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 gap-3">
             <Image
-              src={courseAvatarUrl(course)}
+              src={course.owner_avatar_url || PROFILE_AVATAR_URL}
               alt=""
               className="mt-0.5 h-8 w-8 rounded-md border border-stone-200 bg-stone-100"
               width={32}
@@ -1304,27 +1273,17 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
             />
             <div className="min-w-0">
               <Link
-                href={courseDetailHref(course)}
+                href={publicProjectHref(course.kind, course.id)}
                 className="block truncate text-base font-semibold text-blue-600 hover:underline"
               >
-                {courseFullName(course)}
+                {course.owner_display_name}/{course.title}
               </Link>
               <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-600">{course.summary}</p>
               <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-stone-500">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: course.languageColor }} />
-                  {course.language}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <Star className="h-3.5 w-3.5" />
-                  {formatCompactNumber(course.stars)}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <GitFork className="h-3.5 w-3.5" />
-                  {formatCompactNumber(course.forks)}
-                </span>
+                <span>{course.kind === "package" ? "课程包" : "单独课程"}</span>
+                <span>{course.lesson_count} 节课程</span>
                 <span>
-                  {ph.updated} {relFmt(course.updatedAt)}
+                  {ph.updated} {relFmt(course.updated_at)}
                 </span>
               </div>
             </div>
@@ -1332,7 +1291,7 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
 
           <div className="flex shrink-0 items-center gap-2">
             <Link
-              href={courseDetailHref(course)}
+              href={publicProjectHref(course.kind, course.id)}
               className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
             >
               打开
@@ -1340,11 +1299,13 @@ export function ProfileHome({ initialProjectKey, initialTab = "settings" }: Prof
             </Link>
             <button
               type="button"
-              onClick={() => handleToggleCollectCourse(course.id)}
+              onClick={() => void handleUnstarPublicCourse(course)}
+              disabled={isUpdating}
+              aria-label={`取消收藏 ${course.title}`}
               className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:border-amber-300"
             >
-              <Star className="h-3.5 w-3.5 fill-current" />
-              Starred
+              {isUpdating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5 fill-current" />}
+              已收藏
             </button>
           </div>
         </div>

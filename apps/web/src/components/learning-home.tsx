@@ -54,7 +54,11 @@ import { CourseSearchResults } from "@/components/public-course-search-results";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import {
+  forkPublicLesson,
+  forkPublicPackage,
+  listStarredPublicCourses,
   publicProjectHref,
+  setPublicCourseStar,
   updateLessonVisibility,
   updatePackageVisibility,
   type PublicationReviewProgressUpdate,
@@ -70,10 +74,6 @@ import {
   readStoredProfileSettings,
   type InterfaceLanguage,
 } from "@/lib/profile-settings-state";
-import {
-  DEFAULT_COLLECTED_COURSE_IDS,
-  OPEN_COURSE_COLLECTION_STORAGE_KEY,
-} from "@/lib/open-courses";
 import {
   FOLLOWED_UPDATE_KIND_LABELS,
   buildFollowedCourseUpdateItems,
@@ -211,9 +211,7 @@ export function LearningHome() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState(false);
   const deferredQuery = useDeferredValue(searchQuery.trim());
-  const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
-    () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
-  );
+  const [starredPublicCourseCount, setStarredPublicCourseCount] = useState(0);
   const [feedFilter, setFeedFilter] = useState<RecentFeedFilter>("all");
   const [feedCollapsed, setFeedCollapsed] = useState(true);
   const [notificationOpen, setNotificationOpen] = useState(false);
@@ -236,11 +234,15 @@ export function LearningHome() {
 
     async function load() {
       try {
-        const payload = await api.getWorkspace();
+        const [payload, starredCourses] = await Promise.all([
+          api.getWorkspace(),
+          listStarredPublicCourses().catch(() => []),
+        ]);
         if (isDisposed) {
           return;
         }
         setWorkspaceState(payload);
+        setStarredPublicCourseCount(starredCourses.length);
         if (typeof window !== "undefined") {
           const packageIdFromUrl = new URLSearchParams(window.location.search).get("package");
           const standalonePackageId = payload.packages.find((packageItem) => packageItem.is_standalone)?.id ?? payload.packages[0]?.id;
@@ -271,29 +273,6 @@ export function LearningHome() {
     return () => {
       isDisposed = true;
     };
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      try {
-        const stored = window.localStorage.getItem(OPEN_COURSE_COLLECTION_STORAGE_KEY);
-        if (!stored) {
-          return;
-        }
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-          setCollectedCourseIds(new Set(parsed));
-        }
-      } catch {
-        setCollectedCourseIds(new Set(DEFAULT_COLLECTED_COURSE_IDS));
-      }
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
   }, []);
 
   useEffect(() => {
@@ -390,7 +369,7 @@ export function LearningHome() {
     deleteConfirmMessage: h.batchDeleteConfirm,
   });
 
-  const collectedOpenCourseCount = collectedCourseIds.size;
+  const collectedOpenCourseCount = starredPublicCourseCount;
   const isSearchMode = searchMode || Boolean(searchQuery.trim());
 
   const lessonMenuLesson =
@@ -449,6 +428,35 @@ export function LearningHome() {
     } finally {
       setBusyKey(null);
     }
+  }
+
+  async function handleDownloadPublicSearchCourse(course: PublicCourseSearchResult) {
+    const retained =
+      course.kind === "lesson"
+        ? await forkPublicLesson(course.id)
+        : await forkPublicPackage(course.id);
+    if (!retained.active_lesson_id) {
+      throw new Error(language === "en" ? "The downloaded course has no lesson to open." : "下载的课程中没有可打开的课节。");
+    }
+
+    const payload = await api.getWorkspace();
+    setWorkspaceState(payload);
+    setSelectedPackageId(null);
+    setSelectedLessonId(retained.active_lesson_id);
+    setSearchQuery("");
+    setSearchMode(false);
+    setError(null);
+    router.push("/studio");
+  }
+
+  async function handleTogglePublicSearchCourseStar(
+    course: PublicCourseSearchResult,
+    isStarred: boolean,
+  ) {
+    await setPublicCourseStar(course.kind, course.id, isStarred);
+    setStarredPublicCourseCount((current) =>
+      isStarred ? current + 1 : Math.max(0, current - 1),
+    );
   }
 
   async function handleOpenStandaloneWorkspace() {
@@ -1279,6 +1287,8 @@ export function LearningHome() {
                 query={deferredQuery}
                 language={language}
                 onOpenOwnedCourse={handleOpenOwnedSearchCourse}
+                onDownloadPublicCourse={handleDownloadPublicSearchCourse}
+                onTogglePublicCourseStar={handleTogglePublicSearchCourseStar}
               />
             ) : (
               <>

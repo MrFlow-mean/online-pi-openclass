@@ -1812,6 +1812,13 @@ class PublicCourseSearchResult(BaseModel):
     lesson_count: int
     updated_at: str | None = None
     visibility: Literal["private", "public"] = "public"
+    is_starred: bool = False
+
+
+class PublicCourseStarState(BaseModel):
+    id: str
+    kind: Literal["lesson", "package"]
+    is_starred: bool
 
 
 class CourseSearchResponse(BaseModel):

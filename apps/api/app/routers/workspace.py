@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from queue import Queue
 from threading import Thread
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -21,6 +22,7 @@ from app.models import (
     MoveLessonRequest,
     PublicCoursePackageView,
     PublicCourseSearchResult,
+    PublicCourseStarState,
     PublicLessonView,
     ReorderTabsRequest,
     UpdateLessonRequest,
@@ -42,7 +44,10 @@ from app.services.lesson_package_format import (
 )
 from app.services.lesson_package_import import import_ridoc_archive, rollback_imported_assets
 from app.services.lesson_summary import lesson_content_summary
-from app.services.personal_lesson_copy import retain_public_lesson_as_personal_copy
+from app.services.personal_lesson_copy import (
+    retain_public_lesson_as_personal_copy,
+    retain_public_lessons_as_personal_copies,
+)
 from app.services.publication_review import (
     PublicationReviewProgressUpdate,
     review_project_publication,
@@ -353,6 +358,55 @@ def search_courses(
     )
 
 
+@router.get("/api/public/courses/stars", response_model=list[PublicCourseSearchResult])
+def list_starred_public_courses(
+    user: UserView = Depends(current_user),
+) -> list[PublicCourseSearchResult]:
+    return get_course_store().list_starred_public_courses(owner_user_id=user.id)
+
+
+@router.put(
+    "/api/public/courses/{course_kind}/{course_id}/star",
+    response_model=PublicCourseStarState,
+)
+def star_public_course(
+    course_kind: Literal["lesson", "package"],
+    course_id: str,
+    user: UserView = Depends(current_user),
+) -> PublicCourseStarState:
+    try:
+        get_course_store().set_public_course_star(
+            owner_user_id=user.id,
+            course_kind=course_kind,
+            course_id=course_id,
+            is_starred=True,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return PublicCourseStarState(id=course_id, kind=course_kind, is_starred=True)
+
+
+@router.delete(
+    "/api/public/courses/{course_kind}/{course_id}/star",
+    response_model=PublicCourseStarState,
+)
+def unstar_public_course(
+    course_kind: Literal["lesson", "package"],
+    course_id: str,
+    user: UserView = Depends(current_user),
+) -> PublicCourseStarState:
+    try:
+        get_course_store().set_public_course_star(
+            owner_user_id=user.id,
+            course_kind=course_kind,
+            course_id=course_id,
+            is_starred=False,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return PublicCourseStarState(id=course_id, kind=course_kind, is_starred=False)
+
+
 @router.post("/api/public/lessons/{lesson_id}/fork", response_model=CoursePackageView)
 def fork_public_lesson(
     lesson_id: str,
@@ -383,6 +437,29 @@ def fork_public_lesson(
         workspace,
         source_lesson,
         source_commit_id=source_commit.id,
+    )
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+    return package_view_for_lesson(workspace, package, personal_lesson.id)
+
+
+@router.post("/api/public/packages/{package_id}/fork", response_model=CoursePackageView)
+def fork_public_package_to_standalone(
+    package_id: str,
+    user: UserView = Depends(current_user),
+) -> CoursePackageView:
+    source_package = get_course_store().load_public_package(package_id)
+    if source_package is None:
+        raise HTTPException(status_code=404, detail="Public package not found")
+    if not source_package.lessons:
+        raise HTTPException(status_code=400, detail="Public package has no lessons")
+
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
+    package, personal_lesson = retain_public_lessons_as_personal_copies(
+        workspace,
+        [
+            (lesson, current_head_commit(lesson).id)
+            for lesson in source_package.lessons
+        ],
     )
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, personal_lesson.id)

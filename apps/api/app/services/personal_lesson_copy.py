@@ -86,3 +86,27 @@ def retain_public_lesson_as_personal_copy(
     package.lessons.append(personal_lesson)
     _activate_lesson(workspace, package, personal_lesson)
     return package, personal_lesson
+
+
+def retain_public_lessons_as_personal_copies(
+    workspace: WorkspaceState,
+    source_lessons: list[tuple[Lesson, str]],
+) -> tuple[CoursePackage, Lesson]:
+    if not source_lessons:
+        raise ValueError("At least one public lesson is required")
+
+    first_copy: tuple[CoursePackage, Lesson] | None = None
+    for source_lesson, source_commit_id in source_lessons:
+        personal_copy = retain_public_lesson_as_personal_copy(
+            workspace,
+            source_lesson,
+            source_commit_id=source_commit_id,
+        )
+        if first_copy is None:
+            first_copy = personal_copy
+
+    if first_copy is None:
+        raise ValueError("At least one public lesson is required")
+    package, lesson = first_copy
+    _activate_lesson(workspace, package, lesson)
+    return package, lesson

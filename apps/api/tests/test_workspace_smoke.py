@@ -892,6 +892,62 @@ def test_public_course_search_returns_real_projects_from_other_users(
     ]
 
 
+def test_public_course_stars_are_private_persistent_and_searchable(
+    api_client: TestClient,
+) -> None:
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Star-worthy public lesson", "start_blank": True},
+    )
+    assert generated.status_code == 200
+    source_lesson = generated.json()["lessons"][0]
+    assert api_client.post(
+        f"/api/lessons/{source_lesson['id']}/visibility",
+        json={"visibility": "public"},
+    ).status_code == 200
+
+    viewer = UserView(
+        id="user_public_star_viewer",
+        email="star-viewer@example.com",
+        role="user",
+        created_at="2026-01-04T00:00:00+00:00",
+    )
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: viewer
+
+    initial_search = api_client.get(
+        "/api/courses/search",
+        params={"q": "Star-worthy"},
+    )
+    assert initial_search.status_code == 200
+    assert initial_search.json()["public_courses"][0]["is_starred"] is False
+
+    starred = api_client.put(
+        f"/api/public/courses/lesson/{source_lesson['id']}/star"
+    )
+    assert starred.status_code == 200
+    assert starred.json() == {
+        "id": source_lesson["id"],
+        "kind": "lesson",
+        "is_starred": True,
+    }
+
+    repeated_search = api_client.get(
+        "/api/courses/search",
+        params={"q": "Star-worthy"},
+    )
+    assert repeated_search.json()["public_courses"][0]["is_starred"] is True
+    starred_courses = api_client.get("/api/public/courses/stars")
+    assert starred_courses.status_code == 200
+    assert [course["id"] for course in starred_courses.json()] == [source_lesson["id"]]
+
+    unstarred = api_client.delete(
+        f"/api/public/courses/lesson/{source_lesson['id']}/star"
+    )
+    assert unstarred.status_code == 200
+    assert unstarred.json()["is_starred"] is False
+    assert api_client.get("/api/public/courses/stars").json() == []
+
+
 def test_standalone_lesson_publication_stream_reports_real_review_stage(
     api_client: TestClient,
 ) -> None:
@@ -1027,6 +1083,69 @@ def test_public_lesson_fork_is_personal_idempotent_and_restorable(
         if lesson["id"] == source_lesson["id"]
     )
     assert persisted_source["board_document"]["content_text"] == "Public source version"
+
+
+def test_public_package_downloads_all_lessons_into_viewer_standalone_courses(
+    api_client: TestClient,
+) -> None:
+    created_package = api_client.post(
+        "/api/packages",
+        json={"title": "Downloadable package", "summary": "Two public lessons"},
+    )
+    assert created_package.status_code == 200
+    package_id = created_package.json()["active_package_id"]
+
+    source_lessons = []
+    for title in ["First downloadable lesson", "Second downloadable lesson"]:
+        generated = api_client.post(
+            "/api/lessons/generate",
+            json={
+                "topic": title,
+                "target_package_id": package_id,
+                "start_blank": True,
+            },
+        )
+        assert generated.status_code == 200
+        source_lessons.append(generated.json()["lessons"][-1])
+
+    published = api_client.post(
+        f"/api/packages/{package_id}",
+        json={"visibility": "public"},
+    )
+    assert published.status_code == 200
+
+    viewer = UserView(
+        id="user_package_downloader",
+        email="package-downloader@example.com",
+        role="user",
+        created_at="2026-01-03T00:00:00+00:00",
+    )
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: viewer
+
+    downloaded = api_client.post(f"/api/public/packages/{package_id}/fork")
+    assert downloaded.status_code == 200
+    standalone_package = downloaded.json()
+    assert standalone_package["is_standalone"] is True
+    assert [lesson["title"] for lesson in standalone_package["lessons"]] == [
+        "First downloadable lesson",
+        "Second downloadable lesson",
+    ]
+    assert all(lesson["visibility"] == "private" for lesson in standalone_package["lessons"])
+    active_lesson = next(
+        lesson
+        for lesson in standalone_package["lessons"]
+        if lesson["id"] == standalone_package["active_lesson_id"]
+    )
+    assert active_lesson["title"] == "First downloadable lesson"
+    assert {
+        lesson["history_graph"]["commits"][0]["metadata"]["forked_from_public_lesson_id"]
+        for lesson in standalone_package["lessons"]
+    } == {lesson["id"] for lesson in source_lessons}
+
+    repeated_download = api_client.post(f"/api/public/packages/{package_id}/fork")
+    assert repeated_download.status_code == 200
+    assert len(repeated_download.json()["lessons"]) == 2
+    assert repeated_download.json()["active_lesson_id"] == active_lesson["id"]
 
 
 def test_publication_gate_keeps_project_private_when_review_finds_copyright(
