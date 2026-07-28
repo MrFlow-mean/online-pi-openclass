@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,7 +21,11 @@ from app.models import (
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
 from app.services.ai_model_catalog import (
+    OPENAI_CODEX_REALTIME_MODEL,
     OPENAI_DEFAULT_REALTIME_MODEL,
+    codex_realtime_runtime_enabled,
+    codex_realtime_proxy_configured,
+    codex_realtime_user_allowed,
     default_realtime_selection,
     realtime_runtime_enabled,
 )
@@ -32,6 +37,7 @@ from app.services.realtime_tool_bridge import realtime_tool_schemas
 load_root_dotenv()
 
 OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
+OPENAI_CODEX_REALTIME_PROXY_URL = "http://127.0.0.1:8317/v1/live"
 
 
 class RealtimeServiceError(RuntimeError):
@@ -69,6 +75,28 @@ def _normalize_optional_secret(value: str | None) -> str | None:
 
 def _openai_api_key() -> str | None:
     return _normalize_optional_secret(os.getenv("OPENAI_API_KEY"))
+
+
+def _codex_realtime_proxy_api_key() -> str | None:
+    configured = _normalize_optional_secret(
+        os.getenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY")
+    )
+    if configured:
+        return configured
+    path = (os.getenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE") or "").strip()
+    if not path:
+        return None
+    try:
+        return _normalize_optional_secret(Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def _codex_realtime_proxy_url() -> str:
+    return (
+        (os.getenv("OPENCLASS_CODEX_REALTIME_PROXY_URL") or "").strip()
+        or OPENAI_CODEX_REALTIME_PROXY_URL
+    ).rstrip("/")
 
 
 def _openai_realtime_base_url() -> str:
@@ -116,9 +144,15 @@ def _realtime_instructions(*, lesson_title: str, latest_assistant_message: str |
 
 def _select_realtime_model(raw: AIModelSelection | None) -> AIModelSelection:
     selected = raw or default_realtime_selection()
-    if selected.provider != "openai":
-        raise RealtimeServiceError(400, "当前实时语音入口只支持 OpenAI WebRTC 模型。")
-    return selected
+    if selected.provider == "openai":
+        return selected
+    if (
+        selected.provider == "openai_codex"
+        and selected.model == OPENAI_CODEX_REALTIME_MODEL
+        and selected.access_method == "platform_credits"
+    ):
+        return selected
+    raise RealtimeServiceError(400, "当前实时语音入口不支持所选模型。")
 
 
 def build_openai_realtime_session_config(
@@ -127,10 +161,17 @@ def build_openai_realtime_session_config(
     request: RealtimeConnectRequest,
 ) -> RealtimeSessionConfig:
     selected = _select_realtime_model(request.realtime_model)
-    model = selected.model or os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
+    model = selected.model or (
+        OPENAI_CODEX_REALTIME_MODEL
+        if selected.provider == "openai_codex"
+        else os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
+    )
     voice = (os.getenv("OPENAI_REALTIME_VOICE") or "marin").strip()
     client_session_id = request.client_session_id or new_id("realtime")
-    tools_enabled = _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
+    tools_enabled = (
+        selected.provider == "openai"
+        and _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
+    )
     session_payload: dict[str, Any] = {
         "type": "realtime",
         "model": model,
@@ -155,11 +196,16 @@ def build_openai_realtime_session_config(
         },
         "reasoning": {"effort": _realtime_reasoning_effort()},
     }
+    if selected.provider == "openai_codex":
+        session_payload = {
+            "model": model,
+            "instructions": session_payload["instructions"],
+        }
     if tools_enabled:
         session_payload["tools"] = realtime_tool_schemas()
         session_payload["tool_choice"] = "auto"
     return RealtimeSessionConfig(
-        provider="openai",
+        provider=selected.provider,
         model=model,
         voice=voice,
         tools_enabled=tools_enabled,
@@ -176,30 +222,86 @@ def connect_openai_realtime_session(
 ) -> RealtimeConnectResponse:
     if not realtime_runtime_enabled():
         raise RealtimeServiceError(410, "实时语音后端未启用；请设置 OPENCLASS_REALTIME_ENABLED=true。")
-    api_key = _openai_api_key()
-    if not api_key:
-        raise RealtimeServiceError(503, "OpenAI Realtime 需要在后端配置 OPENAI_API_KEY。")
     if not request.offer_sdp.strip():
         raise RealtimeServiceError(400, "Missing WebRTC offer SDP.")
 
     workspace = workspace_state.load_workspace_for_user(user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     config = build_openai_realtime_session_config(lesson_title=lesson.title, request=request)
-    files = {
-        "sdp": (None, request.offer_sdp, "application/sdp"),
-        "session": (None, json.dumps(config.session_payload, ensure_ascii=False), "application/json"),
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "OpenAI-Safety-Identifier": _hashed_user_id(user_id),
-    }
     try:
         with httpx.Client(timeout=30) as client:
-            response = client.post(f"{_openai_realtime_base_url()}/realtime/calls", headers=headers, files=files)
+            if config.provider == "openai_codex":
+                if not codex_realtime_runtime_enabled():
+                    raise RealtimeServiceError(
+                        410,
+                        "Codex 实时语音未启用；请设置 OPENCLASS_CODEX_REALTIME_ENABLED=true。",
+                    )
+                if not codex_realtime_user_allowed(user_id):
+                    raise RealtimeServiceError(
+                        403,
+                        "当前账户未获授权使用 Codex 实时语音。",
+                    )
+                proxy_api_key = _codex_realtime_proxy_api_key()
+                if not codex_realtime_proxy_configured() or not proxy_api_key:
+                    raise RealtimeServiceError(
+                        503,
+                        "Codex 实时语音代理凭据未配置。",
+                    )
+                transport_session_id = new_id("codex_live")
+                headers = {
+                    "Authorization": f"Bearer {proxy_api_key}",
+                    "OpenAI-Alpha": "quicksilver=v2",
+                    "Originator": "OpenClass",
+                    "Session-Id": config.client_session_id,
+                    "X-Session-Id": transport_session_id,
+                    "Thread-Id": transport_session_id,
+                }
+                response = client.post(
+                    _codex_realtime_proxy_url(),
+                    headers=headers,
+                    json={
+                        "sdp": request.offer_sdp,
+                        "session": config.session_payload,
+                    },
+                )
+            else:
+                api_key = _openai_api_key()
+                if not api_key:
+                    raise RealtimeServiceError(
+                        503,
+                        "OpenAI Realtime 需要在后端配置 OPENAI_API_KEY。",
+                    )
+                files = {
+                    "sdp": (None, request.offer_sdp, "application/sdp"),
+                    "session": (
+                        None,
+                        json.dumps(config.session_payload, ensure_ascii=False),
+                        "application/json",
+                    ),
+                }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "OpenAI-Safety-Identifier": _hashed_user_id(user_id),
+                }
+                response = client.post(
+                    f"{_openai_realtime_base_url()}/realtime/calls",
+                    headers=headers,
+                    files=files,
+                )
     except httpx.HTTPError as exc:
         raise RealtimeServiceError(502, f"OpenAI Realtime 连接失败：{exc}") from exc
     if response.status_code >= 400:
         raise RealtimeServiceError(response.status_code, response.text or "OpenAI Realtime 连接失败。")
+
+    answer_sdp = response.text
+    if "application/json" in response.headers.get("Content-Type", "").lower():
+        try:
+            payload = response.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise RealtimeServiceError(502, "Realtime 响应不是有效 JSON。") from exc
+        answer_sdp = str(payload.get("sdp") or "") if isinstance(payload, dict) else ""
+    if not answer_sdp.strip():
+        raise RealtimeServiceError(502, "Realtime 响应缺少 SDP answer。")
 
     call_id = _call_id_from_location(response.headers.get("Location"))
     ai_usage_logger.log_event(
@@ -210,9 +312,10 @@ def connect_openai_realtime_session(
         voice=config.voice,
         call_id=call_id,
         tools_enabled=config.tools_enabled,
+        provider=config.provider,
     )
     return RealtimeConnectResponse(
-        answer_sdp=response.text,
+        answer_sdp=answer_sdp,
         provider=config.provider,
         model=config.model,
         voice=config.voice,

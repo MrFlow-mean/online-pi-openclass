@@ -1573,7 +1573,7 @@ class AIModelSelection(BaseModel):
             AIProvider,
             set[AIModelAccessMethod],
         ] = {
-            "openai_codex": {"chatgpt_subscription"},
+            "openai_codex": {"chatgpt_subscription", "platform_credits"},
             "openai": {"platform_credits"},
             "deepseek": {"personal_api", "platform_credits"},
         }

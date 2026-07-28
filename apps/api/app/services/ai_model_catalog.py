@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
@@ -36,6 +37,7 @@ from app.services.workspace_state import DATABASE_PATH
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
+OPENAI_CODEX_REALTIME_MODEL = "gpt-live-1-codex"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
 OPENROUTER_PRICE_CACHE_TTL_SECONDS = 15 * 60
@@ -182,6 +184,25 @@ def realtime_runtime_enabled() -> bool:
     }
 
 
+def codex_realtime_runtime_enabled() -> bool:
+    return (os.getenv("OPENCLASS_CODEX_REALTIME_ENABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def codex_realtime_user_allowed(user_id: str) -> bool:
+    raw_user_ids = os.getenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS") or ""
+    allowed_user_ids = {
+        item
+        for item in raw_user_ids.replace(",", " ").split()
+        if item
+    }
+    return user_id in allowed_user_ids
+
+
 def _configured_secret(name: str) -> bool:
     value = (os.getenv(name) or "").strip()
     return bool(
@@ -189,6 +210,13 @@ def _configured_secret(name: str) -> bool:
         and value.lower() not in {"none", "null", "disabled", "false", "0"}
         and not value.startswith(("your_", "你的_"))
     )
+
+
+def codex_realtime_proxy_configured() -> bool:
+    if _configured_secret("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY"):
+        return True
+    key_file = (os.getenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE") or "").strip()
+    return bool(key_file and Path(key_file).is_file())
 
 
 def _pi_text_models() -> tuple[dict[str, Any], ...]:
@@ -360,6 +388,14 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     realtime_default = default_realtime_selection()
     realtime_configured = _configured_secret("OPENAI_API_KEY")
     realtime_enabled = realtime_runtime_enabled() and realtime_configured
+    codex_realtime_exposed = codex_realtime_runtime_enabled()
+    codex_realtime_configured = codex_realtime_proxy_configured()
+    codex_realtime_enabled = (
+        realtime_runtime_enabled()
+        and codex_realtime_exposed
+        and codex_realtime_configured
+        and codex_realtime_user_allowed(user_id)
+    )
     realtime_models = [
         (OPENAI_DEFAULT_REALTIME_MODEL, "OpenAI GPT Realtime 2.1"),
         (OPENAI_FAST_REALTIME_MODEL, "OpenAI GPT Realtime 2.1 Mini"),
@@ -466,23 +502,48 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             reasoning_effort=codex_default_option.default_reasoning_effort,
             service_tier=codex_default_option.default_service_tier,
         )
+    realtime_options = [
+        AIModelOption(
+            provider="openai",
+            model=model,
+            access_method="platform_credits",
+            label=label,
+            capability="realtime",
+            enabled=realtime_enabled,
+            configured=realtime_configured,
+            default=not codex_realtime_enabled and model == realtime_default.model,
+            transport="openai_webrtc",
+        )
+        for model, label in realtime_models
+    ]
+    if codex_realtime_exposed:
+        realtime_options.insert(
+            0,
+            AIModelOption(
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                access_method="platform_credits",
+                label="OpenAI Codex Live",
+                capability="realtime",
+                enabled=codex_realtime_enabled,
+                configured=codex_realtime_configured,
+                default=codex_realtime_enabled,
+                transport="openai_webrtc",
+            ),
+        )
+    realtime_default_selection = (
+        AIModelSelection(
+            provider="openai_codex",
+            model=OPENAI_CODEX_REALTIME_MODEL,
+            access_method="platform_credits",
+        )
+        if codex_realtime_enabled
+        else realtime_default
+    )
     catalog = AIModelCatalog(
         text=text_options,
-        realtime=[
-            AIModelOption(
-                provider="openai",
-                model=model,
-                access_method="platform_credits",
-                label=label,
-                capability="realtime",
-                enabled=realtime_enabled,
-                configured=realtime_configured,
-                default=model == realtime_default.model,
-                transport="openai_webrtc",
-            )
-            for model, label in realtime_models
-        ],
-        defaults={"text": text_default, "realtime": realtime_default},
+        realtime=realtime_options,
+        defaults={"text": text_default, "realtime": realtime_default_selection},
         agent_backends=_agent_backend_options(),
     )
     return apply_platform_input_prices(
