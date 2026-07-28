@@ -151,6 +151,18 @@ def test_turnstile_defaults_to_fail_closed_in_production(monkeypatch) -> None:
     assert result.reason == "configuration-error"
 
 
+def test_turnstile_derives_expected_hostname_from_public_origin(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_PUBLIC_ORIGIN", "https://open-classes.com/home")
+    monkeypatch.setenv("OPENCLASS_CLOUDFLARE_TURNSTILE_SECRET_KEY", "server-secret")
+    monkeypatch.delenv("OPENCLASS_CLOUDFLARE_TURNSTILE_EXPECTED_HOSTNAMES", raising=False)
+    monkeypatch.delenv("OPENCLASS_TURNSTILE_EXPECTED_HOSTNAMES", raising=False)
+
+    config = TurnstileConfig.from_environment()
+
+    assert config.enabled is True
+    assert config.expected_hostnames == frozenset({"open-classes.com"})
+
+
 def test_turnstile_is_disabled_only_for_explicit_local_runtime(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLASS_ENV", "production")
     monkeypatch.setenv("OPENCLASS_LOCAL_RUNTIME", "true")
