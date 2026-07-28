@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from app.services.config import env_setting
+
 
 class OpenNotebookAdapterError(RuntimeError):
     pass
@@ -41,10 +43,10 @@ class OpenNotebookAdapter:
         self.api_prefix = (
             api_prefix
             if api_prefix is not None
-            else os.getenv("OPEN_NOTEBOOK_API_PREFIX", "/api")
+            else env_setting("OPEN_NOTEBOOK_API_PREFIX", "/api")
         )
         self.timeout_seconds = timeout_seconds or float(
-            os.getenv("OPEN_NOTEBOOK_TIMEOUT_SECONDS", "20")
+            env_setting("OPEN_NOTEBOOK_TIMEOUT_SECONDS", "20")
         )
 
     def create_notebook(self, *, title: str, description: str = "") -> str:

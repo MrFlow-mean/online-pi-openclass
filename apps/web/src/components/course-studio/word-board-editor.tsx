@@ -1,40 +1,17 @@
-import { Extension, Node, type Editor as TiptapEditor } from "@tiptap/core";
-import Color from "@tiptap/extension-color";
-import Highlight from "@tiptap/extension-highlight";
-import ImageExtension from "@tiptap/extension-image";
-import LinkExtension from "@tiptap/extension-link";
-import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
-import { Table } from "@tiptap/extension-table";
-import TableCell from "@tiptap/extension-table-cell";
-import TableHeader from "@tiptap/extension-table-header";
-import TableRow from "@tiptap/extension-table-row";
-import TextAlign from "@tiptap/extension-text-align";
-import { TextStyle } from "@tiptap/extension-text-style";
-import UnderlineExtension from "@tiptap/extension-underline";
-import { NodeSelection, Plugin, PluginKey } from "@tiptap/pm/state";
-import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { type Editor as TiptapEditor } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   AlignCenter,
-  AlignHorizontalSpaceAround,
   AlignLeft,
   AlignRight,
-  ArrowLeft,
-  ArrowRight,
   Bold,
-  ChevronDown,
-  ChevronUp,
   ClipboardList,
-  Columns2,
-  Columns3,
   Download,
   FilePlus,
   Files,
   FileText,
-  Frame,
   Hash,
   Highlighter,
   ImagePlus,
@@ -43,30 +20,19 @@ import {
   Link as LinkIcon,
   List,
   ListOrdered,
-  PaintBucket,
   PanelTop,
   PencilLine,
   Quote,
-  RectangleHorizontal,
-  RectangleVertical,
   Redo2,
-  Rows3,
   Stamp,
   Table2,
-  TableCellsMerge,
-  TableCellsSplit,
   TextCursorInput,
-  Trash2,
   Type,
   Underline,
   Undo2,
   Upload,
 } from "lucide-react";
-
 import {
-  PAGE_BACKGROUND_OPTIONS,
-  PAGE_MARGIN_OPTIONS,
-  PAGE_SIZE_OPTIONS,
   PAGE_ZOOM_DEFAULT,
   PAGE_ZOOM_WHEEL_SENSITIVITY,
   normalizePageSettings,
@@ -74,9 +40,7 @@ import {
   pagePreviewMetrics,
 } from "@/components/course-studio/page-settings";
 import {
-  popoverPositionFromCaretRect,
   popoverPositionFromDomSelection,
-  popoverPositionFromRect,
   type SelectionPopoverPosition,
 } from "@/components/course-studio/selection-utils";
 import { FormulaInkPopover, type FormulaInkSubmitPayload } from "@/components/course-studio/formula-ink-popover";
@@ -86,10 +50,8 @@ import {
   ToolbarButton,
   WordPageZoomControls,
 } from "@/components/course-studio/word-editor-toolbar";
-import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-block-extension";
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
-import { RichCodeBlock } from "@/lib/rich-code-block-extension";
 import { RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
 import type {
   BoardDocument,
@@ -98,611 +60,34 @@ import type {
   DocumentPageSettings,
 } from "@/types";
 
+import {
+  FONT_FAMILY_OPTIONS,
+  FONT_SIZE_OPTIONS,
+  WORD_EDITOR_EXTENSIONS,
+  WORD_EDITOR_PROPS,
+} from "@/components/course-studio/word-editor-extensions";
+import {
+  applyTeachingFocus,
+  teachingFocusKey,
+} from "@/components/course-studio/word-editor-teaching-focus";
+import {
+  TableDimensionFields,
+  TableEditButtons,
+} from "@/components/course-studio/word-editor-table-controls";
+import { WordPageRibbon } from "@/components/course-studio/word-editor-page-ribbon";
+import {
+  activeFormulaSelectionFromEditor,
+  insertionAnchorExcerpt,
+  popoverPositionFromEditorCaret,
+  type ActiveFormulaSelection,
+  type WordBoardSelectionPayload,
+} from "@/components/course-studio/word-editor-selection";
+
 type WordRibbonTab = "home" | "insert" | "page";
-
-type WordBoardSelectionPayload = {
-  locationKind: BoardTaskLocationKind;
-  excerpt: string;
-  position: SelectionPopoverPosition | null;
-  documentId: string;
-  beforeText: string;
-  afterText: string;
-};
-
-type ActiveFormulaSelection = WordBoardSelectionPayload & {
-  latex: string;
-  nodeType: "inlineMath" | "blockMath";
-};
 
 export type FormulaInkEditorSubmitPayload = FormulaInkSubmitPayload & {
   selection: WordBoardSelectionPayload;
 };
-
-declare module "@tiptap/core" {
-  interface Commands<ReturnType> {
-    teachingFocusHighlight: {
-      setTeachingFocusHighlight: (range: { from: number; to: number }) => ReturnType;
-      clearTeachingFocusHighlight: () => ReturnType;
-    };
-    fontSize: {
-      setFontSize: (fontSize: string) => ReturnType;
-      unsetFontSize: () => ReturnType;
-    };
-    fontFamily: {
-      setFontFamily: (fontFamily: string) => ReturnType;
-      unsetFontFamily: () => ReturnType;
-    };
-  }
-}
-
-const FontSize = Extension.create({
-  name: "fontSize",
-  addGlobalAttributes() {
-    return [
-      {
-        types: ["textStyle"],
-        attributes: {
-          fontSize: {
-            default: null,
-            parseHTML: (element) => element.style.fontSize || null,
-            renderHTML: (attributes) => {
-              if (!attributes.fontSize) {
-                return {};
-              }
-              return { style: `font-size: ${attributes.fontSize}` };
-            },
-          },
-        },
-      },
-    ];
-  },
-  addCommands() {
-    return {
-      setFontSize:
-        (fontSize: string) =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontSize }).run(),
-      unsetFontSize:
-        () =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontSize: null }).removeEmptyTextStyle().run(),
-    };
-  },
-});
-
-const FontFamily = Extension.create({
-  name: "fontFamily",
-  addGlobalAttributes() {
-    return [
-      {
-        types: ["textStyle"],
-        attributes: {
-          fontFamily: {
-            default: null,
-            parseHTML: (element) => element.style.fontFamily || null,
-            renderHTML: (attributes) => {
-              if (!attributes.fontFamily) {
-                return {};
-              }
-              return { style: `font-family: ${attributes.fontFamily}` };
-            },
-          },
-        },
-      },
-    ];
-  },
-  addCommands() {
-    return {
-      setFontFamily:
-        (fontFamily: string) =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontFamily }).run(),
-      unsetFontFamily:
-        () =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontFamily: null }).removeEmptyTextStyle().run(),
-    };
-  },
-});
-
-type TeachingFocusHighlightRange = { from: number; to: number };
-
-const teachingFocusHighlightPluginKey = new PluginKey<TeachingFocusHighlightRange | null>("teachingFocusHighlight");
-
-const TeachingFocusHighlight = Extension.create({
-  name: "teachingFocusHighlight",
-  addProseMirrorPlugins() {
-    return [
-      new Plugin<TeachingFocusHighlightRange | null>({
-        key: teachingFocusHighlightPluginKey,
-        state: {
-          init: (): TeachingFocusHighlightRange | null => null,
-          apply(transaction, currentRange): TeachingFocusHighlightRange | null {
-            const meta = transaction.getMeta(teachingFocusHighlightPluginKey) as
-              | { type: "set"; range: { from: number; to: number } }
-              | { type: "clear" }
-              | undefined;
-            if (meta?.type === "clear") {
-              return null;
-            }
-            if (meta?.type === "set") {
-              return meta.range.from < meta.range.to ? meta.range : null;
-            }
-            if (!currentRange || !transaction.docChanged) {
-              return currentRange;
-            }
-            const from = transaction.mapping.map(currentRange.from, -1);
-            const to = transaction.mapping.map(currentRange.to, 1);
-            return from < to && to <= transaction.doc.content.size ? { from, to } : null;
-          },
-        },
-        props: {
-          decorations(state) {
-            const range = teachingFocusHighlightPluginKey.getState(state);
-            if (!range || range.from >= range.to) {
-              return null;
-            }
-            return DecorationSet.create(state.doc, [
-              Decoration.inline(range.from, range.to, {
-                class: "word-editor__teaching-focus-highlight",
-                "data-teaching-focus": "true",
-              }),
-            ]);
-          },
-        },
-      }),
-    ];
-  },
-  addCommands() {
-    return {
-      setTeachingFocusHighlight:
-        (range) =>
-        ({ tr, dispatch }) => {
-          if (dispatch) {
-            dispatch(
-              tr
-                .setMeta(teachingFocusHighlightPluginKey, { type: "set", range })
-                .setMeta("addToHistory", false)
-            );
-          }
-          return true;
-        },
-      clearTeachingFocusHighlight:
-        () =>
-        ({ tr, dispatch }) => {
-          if (dispatch) {
-            dispatch(
-              tr
-                .setMeta(teachingFocusHighlightPluginKey, { type: "clear" })
-                .setMeta("addToHistory", false)
-            );
-          }
-          return true;
-        },
-    };
-  },
-});
-
-const PageBreak = Node.create({
-  name: "pageBreak",
-  group: "block",
-  atom: true,
-  selectable: true,
-  parseHTML() {
-    return [{ tag: 'div[data-type="page-break"]' }];
-  },
-  renderHTML() {
-    return ["div", { "data-type": "page-break", class: "word-editor__page-break" }];
-  },
-});
-
-const FONT_FAMILY_OPTIONS = [
-  { label: "Satoshi", value: '"Satoshi","Avenir Next","PingFang SC","Microsoft YaHei",sans-serif' },
-  { label: "Serif", value: '"Iowan Old Style","Songti SC","Times New Roman",serif' },
-  { label: "Mono", value: '"IBM Plex Mono","SFMono-Regular","Menlo",monospace' },
-];
-
-const FONT_SIZE_OPTIONS = [
-  { label: "12", value: "12px" },
-  { label: "14", value: "14px" },
-  { label: "16", value: "16px" },
-  { label: "18", value: "18px" },
-  { label: "24", value: "24px" },
-];
-
-const TABLE_DIMENSION_MIN = 1;
-const TABLE_DIMENSION_MAX = 12;
-
-function normalizeTableDimension(value: number) {
-  if (!Number.isFinite(value)) {
-    return TABLE_DIMENSION_MIN;
-  }
-  return Math.min(TABLE_DIMENSION_MAX, Math.max(TABLE_DIMENSION_MIN, Math.round(value)));
-}
-
-const WORD_EDITOR_EXTENSIONS = [
-  StarterKit.configure({
-    heading: { levels: [1, 2, 3] },
-    link: false,
-    underline: false,
-    codeBlock: false,
-  }),
-  RichCodeBlock,
-  TextStyle,
-  Color,
-  Highlight.configure({ multicolor: true }),
-  UnderlineExtension,
-  LinkExtension.configure({
-    autolink: true,
-    openOnClick: false,
-    defaultProtocol: "https",
-  }),
-  ImageExtension.configure({
-    allowBase64: true,
-    HTMLAttributes: {
-      class: "word-editor__image",
-    },
-  }),
-  TextAlign.configure({ types: ["heading", "paragraph"] }),
-  Table.configure({ resizable: true, cellMinWidth: 72, lastColumnResizable: true }),
-  TableRow,
-  TableHeader,
-  TableCell,
-  TeachingFocusHighlight,
-  BlockMath.configure({
-    katexOptions: {
-      displayMode: true,
-      throwOnError: false,
-    },
-  }),
-  InlineMath.configure({
-    katexOptions: {
-      throwOnError: false,
-    },
-  }),
-  PageBreak,
-  ResourceVisualBlock,
-  FontSize,
-  FontFamily,
-];
-
-const WORD_EDITOR_PROPS = {
-  attributes: {
-    class: "word-editor__content",
-  },
-};
-
-type FlatEditorChar = {
-  text: string;
-  pos: number | null;
-};
-
-type NormalizedEditorText = {
-  text: string;
-  map: number[];
-};
-
-function normalizeLookupText(value: string) {
-  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
-}
-
-function appendBlockBoundary(chars: FlatEditorChar[]) {
-  const last = chars[chars.length - 1]?.text ?? "";
-  if (chars.length && !/\s/.test(last)) {
-    chars.push({ text: " ", pos: null });
-  }
-}
-
-function flattenEditorText(editor: TiptapEditor) {
-  const chars: FlatEditorChar[] = [];
-  editor.state.doc.descendants((node, pos) => {
-    if (node.isBlock) {
-      appendBlockBoundary(chars);
-    }
-    if (!node.isText || !node.text) {
-      return;
-    }
-    for (let offset = 0; offset < node.text.length; offset += 1) {
-      chars.push({ text: node.text[offset] ?? "", pos: pos + offset });
-    }
-  });
-  return chars;
-}
-
-function normalizedEditorText(chars: FlatEditorChar[]): NormalizedEditorText {
-  let text = "";
-  const map: number[] = [];
-  let lastWasSpace = true;
-  chars.forEach((char, index) => {
-    if (/\s/.test(char.text)) {
-      if (!lastWasSpace && text.length) {
-        text += " ";
-        map.push(index);
-        lastWasSpace = true;
-      }
-      return;
-    }
-    text += char.text.toLocaleLowerCase();
-    map.push(index);
-    lastWasSpace = false;
-  });
-  if (text.endsWith(" ")) {
-    return { text: text.slice(0, -1), map: map.slice(0, -1) };
-  }
-  return { text, map };
-}
-
-function uniqueNeedles(values: Array<string | undefined | null>) {
-  const seen = new Set<string>();
-  return values.flatMap((value) => {
-    const normalized = normalizeLookupText(value ?? "");
-    if (normalized.length < 2 || seen.has(normalized)) {
-      return [];
-    }
-    seen.add(normalized);
-    return [normalized];
-  });
-}
-
-function allMatchIndexes(haystack: string, needle: string) {
-  const indexes: number[] = [];
-  let fromIndex = 0;
-  while (fromIndex < haystack.length) {
-    const index = haystack.indexOf(needle, fromIndex);
-    if (index < 0) {
-      break;
-    }
-    indexes.push(index);
-    fromIndex = index + Math.max(needle.length, 1);
-  }
-  return indexes;
-}
-
-function contextScore(text: string, start: number, end: number, focus: BoardFocusRef) {
-  const before = normalizeLookupText(focus.before_text).slice(-96);
-  const after = normalizeLookupText(focus.after_text).slice(0, 96);
-  const previous = text.slice(Math.max(0, start - 160), start);
-  const next = text.slice(end, Math.min(text.length, end + 160));
-  let score = 0;
-  if (before && previous.endsWith(before)) {
-    score += 2;
-  } else if (before && previous.includes(before.slice(-48))) {
-    score += 1;
-  }
-  if (after && next.startsWith(after)) {
-    score += 2;
-  } else if (after && next.includes(after.slice(0, 48))) {
-    score += 1;
-  }
-  return score;
-}
-
-function rangeFromNormalizedMatch(
-  chars: FlatEditorChar[],
-  map: number[],
-  start: number,
-  length: number
-): { from: number; to: number } | null {
-  const startFlatIndex = map[start];
-  const endFlatIndex = map[start + length - 1];
-  if (startFlatIndex === undefined || endFlatIndex === undefined) {
-    return null;
-  }
-  let from: number | null = null;
-  let to: number | null = null;
-  for (let index = startFlatIndex; index <= endFlatIndex; index += 1) {
-    const pos = chars[index]?.pos;
-    if (typeof pos !== "number") {
-      continue;
-    }
-    from ??= pos;
-    to = pos + 1;
-  }
-  return from !== null && to !== null && from < to ? { from, to } : null;
-}
-
-function findTeachingFocusRange(editor: TiptapEditor, focus: BoardFocusRef): { from: number; to: number } | null {
-  const headingRange = findTeachingHeadingSectionRange(editor, focus);
-  if (headingRange) {
-    return headingRange;
-  }
-  const chars = flattenEditorText(editor);
-  const normalized = normalizedEditorText(chars);
-  const lastHeading = focus.heading_path[focus.heading_path.length - 1];
-  const needles = uniqueNeedles([focus.excerpt, focus.display_label, lastHeading]);
-  for (const needle of needles) {
-    const matches = allMatchIndexes(normalized.text, needle)
-      .map((index) => ({
-        index,
-        score: contextScore(normalized.text, index, index + needle.length, focus),
-      }))
-      .sort((a, b) => b.score - a.score || a.index - b.index);
-    for (const match of matches) {
-      const range = rangeFromNormalizedMatch(chars, normalized.map, match.index, needle.length);
-      if (range) {
-        return range;
-      }
-    }
-  }
-  return null;
-}
-
-function findTeachingHeadingSectionRange(
-  editor: TiptapEditor,
-  focus: BoardFocusRef
-): { from: number; to: number } | null {
-  if (focus.kind !== "heading") {
-    return null;
-  }
-  const targetHeading = normalizeLookupText(
-    focus.display_label || focus.heading_path[focus.heading_path.length - 1] || ""
-  );
-  if (!targetHeading) {
-    return null;
-  }
-  const headings: Array<{ pos: number; level: number; text: string }> = [];
-  editor.state.doc.descendants((node, pos) => {
-    if (node.type.name === "heading") {
-      headings.push({
-        pos,
-        level: typeof node.attrs.level === "number" ? node.attrs.level : 1,
-        text: normalizeLookupText(node.textContent),
-      });
-    }
-  });
-  const teachableHeadings = headings[0]?.level === 1 ? headings.slice(1) : headings;
-  const orderedHeading =
-    typeof focus.order_start === "number" ? teachableHeadings[focus.order_start] : null;
-  const heading =
-    orderedHeading?.text === targetHeading
-      ? orderedHeading
-      : headings.find((candidate) => candidate.text === targetHeading);
-  if (!heading) {
-    return null;
-  }
-  const nextBoundary =
-    headings.find(
-      (candidate) => candidate.pos > heading.pos && candidate.level <= heading.level
-    )?.pos ?? editor.state.doc.content.size;
-  let from: number | null = null;
-  let to: number | null = null;
-  editor.state.doc.nodesBetween(heading.pos, nextBoundary, (node, pos) => {
-    if (!node.isText || !node.text) {
-      return;
-    }
-    from ??= pos;
-    to = pos + node.nodeSize;
-  });
-  return from !== null && to !== null && from < to ? { from, to } : null;
-}
-
-function scrollTeachingFocusIntoView(
-  editor: TiptapEditor,
-  pageScroll: HTMLDivElement | null,
-  range: { from: number; to: number }
-) {
-  if (!pageScroll) {
-    return;
-  }
-  window.requestAnimationFrame(() => {
-    try {
-      const coords = editor.view.coordsAtPos(range.from);
-      const containerRect = pageScroll.getBoundingClientRect();
-      const targetTop = pageScroll.scrollTop + coords.top - containerRect.top - pageScroll.clientHeight * 0.34;
-      pageScroll.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
-    } catch {
-      editor.commands.scrollIntoView();
-    }
-  });
-}
-
-function teachingFocusKey(focus: BoardFocusRef | null | undefined) {
-  if (!focus) {
-    return "";
-  }
-  return [
-    focus.document_id ?? "",
-    focus.segment_id ?? "",
-    focus.text_hash ?? "",
-    focus.excerpt_hash ?? "",
-    focus.heading_path.join("/"),
-    focus.display_label ?? "",
-    focus.excerpt,
-  ].join("\u001f");
-}
-
-function applyTeachingFocus(
-  editor: TiptapEditor,
-  documentId: string,
-  focus: BoardFocusRef | null | undefined,
-  pageScroll: HTMLDivElement | null,
-  shouldScrollIntoView: boolean
-) {
-  if (
-    !focus ||
-    focus.source !== "board" ||
-    (focus.document_id && focus.document_id !== documentId)
-  ) {
-    editor.commands.clearTeachingFocusHighlight();
-    return;
-  }
-  const range = findTeachingFocusRange(editor, focus);
-  if (!range) {
-    editor.commands.clearTeachingFocusHighlight();
-    return false;
-  }
-  editor.commands.setTeachingFocusHighlight(range);
-  if (shouldScrollIntoView) {
-    scrollTeachingFocusIntoView(editor, pageScroll, range);
-  }
-  return true;
-}
-
-function compactAnchorContext(value: string, maxLength = 90) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > maxLength ? compact.slice(-maxLength) : compact;
-}
-
-function insertionAnchorExcerpt(beforeText: string, afterText: string) {
-  const before = compactAnchorContext(beforeText);
-  const after = compactAnchorContext(afterText);
-  if (before && after) {
-    return `${before}｜${after}`;
-  }
-  return before || after || "当前光标位置";
-}
-
-function popoverPositionFromEditorCaret(editor: TiptapEditor, position: number) {
-  try {
-    return popoverPositionFromCaretRect(editor.view.coordsAtPos(position));
-  } catch {
-    return popoverPositionFromDomSelection();
-  }
-}
-
-function isFormulaNodeName(value: string): value is ActiveFormulaSelection["nodeType"] {
-  return value === "inlineMath" || value === "blockMath";
-}
-
-function formulaPopoverPositionFromNode(editor: TiptapEditor, position: number) {
-  const dom = editor.view.nodeDOM(position);
-  if (dom instanceof Element) {
-    return popoverPositionFromRect(dom.getBoundingClientRect());
-  }
-  return popoverPositionFromEditorCaret(editor, position);
-}
-
-function activeFormulaSelectionFromEditor(
-  editor: TiptapEditor,
-  {
-    beforeText,
-    afterText,
-    documentId,
-  }: {
-    beforeText: string;
-    afterText: string;
-    documentId: string;
-  }
-): ActiveFormulaSelection | null {
-  const { selection } = editor.state;
-  if (!(selection instanceof NodeSelection) || !isFormulaNodeName(selection.node.type.name)) {
-    return null;
-  }
-  const latex = String(selection.node.attrs.latex ?? "").trim();
-  if (!latex) {
-    return null;
-  }
-  return {
-    locationKind: "target_range",
-    excerpt: latex,
-    position: formulaPopoverPositionFromNode(editor, selection.from),
-    documentId,
-    beforeText,
-    afterText,
-    latex,
-    nodeType: selection.node.type.name,
-  };
-}
 
 export function WordBoardEditor({
   document,
@@ -1239,188 +624,6 @@ export function WordBoardEditor({
   const tableInsertDisabled = !editor || readOnly;
   const tableEditDisabled = tableInsertDisabled || !isTableActive;
 
-  const renderTableDimensionFields = (compact = true) => (
-    <div
-      className={clsx(
-        "flex items-center gap-1 rounded-lg border border-gray-200 bg-white text-gray-600",
-        compact ? "h-9 px-2" : "h-[58px] px-2.5"
-      )}
-    >
-      <Rows3 className="h-3.5 w-3.5 shrink-0" />
-      <input
-        type="number"
-        min={TABLE_DIMENSION_MIN}
-        max={TABLE_DIMENSION_MAX}
-        value={tableRows}
-        aria-label="表格行数"
-        disabled={tableInsertDisabled}
-        onChange={(event) => setTableRows(normalizeTableDimension(Number(event.target.value)))}
-        className="w-9 border-0 bg-transparent text-center text-[12px] font-semibold outline-none disabled:cursor-not-allowed"
-      />
-      <span className="text-[10px] text-gray-300">x</span>
-      <Columns3 className="h-3.5 w-3.5 shrink-0" />
-      <input
-        type="number"
-        min={TABLE_DIMENSION_MIN}
-        max={TABLE_DIMENSION_MAX}
-        value={tableCols}
-        aria-label="表格列数"
-        disabled={tableInsertDisabled}
-        onChange={(event) => setTableCols(normalizeTableDimension(Number(event.target.value)))}
-        className="w-9 border-0 bg-transparent text-center text-[12px] font-semibold outline-none disabled:cursor-not-allowed"
-      />
-      <label
-        title="首行设为表头"
-        className={clsx(
-          "ml-1 flex items-center gap-1 border-l border-gray-100 pl-2 text-[11px] font-medium",
-          tableInsertDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
-        )}
-      >
-        <input
-          type="checkbox"
-          checked={tableHasHeaderRow}
-          disabled={tableInsertDisabled}
-          onChange={(event) => setTableHasHeaderRow(event.target.checked)}
-          className="h-3.5 w-3.5 accent-black"
-        />
-        表头
-      </label>
-    </div>
-  );
-
-  const renderTableEditButtons = (compact = true) => {
-    if (compact) {
-      return (
-        <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
-          <ToolbarButton
-            title="上方插入行"
-            disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addRowBefore().run()}
-          >
-            <ChevronUp className="h-4 w-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            title="下方插入行"
-            disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addRowAfter().run()}
-          >
-            <ChevronDown className="h-4 w-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            title="左侧插入列"
-            disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addColumnBefore().run()}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            title="右侧插入列"
-            disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addColumnAfter().run()}
-          >
-            <ArrowRight className="h-4 w-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            title="合并单元格"
-            disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().mergeCells().run()}
-          >
-            <TableCellsMerge className="h-4 w-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            title="拆分单元格"
-            disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().splitCell().run()}
-          >
-            <TableCellsSplit className="h-4 w-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            title="删除表格"
-            disabled={tableEditDisabled}
-            onClick={() => {
-              onStructureRemovalIntent();
-              editor?.chain().focus().deleteTable().run();
-            }}
-          >
-            <Trash2 className="h-4 w-4" />
-          </ToolbarButton>
-        </div>
-      );
-    }
-
-    return (
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        <RibbonActionButton
-          title="下方插入一行"
-          label="加行"
-          hint="当前表格"
-          icon={<Rows3 className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().addRowAfter().run()}
-        />
-        <RibbonActionButton
-          title="右侧插入一列"
-          label="加列"
-          hint="当前表格"
-          icon={<Columns3 className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().addColumnAfter().run()}
-        />
-        <RibbonActionButton
-          title="删除当前行"
-          label="删行"
-          hint="当前表格"
-          icon={<Rows3 className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().deleteRow().run()}
-        />
-        <RibbonActionButton
-          title="删除当前列"
-          label="删列"
-          hint="当前表格"
-          icon={<Columns3 className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().deleteColumn().run()}
-        />
-        <RibbonActionButton
-          title="合并单元格"
-          label="合并"
-          hint="选中单元格"
-          icon={<TableCellsMerge className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().mergeCells().run()}
-        />
-        <RibbonActionButton
-          title="拆分单元格"
-          label="拆分"
-          hint="当前单元格"
-          icon={<TableCellsSplit className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().splitCell().run()}
-        />
-        <RibbonActionButton
-          title="切换表头行"
-          label="表头行"
-          hint="当前表格"
-          icon={<PanelTop className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().toggleHeaderRow().run()}
-        />
-        <RibbonActionButton
-          title="删除表格"
-          label="删表"
-          hint="当前表格"
-          icon={<Trash2 className="h-4 w-4" />}
-          disabled={tableEditDisabled}
-          onClick={() => {
-            onStructureRemovalIntent();
-            editor?.chain().focus().deleteTable().run();
-          }}
-        />
-      </div>
-    );
-  };
-
   const renderHomeRibbon = () => (
     <>
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
@@ -1547,7 +750,15 @@ export function WordBoardEditor({
       </div>
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        {renderTableDimensionFields()}
+        <TableDimensionFields
+          rows={tableRows}
+          cols={tableCols}
+          hasHeaderRow={tableHasHeaderRow}
+          disabled={tableInsertDisabled}
+          onRowsChange={setTableRows}
+          onColsChange={setTableCols}
+          onHeaderRowChange={setTableHasHeaderRow}
+        />
         <ToolbarButton
           title={`插入 ${tableInsertHint} 表格`}
           disabled={tableInsertDisabled}
@@ -1557,7 +768,11 @@ export function WordBoardEditor({
         </ToolbarButton>
       </div>
 
-      {renderTableEditButtons()}
+      <TableEditButtons
+        editor={editor}
+        disabled={tableEditDisabled}
+        onStructureRemovalIntent={onStructureRemovalIntent}
+      />
 
       <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
         <ToolbarButton
@@ -1650,7 +865,16 @@ export function WordBoardEditor({
           disabled={!editor || readOnly}
           onClick={() => imageUploadRef.current?.click()}
         />
-        {renderTableDimensionFields(false)}
+        <TableDimensionFields
+          compact={false}
+          rows={tableRows}
+          cols={tableCols}
+          hasHeaderRow={tableHasHeaderRow}
+          disabled={tableInsertDisabled}
+          onRowsChange={setTableRows}
+          onColsChange={setTableCols}
+          onHeaderRowChange={setTableHasHeaderRow}
+        />
         <RibbonActionButton
           title={`插入 ${tableInsertHint} 表格`}
           label="表格"
@@ -1669,7 +893,12 @@ export function WordBoardEditor({
         />
       </div>
 
-      {renderTableEditButtons(false)}
+      <TableEditButtons
+        compact={false}
+        editor={editor}
+        disabled={tableEditDisabled}
+        onStructureRemovalIntent={onStructureRemovalIntent}
+      />
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
@@ -1694,115 +923,11 @@ export function WordBoardEditor({
   );
 
   const renderPageRibbon = () => (
-    <>
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        {PAGE_MARGIN_OPTIONS.map((option) => (
-          <RibbonActionButton
-            key={option.value}
-            title={`页边距：${option.label}`}
-            label={option.label}
-            hint="页边距"
-            icon={<AlignHorizontalSpaceAround className="h-4 w-4" />}
-            active={pageSettings.margin_preset === option.value}
-            disabled={readOnly}
-            onClick={() => updatePageSettings({ margin_preset: option.value })}
-          />
-        ))}
-      </div>
-
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        <RibbonActionButton
-          title="纵向排版"
-          label="纵向"
-          hint="纸张方向"
-          icon={<RectangleVertical className="h-4 w-4" />}
-          active={pageSettings.orientation === "portrait"}
-          disabled={readOnly}
-          onClick={() => updatePageSettings({ orientation: "portrait" })}
-        />
-        <RibbonActionButton
-          title="横向排版"
-          label="横向"
-          hint="纸张方向"
-          icon={<RectangleHorizontal className="h-4 w-4" />}
-          active={pageSettings.orientation === "landscape"}
-          disabled={readOnly}
-          onClick={() => updatePageSettings({ orientation: "landscape" })}
-        />
-      </div>
-
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        {PAGE_SIZE_OPTIONS.map((option) => (
-          <RibbonActionButton
-            key={option.value}
-            title={`纸张大小：${option.label}`}
-            label={option.label}
-            hint="纸张大小"
-            icon={<Files className="h-4 w-4" />}
-            active={pageSettings.page_size === option.value}
-            disabled={readOnly}
-            onClick={() => updatePageSettings({ page_size: option.value })}
-          />
-        ))}
-      </div>
-
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        <RibbonActionButton
-          title="单栏排版"
-          label="单栏"
-          hint="分栏"
-          icon={<FileText className="h-4 w-4" />}
-          active={pageSettings.columns === 1}
-          disabled={readOnly}
-          onClick={() => updatePageSettings({ columns: 1 })}
-        />
-        <RibbonActionButton
-          title="双栏排版"
-          label="双栏"
-          hint="分栏"
-          icon={<Columns2 className="h-4 w-4" />}
-          active={pageSettings.columns === 2}
-          disabled={readOnly}
-          onClick={() => updatePageSettings({ columns: 2 })}
-        />
-      </div>
-
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        <RibbonActionButton
-          title="页面边框"
-          label="页面边框"
-          hint={pageSettings.page_border ? "已开启" : "已关闭"}
-          icon={<Frame className="h-4 w-4" />}
-          active={pageSettings.page_border}
-          disabled={readOnly}
-          onClick={() => updatePageSettings({ page_border: !pageSettings.page_border })}
-        />
-        <RibbonActionButton
-          title="行号"
-          label="行号"
-          hint={pageSettings.line_numbers ? "已显示" : "点击显示"}
-          icon={<ListOrdered className="h-4 w-4" />}
-          active={pageSettings.line_numbers}
-          disabled={readOnly}
-          onClick={() => updatePageSettings({ line_numbers: !pageSettings.line_numbers })}
-        />
-      </div>
-
-      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-        {PAGE_BACKGROUND_OPTIONS.map((option) => (
-          <RibbonActionButton
-            key={option.value}
-            title={`页面背景：${option.label}`}
-            label={option.label}
-            hint="背景"
-            icon={<PaintBucket className="h-4 w-4" />}
-            active={pageSettings.background_style === option.value}
-            disabled={readOnly}
-            onClick={() => updatePageSettings({ background_style: option.value })}
-          />
-        ))}
-      </div>
-    </>
+    <WordPageRibbon
+      pageSettings={pageSettings}
+      readOnly={readOnly}
+      onUpdatePageSettings={updatePageSettings}
+    />
   );
 
   return (

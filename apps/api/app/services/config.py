@@ -12,6 +12,16 @@ DATA_DIR = API_BASE_DIR / "data"
 EXPLICIT_ENV_FILE_VARIABLE = "OPENCLASS_ENV_FILE"
 
 
+def env_setting(name: str, default: str) -> str:
+    """Read an optional setting, treating a blank value as unset.
+
+    `os.getenv(name, default)` only falls back when the key is absent, but a
+    `.env` spells "unset" as `NAME=`.  Callers that validate or parse the result
+    would otherwise reject a blank line instead of applying their own default.
+    """
+    return (os.getenv(name) or "").strip() or default
+
+
 def _explicit_env_file() -> Path | None:
     configured = os.getenv(EXPLICIT_ENV_FILE_VARIABLE, "").strip()
     return Path(configured).expanduser() if configured else None

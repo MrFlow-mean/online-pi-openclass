@@ -274,3 +274,22 @@ def test_model_call_reservation_rejects_insufficient_available_credits(tmp_path:
 
     assert error.value.status_code == 402
     assert service.wallet("user-1")["reserved_credits"] == 0
+
+
+def test_billing_config_treats_blank_env_entries_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `.env` files ship these keys blank when an operator leaves them at the
+    # default; a blank value must not fail the whole billing configuration.
+    for name in (
+        "OPENCLASS_PAYPAL_MODE",
+        "OPENCLASS_PAYPAL_CURRENCY",
+        "OPENCLASS_CREDIT_VALUE_PERCENT",
+        "OPENCLASS_PAYPAL_TOP_UP_USD",
+    ):
+        monkeypatch.setenv(name, "")
+
+    config = BillingConfig.from_env()
+
+    assert config.mode == "sandbox"
+    assert config.currency == "USD"
+    assert config.credit_value_percent == 75
+    assert config.top_up_amounts_cents == (500, 1000, 2000, 5000, 10000)

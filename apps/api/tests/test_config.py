@@ -62,3 +62,20 @@ def test_explicit_runtime_env_fails_fast_when_missing(tmp_path, monkeypatch) -> 
 
     with pytest.raises(FileNotFoundError, match="OPENCLASS_ENV_FILE"):
         config.load_root_dotenv()
+
+
+def test_env_setting_returns_the_configured_value(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_TEST_SETTING", " configured ")
+    assert config.env_setting("OPENCLASS_TEST_SETTING", "fallback") == "configured"
+
+
+def test_env_setting_treats_a_blank_entry_as_unset(monkeypatch) -> None:
+    # `NAME=` in a .env file is how operators spell "leave this at the default";
+    # os.getenv would hand back "" and defeat every caller's fallback.
+    monkeypatch.setenv("OPENCLASS_TEST_SETTING", "   ")
+    assert config.env_setting("OPENCLASS_TEST_SETTING", "fallback") == "fallback"
+
+
+def test_env_setting_falls_back_when_absent(monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLASS_TEST_SETTING", raising=False)
+    assert config.env_setting("OPENCLASS_TEST_SETTING", "fallback") == "fallback"

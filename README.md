@@ -181,6 +181,8 @@ npm run test:e2e          # 默认启动 127.0.0.1:3110 / 127.0.0.1:8110
 ## 协作约定
 
 - 工程与 AI 协作规则见 [AGENTS.md](AGENTS.md)。
+- AI 链路宪法（角色边界、写入授权、路由审计）见 [docs/architecture/ai-collaboration.md](docs/architecture/ai-collaboration.md)。
+- 线上部署与运维见 [docs/operations/deployment.md](docs/operations/deployment.md)。
 - 前端协作规则见 [apps/web/AGENTS.md](apps/web/AGENTS.md)。
 - 提交前优先运行 `npm run verify`。
 - 新功能应接入现有 AI workflow，不绕过需求清单、目标定位、资料选择、写入确认、讲解授权和历史审计。

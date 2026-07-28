@@ -292,3 +292,15 @@ def test_realtime_transcripts_persist_once_in_lesson_history(monkeypatch, isolat
         ).fetchone()[0]
     assert raw_board_after == raw_board_before
     assert realtime_snapshot_html == "legacy-board-html-sentinel"
+
+
+def test_realtime_base_url_ignores_blank_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A blank `.env` entry must not turn the official endpoint into a relative
+    # path; every realtime request would then be built against no host at all.
+    monkeypatch.setenv("OPENAI_REALTIME_BASE_URL", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
+
+    assert openai_realtime._openai_realtime_base_url() == openai_realtime.OPENAI_OFFICIAL_BASE_URL
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example/v1/")
+    assert openai_realtime._openai_realtime_base_url() == "https://proxy.example/v1"
