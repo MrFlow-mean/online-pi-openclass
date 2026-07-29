@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api, getApiWebSocketUrl } from "@/lib/api";
+import type { RealtimeTranscriptUpdate } from "@/components/course-studio/realtime-message-state";
 import {
   PROVIDER_LABELS,
   googleRealtimeErrorMessage,
@@ -14,10 +15,14 @@ import {
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
+import { addRealtimeBoardReference, mergeRealtimeBoardReferenceResults } from "@/lib/realtime-board-references";
 import {
-  addRealtimeBoardReference,
-  mergeRealtimeBoardReferenceResults,
-} from "@/lib/realtime-board-references";
+  handleCodexLiveTaskEvent,
+  type CodexLiveBridgeEvent,
+  type CodexLiveTaskAction,
+  type CodexLiveTaskState,
+  type RealtimeToolStatusUpdate,
+} from "@/hooks/course-studio/codex-live-task-ui";
 import type {
   AIModelOption,
   AIModelSelection,
@@ -26,22 +31,6 @@ import type {
   RealtimeToolName,
   SelectionRef,
 } from "@/types";
-
-export type RealtimeTranscriptUpdate = {
-  lessonId: string;
-  turnId: string;
-  messageId: string;
-  role: "user" | "assistant";
-  text: string;
-  final: boolean;
-};
-
-export type RealtimeToolStatusUpdate = {
-  lessonId: string;
-  turnId: string;
-  label: string;
-  status: "pending" | "completed" | "error";
-};
 
 type RealtimeFunctionCall = {
   callId: string;
@@ -60,15 +49,6 @@ type OpenAIRealtimeEvent = {
   arguments?: string;
   item?: Record<string, unknown>;
   response?: { output?: Array<Record<string, unknown>> };
-};
-
-type CodexLiveBridgeEvent = {
-  type?: string;
-  role?: "user" | "assistant";
-  text?: string;
-  message?: string;
-  delegation_id?: string;
-  result?: RealtimeToolCallResponse;
 };
 
 function parseFunctionCall(item: Record<string, unknown> | undefined): RealtimeFunctionCall | null {
@@ -211,6 +191,7 @@ export function useRealtimeVoice({
   const openAIProcessedToolCallsRef = useRef(new Set<string>());
   const realtimeBoardReferencesRef = useRef<SelectionRef[]>([]);
   const realtimeTurnIdRef = useRef<string | null>(null);
+  const codexLiveDelegationTurnIdsRef = useRef(new Map<string, string>());
   const currentSelectionRef = useRef<SelectionRef | null>(currentSelection);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
@@ -224,6 +205,12 @@ export function useRealtimeVoice({
 
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接实时语音 Chatbot");
+  const [codexLiveTaskState, setCodexLiveTaskState] = useState<CodexLiveTaskState>({
+    runningCount: 0,
+    queuedCount: 0,
+    pendingCount: 0,
+    pendingTasks: [],
+  });
 
   useEffect(() => {
     currentSelectionRef.current = currentSelection;
@@ -266,6 +253,32 @@ export function useRealtimeVoice({
     openAIAssistantTranscriptRef.current = "";
     openAIAssistantMessageIdRef.current = null;
     return turnId;
+  }
+
+  function delegationTurnId(delegationId: string) {
+    const existing = codexLiveDelegationTurnIdsRef.current.get(delegationId);
+    if (existing) {
+      return existing;
+    }
+    const turnId = createClientSessionId("delegation-turn");
+    codexLiveDelegationTurnIdsRef.current.set(delegationId, turnId);
+    return turnId;
+  }
+
+  function updateCodexLiveQueueState(payload: CodexLiveBridgeEvent) {
+    setCodexLiveTaskState((current) => ({
+      ...current,
+      runningCount: payload.running_count ?? current.runningCount,
+      queuedCount: payload.queued_count ?? current.queuedCount,
+      pendingCount: payload.pending_count ?? current.pendingCount,
+    }));
+  }
+
+  function removeCodexLivePendingTask(delegationId: string) {
+    setCodexLiveTaskState((current) => ({
+      ...current,
+      pendingTasks: current.pendingTasks.filter((task) => task.delegationId !== delegationId),
+    }));
   }
 
   function currentAssistantMessageId() {
@@ -351,6 +364,8 @@ export function useRealtimeVoice({
     openAIProcessedToolCallsRef.current.clear();
     realtimeBoardReferencesRef.current = [];
     realtimeTurnIdRef.current = null;
+    codexLiveDelegationTurnIdsRef.current.clear();
+    setCodexLiveTaskState({ runningCount: 0, queuedCount: 0, pendingCount: 0, pendingTasks: [] });
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -721,39 +736,20 @@ export function useRealtimeVoice({
               }
               return;
             }
-            if (payload.type === "codex_live.workflow.started") {
-              const turnId = currentTurnId();
-              const label = "正在交给 Chatbot 工作流处理";
-              setVoiceStatusText(label);
-              onToolStatusUpdate({ lessonId, turnId, label, status: "pending" });
-              enqueueRealtimeLogEvent(lessonId, "tool", payload.type, payload.delegation_id ?? "delegation", {
-                turnId,
-              });
+            if (handleCodexLiveTaskEvent(payload, {
+              lessonId,
+              setTaskState: setCodexLiveTaskState,
+              updateQueueState: updateCodexLiveQueueState,
+              removePendingTask: removeCodexLivePendingTask,
+              delegationTurnId,
+              onToolStatusUpdate,
+              onToolResult,
+              setVoiceStatusText,
+              setError,
+              logWorkflowStarted: (delegationId, turnId) =>
+                enqueueRealtimeLogEvent(lessonId, "tool", "codex_live.workflow.started", delegationId, { turnId }),
+            })) {
               return;
-            }
-            if (payload.type === "codex_live.workflow.result" && payload.result) {
-              const turnId = currentTurnId();
-              onToolResult(lessonId, payload.result);
-              const succeeded = payload.result.status === "ok" && payload.result.model_output.status === "ok";
-              const label = succeeded ? "Chatbot 工作流已完成" : "Chatbot 工作流执行失败";
-              onToolStatusUpdate({
-                lessonId,
-                turnId,
-                label,
-                status: succeeded ? "completed" : "error",
-              });
-              setVoiceStatusText(succeeded ? `${label}，Codex Live 正在回答` : label);
-              return;
-            }
-            if (payload.type === "codex_live.workflow.error" || payload.type === "codex_live.error") {
-              const message = payload.message || "Codex Live Chatbot 工作流通道发生错误";
-              onToolStatusUpdate({
-                lessonId,
-                turnId: currentTurnId(),
-                label: message,
-                status: "error",
-              });
-              setError(message);
             }
           } catch {
             // Ignore malformed bridge events while keeping the media session alive.
@@ -1116,6 +1112,23 @@ export function useRealtimeVoice({
     return true;
   }
 
+  function resolveCodexLiveTask(delegationId: string, action: CodexLiveTaskAction) {
+    const socket = codexLiveSocketRef.current;
+    if (!delegationId || !socket || socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    socket.send(JSON.stringify({ type: "delegation.resolve", delegation_id: delegationId, action }));
+    removeCodexLivePendingTask(delegationId);
+    setVoiceStatusText(
+      action === "dismiss"
+        ? "已忽略这段话"
+        : action === "chat"
+          ? "正在作为普通对话处理"
+          : "正在更新任务安排"
+    );
+    return true;
+  }
+
   const scheduleRealtimeLogFlushEffectEvent = useEffectEvent(() => {
     void flushRealtimeLogQueue();
   });
@@ -1169,5 +1182,7 @@ export function useRealtimeVoice({
     stopRealtimeSession,
     speakControlledChatbotMessage,
     sendRealtimeText,
+    codexLiveTaskState,
+    resolveCodexLiveTask,
   };
 }

@@ -29,6 +29,10 @@ import { LearningClarityCard } from "@/components/learning-clarity-card";
 import { api } from "@/lib/api";
 import { boardWorkflowLabel } from "@/lib/learning-requirement-display";
 import type {
+  CodexLiveTaskAction,
+  CodexLiveTaskState,
+} from "@/hooks/course-studio/codex-live-task-ui";
+import type {
   AIModelCatalog,
   AIModelOption,
   AIModelSelection,
@@ -250,6 +254,61 @@ function CurrentNeedCard({
   );
 }
 
+function CodexLiveTaskQueuePanel({
+  state,
+  onResolve,
+}: {
+  state: CodexLiveTaskState;
+  onResolve: (delegationId: string, action: CodexLiveTaskAction) => boolean;
+}) {
+  if (!state.runningCount && !state.queuedCount && !state.pendingCount) {
+    return null;
+  }
+  const actionLabels: Array<[CodexLiveTaskAction, string]> = [
+    ["supplement", "补充当前任务"],
+    ["replace", "替换当前任务"],
+    ["queue", "排到下一项"],
+    ["chat", "只作为对话"],
+    ["dismiss", "忽略"],
+  ];
+  return (
+    <div className="mb-2 rounded-2xl border border-sky-200 bg-sky-50 p-3" aria-live="polite">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold text-sky-950">Codex Live 任务</p>
+        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-700">
+          {state.runningCount ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+          运行 {state.runningCount} · 排队 {state.queuedCount} · 待确认 {state.pendingCount}
+        </span>
+      </div>
+      {state.pendingTasks.map((task) => (
+        <div key={task.delegationId} className="mt-2 rounded-xl border border-sky-100 bg-white p-2.5">
+          <p className="text-xs leading-5 text-gray-800">{task.text || "检测到新的语音输入"}</p>
+          <p className="mt-1 text-[11px] text-gray-500">当前任务仍在运行，请明确这段话的用途。</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {actionLabels.map(([action, label]) => (
+              <button
+                key={action}
+                type="button"
+                onClick={() => onResolve(task.delegationId, action)}
+                className={clsx(
+                  "rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                  action === "replace"
+                    ? "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                    : action === "dismiss"
+                      ? "border-gray-200 text-gray-500 hover:bg-gray-50"
+                      : "border-sky-200 text-sky-800 hover:bg-sky-50"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 type CourseStudioChatSidebarProps = {
   packageId: string;
   resizeHandleProps: HTMLAttributes<HTMLDivElement>;
@@ -280,6 +339,7 @@ type CourseStudioChatSidebarProps = {
   setOpenModelMenu: Dispatch<SetStateAction<ModelMenu>>;
   voiceActive: boolean;
   voiceStatusText: string;
+  codexLiveTaskState: CodexLiveTaskState;
   chatInput: string;
   composerAttachments: ChatAttachmentRef[];
   composerMode: ChatInteractionMode;
@@ -296,6 +356,7 @@ type CourseStudioChatSidebarProps = {
   onSelectTextModel: (selection: AIModelSelection) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
+  onResolveCodexLiveTask: (delegationId: string, action: CodexLiveTaskAction) => boolean;
   onSpeakMessage: (content: string) => void | Promise<void>;
   onExitPreviewMode: () => void;
   onClearSelection: () => void;
@@ -334,6 +395,7 @@ export function CourseStudioChatSidebar({
   setOpenModelMenu,
   voiceActive,
   voiceStatusText,
+  codexLiveTaskState,
   chatInput,
   composerAttachments,
   composerMode,
@@ -350,6 +412,7 @@ export function CourseStudioChatSidebar({
   onSelectTextModel,
   onSelectRealtimeModel,
   onVoiceToggle,
+  onResolveCodexLiveTask,
   onSpeakMessage,
   onExitPreviewMode,
   onClearSelection,
@@ -524,6 +587,10 @@ export function CourseStudioChatSidebar({
       </div>
 
       <div className="shrink-0 border-t border-gray-100 bg-white px-3 py-3">
+        <CodexLiveTaskQueuePanel
+          state={codexLiveTaskState}
+          onResolve={onResolveCodexLiveTask}
+        />
         <div
           ref={modelControlsRef}
           className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2"
@@ -564,7 +631,17 @@ export function CourseStudioChatSidebar({
             <AudioLines className="h-4.5 w-4.5" />
           </button>
         </div>
-        <p className="mb-2 truncate px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
+        <p
+          className={clsx(
+            "mb-2 rounded-lg px-2 py-1.5 text-center text-xs leading-5",
+            codexLiveTaskState.runningCount || codexLiveTaskState.queuedCount || codexLiveTaskState.pendingCount
+              ? "bg-sky-50 font-medium text-sky-800"
+              : "text-gray-500"
+          )}
+          aria-live="polite"
+        >
+          {voiceStatusText}
+        </p>
         <audio ref={remoteAudioRef} autoPlay className="hidden" />
 
         <div

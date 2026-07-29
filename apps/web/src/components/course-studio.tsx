@@ -13,7 +13,6 @@ import type { FormulaInkEditorSubmitPayload } from "@/components/course-studio/w
 import {
   appendComposerSelection,
   buildLessonMessagesFromHistory,
-  createChatMessage,
   learningClarityFromCommit,
 } from "@/components/course-studio/history-utils";
 import {
@@ -38,10 +37,12 @@ import { useLessonMerge } from "@/hooks/course-studio/use-lesson-merge";
 import { useLessonPackage } from "@/hooks/course-studio/use-lesson-package";
 import { useModelCatalog } from "@/hooks/course-studio/use-model-catalog";
 import {
-  useRealtimeVoice,
-  type RealtimeToolStatusUpdate,
+  applyRealtimeToolStatusUpdate,
+  applyRealtimeTranscriptUpdate,
   type RealtimeTranscriptUpdate,
-} from "@/hooks/course-studio/use-realtime-voice";
+} from "@/components/course-studio/realtime-message-state";
+import type { RealtimeToolStatusUpdate } from "@/hooks/course-studio/codex-live-task-ui";
+import { useRealtimeVoice } from "@/hooks/course-studio/use-realtime-voice";
 import { useWorkspaceActions } from "@/hooks/course-studio/use-workspace-actions";
 import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
 import type {
@@ -312,6 +313,8 @@ export function CourseStudio() {
     handleVoiceToggle,
     stopRealtimeSession,
     sendRealtimeText,
+    codexLiveTaskState,
+    resolveCodexLiveTask,
   } = voice;
   const chatSpeech = useChatSpeech({
     lessonId: activeLesson?.id ?? null,
@@ -329,58 +332,11 @@ export function CourseStudio() {
       : null;
 
   function handleRealtimeTranscriptUpdate(update: RealtimeTranscriptUpdate) {
-    const messageId = update.messageId;
-    updateLessonMessages(update.lessonId, (current) => {
-      const withoutToolStatus = update.role === "assistant" && update.final
-        ? current.filter((message) => message.id !== `realtime:${update.turnId}:tool-status`)
-        : current;
-      const existing = withoutToolStatus.find((message) => message.id === messageId);
-      const status = update.role === "assistant" && !update.final ? "pending" : "ready";
-      if (existing) {
-        return withoutToolStatus.map((message) =>
-          message.id === messageId
-            ? {
-                ...message,
-                content: update.text,
-                status,
-                statusLabel: status === "pending" ? message.statusLabel ?? "正在实时回复" : undefined,
-              }
-            : message
-        );
-      }
-      return [
-        ...withoutToolStatus,
-        createChatMessage(update.role, update.text, status, messageId, null, null, {
-          editableContent: update.role === "user" ? update.text : undefined,
-          interactionMode: update.role === "user" ? "ask" : undefined,
-        }),
-      ];
-    });
+    updateLessonMessages(update.lessonId, (current) => applyRealtimeTranscriptUpdate(current, update));
   }
 
   function handleRealtimeToolStatusUpdate(update: RealtimeToolStatusUpdate) {
-    const messageId = `realtime:${update.turnId}:tool-status`;
-    updateLessonMessages(update.lessonId, (current) => {
-      const existing = current.find((message) => message.id === messageId);
-      if (existing) {
-        return current.map((message) =>
-          message.id === messageId
-            ? {
-                ...message,
-                status: update.status === "error" ? "error" : "pending",
-                statusLabel: update.label,
-              }
-            : message
-        );
-      }
-      return [
-        ...current,
-        {
-          ...createChatMessage("assistant", "", update.status === "error" ? "error" : "pending", messageId),
-          statusLabel: update.label,
-        },
-      ];
-    });
+    updateLessonMessages(update.lessonId, (current) => applyRealtimeToolStatusUpdate(current, update));
   }
 
   function handleRealtimeToolResult(lessonId: string, result: RealtimeToolCallResponse) {
@@ -846,6 +802,7 @@ export function CourseStudio() {
           setOpenModelMenu={setOpenModelMenu}
           voiceActive={voiceActive}
           voiceStatusText={voiceStatusText}
+          codexLiveTaskState={codexLiveTaskState}
           chatInput={chatInput}
           composerAttachments={composerAttachments}
           composerMode={composerMode}
@@ -862,6 +819,7 @@ export function CourseStudio() {
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}
+          onResolveCodexLiveTask={resolveCodexLiveTask}
           onSpeakMessage={chatSpeech.speakMessage}
           onExitPreviewMode={exitAnyPreviewMode}
           onClearSelection={clearSelection}
