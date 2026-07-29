@@ -146,7 +146,7 @@ OPENAI_TTS_VOICE=marin
 
 默认的 `OPENCLASS_SOURCE_BACKEND=native` 使用 OpenClass 本地工具和 Pi 资料 Agent 建立资料目录；OpenClass 负责文件隔离、范围读取、机械校验和持久化。需要接入 Open Notebook 时，可显式设置 `OPENCLASS_SOURCE_BACKEND=open_notebook`。
 
-GitHub 仓库资料使用独立的 GitHub App（GitHub 仓库访问应用），不扩大登录 OAuth（登录授权）的权限。启用时设置 `OPENCLASS_GITHUB_SOURCE_ENABLED=true`、App slug（应用短名称）、App ID（应用编号）、只保存在服务端的私钥和 webhook secret（事件签名密钥）；App 仅申请 `Metadata: read` 与 `Contents: read`，安装回调地址为 `/api/integrations/github/install/callback`，webhook 地址为 `/api/integrations/github/webhook`。公开仓库 URL 不要求连接，私有仓库必须属于当前 OpenClass 用户仍然有效的安装。
+GitHub 仓库资料默认允许导入公开仓库 URL；设置 `OPENCLASS_GITHUB_SOURCE_ENABLED=false` 可关闭该入口。私有仓库使用独立的 GitHub App（GitHub 仓库访问应用），不扩大登录 OAuth（登录授权）的权限：配置 App slug（应用短名称）、App ID（应用编号）、只保存在服务端的私钥和 webhook secret（事件签名密钥）；App 仅申请 `Metadata: read` 与 `Contents: read`，安装回调地址为 `/api/integrations/github/install/callback`，webhook 地址为 `/api/integrations/github/webhook`。私有仓库必须属于当前 OpenClass 用户仍然有效的安装。
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，浏览器通过 OpenAI WebRTC（网页实时通信）接收 function call（函数调用），再交给经过用户与 lesson 权限校验的 OpenClass 后端读取受限板书范围或调用同一条 Chatbot workflow，最后只把受控结果返回 Realtime；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 

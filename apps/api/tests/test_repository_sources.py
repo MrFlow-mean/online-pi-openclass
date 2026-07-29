@@ -5,10 +5,20 @@ import hmac
 import stat
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from app.models import RepositoryFileEntry, RepositoryMapNode, RepositorySnapshot, SourceIngestionRecord
+from app.models import (
+    Lesson,
+    RepositoryFileEntry,
+    RepositoryMapNode,
+    RepositoryNodeEvidence,
+    RepositorySnapshot,
+    SelectionRef,
+    SourceIngestionRecord,
+)
+from app.services import repository_grounding, source_grounded_board
 from app.services.github_app import GitHubAppError, GitHubAppService
 from app.services.repository_source import (
     RepositorySourceError,
@@ -136,3 +146,136 @@ def test_github_webhook_signature_validation(monkeypatch: pytest.MonkeyPatch) ->
     service.verify_webhook(body, signature)
     with pytest.raises(GitHubAppError):
         service.verify_webhook(body, "sha256=bad")
+
+
+def test_public_repository_sources_are_enabled_without_github_app_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_GITHUB_SOURCE_ENABLED", raising=False)
+    monkeypatch.delenv("OPENCLASS_GITHUB_APP_ID", raising=False)
+    monkeypatch.delenv("OPENCLASS_GITHUB_APP_PRIVATE_KEY", raising=False)
+    service = GitHubAppService(store=RepositoryStore(path=tmp_path / "openclass.db"))
+
+    status = service.status("user-1")
+
+    assert status.enabled is True
+    assert status.configured is False
+    assert "public repository URLs remain available" in status.message
+
+
+def test_repository_node_selection_freezes_line_evidence_for_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lesson = Lesson.model_construct(id="lesson-repository")
+    source = SourceIngestionRecord(
+        id="source-repository",
+        owner_user_id="user-1",
+        package_id="package-1",
+        title="owner/repo",
+        source_type="code_repository",
+        source_uri="https://github.com/owner/repo",
+        status="ready",
+        metadata={
+            "repository_commit_sha": "a" * 40,
+            "repository_snapshot_hash": "b" * 64,
+            "repository_manifest_hash": "c" * 64,
+        },
+    )
+    snapshot = RepositorySnapshot(
+        owner_user_id="user-1",
+        package_id="package-1",
+        source_ingestion_id=source.id,
+        owner="owner",
+        name="repo",
+        resolved_commit_sha="a" * 40,
+        archive_hash="b" * 64,
+        manifest_hash="c" * 64,
+    )
+    file = RepositoryFileEntry(
+        id="file-1",
+        source_ingestion_id=source.id,
+        path="src/example.py",
+        content_hash="d" * 64,
+        line_count=20,
+        text_status="ready",
+    )
+    node = RepositoryMapNode(
+        id="node-1",
+        source_ingestion_id=source.id,
+        tree_kind="learning",
+        node_kind="module",
+        title="Example module",
+        selectable=True,
+        evidence=[
+            RepositoryNodeEvidence(
+                file_id=file.id,
+                path=file.path,
+                line_start=4,
+                line_end=8,
+            )
+        ],
+    )
+    saved_bundles = []
+
+    monkeypatch.setattr(
+        repository_grounding.workspace_state,
+        "load_workspace_for_user",
+        lambda _user_id: object(),
+    )
+    monkeypatch.setattr(
+        repository_grounding.workspace_state,
+        "find_lesson_package",
+        lambda _workspace, _lesson_id: (SimpleNamespace(id="package-1"), lesson),
+    )
+    monkeypatch.setattr(
+        repository_grounding.source_evidence_store,
+        "get_source",
+        lambda **_kwargs: source,
+    )
+    monkeypatch.setattr(
+        repository_grounding.source_evidence_store,
+        "save_bundle",
+        lambda bundle: saved_bundles.append(bundle) or bundle,
+    )
+    monkeypatch.setattr(
+        repository_grounding.repository_store,
+        "get_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        repository_grounding.repository_store,
+        "get_node",
+        lambda **_kwargs: node,
+    )
+    monkeypatch.setattr(
+        repository_grounding.repository_store,
+        "files_for_source",
+        lambda _source_id: [file],
+    )
+    monkeypatch.setattr(
+        repository_grounding,
+        "read_repository_file_range",
+        lambda **_kwargs: "def example():\n    return 'verified'",
+    )
+
+    plan = source_grounded_board.resolve_source_grounded_board_plan(
+        owner_user_id="user-1",
+        lesson=lesson,
+        selection=SelectionRef(
+            kind="source",
+            excerpt="Example module",
+            source_ingestion_id=source.id,
+            source_scope_kind="repository_node",
+            source_repository_node_id=node.id,
+            source_repository_tree_kind="learning",
+            source_content_hash=snapshot.manifest_hash,
+        ),
+        query="请生成板书并开始讲解",
+    )
+
+    assert plan is not None
+    assert plan.requirement.source_grounding.confirmation_status == "confirmed"
+    assert plan.requirement.source_grounding.frozen_evidence[0].page_range == "src/example.py:L4-L8"
+    assert "verified" in plan.requirement.source_grounding.frozen_evidence[0].expanded_text
+    assert saved_bundles[0].metadata["repository_commit_sha"] == "a" * 40
