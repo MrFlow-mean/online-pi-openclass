@@ -84,8 +84,7 @@ class CodexLiveTaskCoordinator:
                 return TaskDecision("duplicate", task, duplicate_of=duplicate.delegation_id)
             self._tasks[task.delegation_id] = task
             if task.action == "chat":
-                task.status = "completed"
-                return TaskDecision("chat", task)
+                return await self._enqueue(task)
             if task.action == "dismiss":
                 task.status = "dismissed"
                 return TaskDecision("dismissed", task)
@@ -106,8 +105,7 @@ class CodexLiveTaskCoordinator:
                 return None
             task.action = action
             if action == "chat":
-                task.status = "completed"
-                return TaskDecision("chat", task)
+                return await self._enqueue(task)
             if action == "dismiss":
                 task.status = "dismissed"
                 return TaskDecision("dismissed", task)
@@ -169,7 +167,7 @@ class CodexLiveTaskCoordinator:
         for existing in self._tasks.values():
             if existing.delegation_id == task.delegation_id:
                 continue
-            if existing.status not in {"pending", "queued", "running", "completed"}:
+            if existing.status not in {"pending", "queued", "running"}:
                 continue
             if task_texts_match(task.prompt, existing.prompt):
                 return existing

@@ -466,6 +466,23 @@ def test_codex_live_replace_cancels_active_and_clears_older_waiting_work() -> No
     assert coordinator._tasks["task_2"].status == "dismissed"  # noqa: SLF001
 
 
+def test_codex_live_completed_work_can_be_requested_again_and_chat_is_queued() -> None:
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        first = CodexLiveTask("task_1", "再次解释这个内容", True)
+        await coordinator.submit(first)
+        active = await coordinator.queue.get()
+        await coordinator.begin(active)
+        await coordinator.finish(active, "completed")
+        repeated = await coordinator.submit(CodexLiveTask("task_2", "再次解释这个内容", True))
+        chat = await coordinator.submit(CodexLiveTask("task_3", "这是普通对话", True, action="chat"))
+        return repeated, chat
+
+    repeated, chat = asyncio.run(_exercise())
+    assert repeated.kind == "queued"
+    assert chat.kind == "queued"
+
+
 def test_codex_live_typed_result_uses_speakable_session_context() -> None:
     class _FakeUpstream:
         def __init__(self):
