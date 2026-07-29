@@ -455,6 +455,7 @@ async def _handle_delegations(
                 },
             )
             loop = asyncio.get_running_loop()
+            pending_client_events = []
 
             def publish_progress(event) -> None:
                 ai_usage_logger.log_model_run_event(
@@ -470,7 +471,7 @@ async def _handle_delegations(
                     request_kind="provider_delegation" if task.provider_delegation else "typed_delegation",
                     metadata={"activity": event.model_dump(mode="json")},
                 )
-                asyncio.run_coroutine_threadsafe(
+                pending_client_events.append(asyncio.run_coroutine_threadsafe(
                     _send_client_event(
                         websocket,
                         client_send_lock,
@@ -481,10 +482,10 @@ async def _handle_delegations(
                         },
                     ),
                     loop,
-                )
+                ))
 
             def publish_delta(delta: str) -> None:
-                asyncio.run_coroutine_threadsafe(
+                pending_client_events.append(asyncio.run_coroutine_threadsafe(
                     _send_client_event(
                         websocket,
                         client_send_lock,
@@ -495,7 +496,7 @@ async def _handle_delegations(
                         },
                     ),
                     loop,
-                )
+                ))
 
             result = await asyncio.to_thread(
                 execute_realtime_delegation,
@@ -509,6 +510,11 @@ async def _handle_delegations(
                 on_agent_activity=publish_progress,
                 is_cancelled=cancel_event.is_set,
             )
+            if pending_client_events:
+                await asyncio.gather(
+                    *(asyncio.wrap_future(event) for event in pending_client_events),
+                    return_exceptions=True,
+                )
             if cancel_event.is_set():
                 await coordinator.finish(task, "cancelled")
                 await _send_client_event(
