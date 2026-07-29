@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -18,6 +19,8 @@ from app.services.codex_app_server import CodexTurnCancelledError
 
 router = APIRouter()
 CHAT_STREAM_HEARTBEAT_SECONDS = 10.0
+CHAT_STREAM_DOCUMENT_DELTA_CHARS = 8
+CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS = 0.012
 
 
 @dataclass
@@ -86,6 +89,12 @@ def _sse_event(event: str, data: object) -> str:
 
 def _elapsed_ms_since(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
+
+
+def _document_delta_chunks(document_text: str) -> Iterator[str]:
+    chunk_size = max(1, CHAT_STREAM_DOCUMENT_DELTA_CHARS)
+    for start in range(0, len(document_text), chunk_size):
+        yield document_text[start : start + chunk_size]
 
 
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
@@ -164,7 +173,8 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             document_text = _lesson_document_text(response, lesson_id)
             if document_text:
                 log_first_delta_once(metric="document", role="codex", field="board.md")
-                emit("document_delta", {"delta": document_text})
+                for delta in _document_delta_chunks(document_text):
+                    emit("document_delta", {"delta": delta})
                 document_delta_emitted = True
 
     def emit_agent_activity(response: ChatResponse) -> None:
@@ -239,6 +249,8 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             if event == "final":
                 state.final_yielded = True
             yield _sse_event(event, data)
+            if event == "document_delta" and CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS > 0:
+                time.sleep(CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS)
     finally:
         if not state.final_yielded and not state.error_enqueued:
             cancel_event.set()

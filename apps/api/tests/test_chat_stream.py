@@ -243,12 +243,15 @@ def test_chat_stream_emits_live_activity_updates_and_avoids_duplicate_final_even
 
 
 def test_chat_stream_preserves_live_model_delta_chunks(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+
     def process_with_model_chunks(*args, **kwargs) -> ChatResponse:
         kwargs["on_delta"]("真正的")
         kwargs["on_delta"]("流式输出")
         return _chat_response("lesson_stream_test", chatbot_message="真正的流式输出")
 
     monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_model_chunks)
+    monkeypatch.setattr(chat_router.time, "sleep", sleep_calls.append)
 
     events = _collect_events(
         chat_router._chat_stream_events(
@@ -261,10 +264,12 @@ def test_chat_stream_preserves_live_model_delta_chunks(monkeypatch) -> None:
     chat_deltas = [payload["delta"] for event, payload in events if event == "chat_delta"]
     assert chat_deltas == ["真正的", "流式输出"]
     assert _joined_delta(events, "chat_delta") == "真正的流式输出"
+    assert sleep_calls == []
 
 
 def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(monkeypatch) -> None:
     logged_events: list[dict] = []
+    sleep_calls: list[float] = []
 
     monkeypatch.setattr(
         chat_router,
@@ -281,6 +286,9 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
         "log_event",
         lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
     )
+    monkeypatch.setattr(chat_router, "CHAT_STREAM_DOCUMENT_DELTA_CHARS", 4)
+    monkeypatch.setattr(chat_router, "CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(chat_router.time, "sleep", sleep_calls.append)
 
     events = _collect_events(
         chat_router._chat_stream_events(
@@ -291,7 +299,16 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
     )
 
     event_names = [event for event, _payload in events]
+    document_deltas = [payload["delta"] for event, payload in events if event == "document_delta"]
     assert _joined_delta(events, "document_delta") == "# 新板书\n\n这里是生成后的板书内容。"
+    assert document_deltas == [
+        "# 新板",
+        "书\n\n这",
+        "里是生成",
+        "后的板书",
+        "内容。",
+    ]
+    assert sleep_calls == [0.02] * len(document_deltas)
     assert event_names.index("document_delta") < event_names.index("final")
     first_document_delta_events = [
         event for event in logged_events if event["stream_event"] == "first_document_delta_sent"
