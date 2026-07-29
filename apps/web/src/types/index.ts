@@ -1513,6 +1513,8 @@ export interface RealtimeConnectResponse {
   voice: string;
   call_id?: string | null;
   tools_enabled?: boolean;
+  client_delegation_enabled?: boolean;
+  delegation_websocket_url?: string | null;
   client_session_id?: string | null;
 }
 

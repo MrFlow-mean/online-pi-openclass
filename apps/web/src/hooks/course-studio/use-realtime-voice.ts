@@ -62,6 +62,15 @@ type OpenAIRealtimeEvent = {
   response?: { output?: Array<Record<string, unknown>> };
 };
 
+type CodexLiveBridgeEvent = {
+  type?: string;
+  role?: "user" | "assistant";
+  text?: string;
+  message?: string;
+  delegation_id?: string;
+  result?: RealtimeToolCallResponse;
+};
+
 function parseFunctionCall(item: Record<string, unknown> | undefined): RealtimeFunctionCall | null {
   if (item?.type !== "function_call" || typeof item.name !== "string" || typeof item.call_id !== "string") {
     return null;
@@ -184,6 +193,7 @@ export function useRealtimeVoice({
   const realtimeChannelRef = useRef<RTCDataChannel | null>(null);
   const realtimeStreamRef = useRef<MediaStream | null>(null);
   const googleRealtimeSocketRef = useRef<WebSocket | null>(null);
+  const codexLiveSocketRef = useRef<WebSocket | null>(null);
   const googleAudioContextRef = useRef<AudioContext | null>(null);
   const googleAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const googleAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -194,6 +204,7 @@ export function useRealtimeVoice({
   const googleOutputTranscriptRef = useRef("");
   const openAIResponseInProgressRef = useRef(false);
   const openAIRealtimeToolsEnabledRef = useRef(false);
+  const openAIClientDelegationEnabledRef = useRef(false);
   const openAIAssistantTranscriptRef = useRef("");
   const openAIAssistantMessageIdRef = useRef<string | null>(null);
   const openAIInputTranscriptsRef = useRef(new Map<string, string>());
@@ -232,6 +243,13 @@ export function useRealtimeVoice({
           ? `Realtime 已保留 ${nextReferences.length} 个板书引用`
           : "Realtime 已清空板书引用"
       );
+    }
+    const codexLiveSocket = codexLiveSocketRef.current;
+    if (codexLiveSocket?.readyState === WebSocket.OPEN) {
+      codexLiveSocket.send(JSON.stringify({
+        type: "selection.update",
+        selection: currentSelection,
+      }));
     }
   }, [currentSelection, currentSelections, voiceActive]);
 
@@ -307,6 +325,8 @@ export function useRealtimeVoice({
     void flushRealtimeLogQueue();
     realtimeChannelRef.current?.close();
     realtimeChannelRef.current = null;
+    codexLiveSocketRef.current?.close();
+    codexLiveSocketRef.current = null;
     googleRealtimeSocketRef.current?.close();
     googleRealtimeSocketRef.current = null;
 
@@ -324,6 +344,7 @@ export function useRealtimeVoice({
     googleOutputTranscriptRef.current = "";
     openAIResponseInProgressRef.current = false;
     openAIRealtimeToolsEnabledRef.current = false;
+    openAIClientDelegationEnabledRef.current = false;
     openAIAssistantTranscriptRef.current = "";
     openAIAssistantMessageIdRef.current = null;
     openAIInputTranscriptsRef.current.clear();
@@ -405,6 +426,10 @@ export function useRealtimeVoice({
         return;
       }
       setVoiceStatusText("Realtime 正在判断本轮需求与板书路径");
+      return;
+    }
+    if (openAIClientDelegationEnabledRef.current) {
+      setVoiceStatusText("Codex Live 正在交给 Chatbot 工作流处理");
       return;
     }
     if (chatRequestInFlightRef.current) {
@@ -580,6 +605,160 @@ export function useRealtimeVoice({
             handleGoogleRealtimeMessage(payload);
           } catch {
             // ignore malformed realtime events
+          }
+        })();
+      };
+    });
+  }
+
+  async function startCodexLiveBridge(websocketUrl: string) {
+    const socket = new WebSocket(getApiWebSocketUrl(websocketUrl));
+    codexLiveSocketRef.current = socket;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timeoutId = window.setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          socket.close();
+          reject(new Error("Codex Live Chatbot 工作流通道连接超时"));
+        }
+      }, 20_000);
+      const resolveStart = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve();
+      };
+      const rejectStart = (message: string) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(new Error(message));
+      };
+      socket.onopen = () => {
+        socket.send(JSON.stringify({
+          type: "selection.update",
+          selection: currentSelectionRef.current,
+        }));
+      };
+      socket.onerror = () => {
+        rejectStart("Codex Live Chatbot 工作流通道连接失败");
+      };
+      socket.onclose = (event) => {
+        if (!settled) {
+          rejectStart(`Codex Live Chatbot 工作流通道在初始化前关闭（${event.code}）`);
+        }
+        if (codexLiveSocketRef.current === socket) {
+          codexLiveSocketRef.current = null;
+          stopRealtimeSession("Codex Live Chatbot 工作流通道已结束");
+        }
+      };
+      socket.onmessage = (event) => {
+        void (async () => {
+          try {
+            const messageText = await websocketMessageText(event.data);
+            const payload = JSON.parse(messageText) as CodexLiveBridgeEvent;
+            const lessonId = realtimeLessonIdRef.current;
+            if (payload.type === "codex_live.ready") {
+              resolveStart();
+              return;
+            }
+            if (!lessonId) {
+              return;
+            }
+            if (payload.type === "codex_live.transcript.delta" && payload.role && payload.text) {
+              if (payload.role === "user") {
+                const transcriptKey = "codex-live-user";
+                const transcript = `${openAIInputTranscriptsRef.current.get(transcriptKey) ?? ""}${payload.text}`;
+                openAIInputTranscriptsRef.current.set(transcriptKey, transcript);
+                const turnId = currentTurnId();
+                onTranscriptUpdate({
+                  lessonId,
+                  turnId,
+                  messageId: `realtime:${turnId}:user`,
+                  role: "user",
+                  text: transcript,
+                  final: false,
+                });
+              } else {
+                openAIAssistantTranscriptRef.current += payload.text;
+                onTranscriptUpdate({
+                  lessonId,
+                  turnId: currentTurnId(),
+                  messageId: currentAssistantMessageId(),
+                  role: "assistant",
+                  text: openAIAssistantTranscriptRef.current,
+                  final: false,
+                });
+              }
+              return;
+            }
+            if (payload.type === "codex_live.transcript.done" && payload.role) {
+              const transcript = (payload.text ?? "").trim();
+              if (payload.role === "user") {
+                openAIInputTranscriptsRef.current.delete("codex-live-user");
+                handleRealtimeUserTranscript(lessonId, transcript, payload.type);
+              } else if (transcript) {
+                const turnId = currentTurnId();
+                const messageId = currentAssistantMessageId();
+                enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, transcript, {
+                  clientEventId: messageId,
+                  turnId,
+                });
+                onTranscriptUpdate({
+                  lessonId,
+                  turnId,
+                  messageId,
+                  role: "assistant",
+                  text: transcript,
+                  final: true,
+                });
+                openAIAssistantTranscriptRef.current = "";
+                openAIAssistantMessageIdRef.current = null;
+                realtimeTurnIdRef.current = null;
+              }
+              return;
+            }
+            if (payload.type === "codex_live.workflow.started") {
+              const turnId = currentTurnId();
+              const label = "正在交给 Chatbot 工作流处理";
+              setVoiceStatusText(label);
+              onToolStatusUpdate({ lessonId, turnId, label, status: "pending" });
+              enqueueRealtimeLogEvent(lessonId, "tool", payload.type, payload.delegation_id ?? "delegation", {
+                turnId,
+              });
+              return;
+            }
+            if (payload.type === "codex_live.workflow.result" && payload.result) {
+              const turnId = currentTurnId();
+              onToolResult(lessonId, payload.result);
+              const succeeded = payload.result.status === "ok" && payload.result.model_output.status === "ok";
+              const label = succeeded ? "Chatbot 工作流已完成" : "Chatbot 工作流执行失败";
+              onToolStatusUpdate({
+                lessonId,
+                turnId,
+                label,
+                status: succeeded ? "completed" : "error",
+              });
+              setVoiceStatusText(succeeded ? `${label}，Codex Live 正在回答` : label);
+              return;
+            }
+            if (payload.type === "codex_live.workflow.error" || payload.type === "codex_live.error") {
+              const message = payload.message || "Codex Live Chatbot 工作流通道发生错误";
+              onToolStatusUpdate({
+                lessonId,
+                turnId: currentTurnId(),
+                label: message,
+                status: "error",
+              });
+              setError(message);
+            }
+          } catch {
+            // Ignore malformed bridge events while keeping the media session alive.
           }
         })();
       };
@@ -865,6 +1044,14 @@ export function useRealtimeVoice({
         realtimeClientSessionIdRef.current = realtimeResponse.client_session_id;
       }
       openAIRealtimeToolsEnabledRef.current = Boolean(realtimeResponse.tools_enabled);
+      openAIClientDelegationEnabledRef.current = Boolean(realtimeResponse.client_delegation_enabled);
+
+      if (realtimeResponse.client_delegation_enabled) {
+        if (!realtimeResponse.delegation_websocket_url) {
+          throw new Error("Codex Live 响应缺少 Chatbot 工作流通道");
+        }
+        await startCodexLiveBridge(realtimeResponse.delegation_websocket_url);
+      }
 
       await peerConnection.setRemoteDescription({
         type: "answer",
@@ -873,7 +1060,9 @@ export function useRealtimeVoice({
 
       setVoiceStatusText(
         `${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪${
-          realtimeResponse.tools_enabled ? "，可调用 Chatbot 工具" : "，正在受控转写"
+          realtimeResponse.tools_enabled || realtimeResponse.client_delegation_enabled
+            ? "，可读取板书并运行 Chatbot 工作流"
+            : "，正在受控转写"
         }`
       );
     } catch (voiceError) {
@@ -886,7 +1075,16 @@ export function useRealtimeVoice({
     const normalized = message.trim();
     const lessonId = realtimeLessonIdRef.current;
     const dataChannel = realtimeChannelRef.current;
-    if (!normalized || !lessonId || !dataChannel || dataChannel.readyState !== "open") {
+    if (!normalized || !lessonId) {
+      return false;
+    }
+    const codexLiveSocket = codexLiveSocketRef.current;
+    const usesClientDelegation = openAIClientDelegationEnabledRef.current;
+    if (usesClientDelegation) {
+      if (!codexLiveSocket || codexLiveSocket.readyState !== WebSocket.OPEN) {
+        return false;
+      }
+    } else if (!dataChannel || dataChannel.readyState !== "open") {
       return false;
     }
     const turnId = beginRealtimeTurn();
@@ -896,7 +1094,12 @@ export function useRealtimeVoice({
       clientEventId: messageId,
       turnId,
     });
-    dataChannel.send(JSON.stringify({
+    if (usesClientDelegation) {
+      codexLiveSocket?.send(JSON.stringify({ type: "input_text", text: normalized }));
+      setVoiceStatusText("Codex Live 正在处理文字消息");
+      return true;
+    }
+    dataChannel?.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
         type: "message",
@@ -905,9 +1108,9 @@ export function useRealtimeVoice({
       },
     }));
     if (openAIRealtimeToolsEnabledRef.current) {
-      sendOpenAITurnDecisionRequest(dataChannel);
+      sendOpenAITurnDecisionRequest(dataChannel as RTCDataChannel);
     } else {
-      dataChannel.send(JSON.stringify({ type: "response.create" }));
+      dataChannel?.send(JSON.stringify({ type: "response.create" }));
     }
     setVoiceStatusText("Realtime 正在处理文字消息");
     return true;

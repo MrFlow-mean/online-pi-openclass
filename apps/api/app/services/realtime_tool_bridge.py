@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models import ChatRequest, RealtimeToolCallRequest, RealtimeToolCallResponse
+from app.models import ChatRequest, RealtimeToolCallRequest, RealtimeToolCallResponse, SelectionRef
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
 from app.services.chat.turn_context import board_state
@@ -188,6 +188,70 @@ def execute_realtime_tool(
             tool_call_id=request.call_id,
             lesson_id=lesson_id,
             client_session_id=request.client_session_id,
+            error=str(exc),
+        )
+        return RealtimeToolCallResponse(
+            status="error",
+            model_output={"status": "error", "message": str(exc)},
+        )
+
+
+def execute_realtime_delegation(
+    *,
+    lesson_id: str,
+    user_id: str,
+    message: str,
+    client_session_id: str,
+    delegation_id: str,
+    selection: SelectionRef | None = None,
+) -> RealtimeToolCallResponse:
+    """Run a Codex Live client delegation through the normal Chatbot workflow."""
+    normalized = message.strip()
+    if not normalized:
+        return RealtimeToolCallResponse(
+            status="error",
+            model_output={"status": "error", "message": "委托内容为空"},
+        )
+    try:
+        from app.services.chat_service import process_chat_on_lesson
+
+        chat_response = process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message=normalized, selection=selection),
+            user_id=user_id,
+            commit_metadata={
+                "chat_visibility": "hidden",
+                "interaction_channel": "realtime_delegation",
+                "realtime_client_session_id": client_session_id,
+                "realtime_delegation_id": delegation_id,
+            },
+        )
+        response = RealtimeToolCallResponse(
+            status="ok",
+            model_output={
+                "status": "ok",
+                "route": "client_delegation",
+                "chatbot_message": chat_response.chatbot_message,
+                "needs_clarification": chat_response.needs_clarification,
+                "clarification_questions": chat_response.clarification_questions,
+            },
+            resolved_focus=_latest_resolved_focus(chat_response.course_package, lesson_id),
+            course_package=chat_response.course_package,
+        )
+        ai_usage_logger.log_event(
+            "realtime_delegation_completed",
+            lesson_id=lesson_id,
+            client_session_id=client_session_id,
+            delegation_id=delegation_id,
+            status=response.status,
+        )
+        return response
+    except Exception as exc:
+        ai_usage_logger.log_event(
+            "realtime_delegation_error",
+            lesson_id=lesson_id,
+            client_session_id=client_session_id,
+            delegation_id=delegation_id,
             error=str(exc),
         )
         return RealtimeToolCallResponse(

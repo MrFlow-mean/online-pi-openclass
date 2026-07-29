@@ -2438,6 +2438,8 @@ class RealtimeConnectResponse(BaseModel):
     voice: str
     call_id: str | None = None
     tools_enabled: bool = False
+    client_delegation_enabled: bool = False
+    delegation_websocket_url: str | None = None
     client_session_id: str | None = None
 
 

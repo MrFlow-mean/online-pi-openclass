@@ -12,11 +12,11 @@ from app.models import (
     RealtimeTranscriptLogRequest,
     SelectionRef,
 )
-from app.services import ai_model_catalog, chat_service, openai_realtime, workspace_state
+from app.services import ai_model_catalog, chat_service, codex_live_sideband, openai_realtime, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.realtime_board_context import read_realtime_board_context
-from app.services.realtime_tool_bridge import execute_realtime_tool
+from app.services.realtime_tool_bridge import execute_realtime_delegation, execute_realtime_tool
 from app.services.rich_document import build_document
 
 
@@ -243,7 +243,12 @@ def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isola
     assert response.provider == "openai_codex"
     assert response.model == "gpt-live-1-codex"
     assert response.tools_enabled is False
+    assert response.client_delegation_enabled is True
     assert response.call_id == "rtc_codex_call"
+    assert response.delegation_websocket_url == (
+        f"/api/lessons/{lesson.id}/realtime/codex-sideband/rtc_codex_call"
+        "?client_session_id=codex_realtime_test"
+    )
     assert captured["url"] == "http://127.0.0.1:8317/v1/live"
     assert captured["headers"]["Authorization"] == "Bearer proxy-api-key"
     assert captured["headers"]["OpenAI-Alpha"] == "quicksilver=v2"
@@ -281,6 +286,135 @@ def test_codex_live_omits_unsupported_avas_tool_parameters(monkeypatch) -> None:
     assert config.tools_enabled is False
     assert "tools" not in config.session_payload
     assert "tool_choice" not in config.session_payload
+
+
+def test_codex_live_sideband_wire_parser_and_utf8_chunking(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_URL", "http://127.0.0.1:8317/v1/live")
+
+    assert codex_live_sideband.codex_live_sideband_url("rtc_test") == (
+        "ws://127.0.0.1:8317/v1/live/rtc_test"
+    )
+    assert codex_live_sideband.parse_codex_live_event(
+        json.dumps({"type": "input_transcript.added", "item": {"text": "你好"}})
+    ) == {"kind": "transcript_delta", "role": "user", "text": "你好"}
+    assert codex_live_sideband.parse_codex_live_event(
+        json.dumps({"type": "turn.done", "turn": {"role": "assistant", "transcript": "完成"}})
+    ) == {"kind": "transcript_done", "role": "assistant", "text": "完成"}
+    assert codex_live_sideband.parse_codex_live_event(
+        json.dumps(
+            {
+                "type": "delegation.created",
+                "item": {
+                    "type": "delegation",
+                    "target": "client",
+                    "id": "delegation_1",
+                    "content": [
+                        {"type": "input_text", "text": "读取当前板书，"},
+                        {"type": "input_text", "text": "然后补充一段。"},
+                    ],
+                },
+            }
+        )
+    ) == {
+        "kind": "delegation",
+        "id": "delegation_1",
+        "prompt": "读取当前板书，然后补充一段。",
+    }
+    chunks = codex_live_sideband.chunk_codex_live_text("你" * 400)
+    assert "".join(chunks) == "你" * 400
+    assert len(chunks) > 1
+    assert all(len(chunk.encode("utf-8")) <= 500 for chunk in chunks)
+
+
+def test_codex_live_sideband_session_is_bound_and_single_claim() -> None:
+    codex_live_sideband.register_codex_live_session(
+        call_id="rtc_bound_session",
+        lesson_id="lesson_bound",
+        user_id=TEST_USER_ID,
+        client_session_id="client_bound",
+        transport_session_id="transport_bound",
+        selection=None,
+    )
+    try:
+        assert codex_live_sideband.claim_codex_live_session(
+            call_id="rtc_bound_session",
+            lesson_id="lesson_bound",
+            user_id="another_user",
+            client_session_id="client_bound",
+        ) is None
+        claimed = codex_live_sideband.claim_codex_live_session(
+            call_id="rtc_bound_session",
+            lesson_id="lesson_bound",
+            user_id=TEST_USER_ID,
+            client_session_id="client_bound",
+        )
+        assert claimed is not None
+        assert codex_live_sideband.claim_codex_live_session(
+            call_id="rtc_bound_session",
+            lesson_id="lesson_bound",
+            user_id=TEST_USER_ID,
+            client_session_id="client_bound",
+        ) is None
+    finally:
+        codex_live_sideband.release_codex_live_session("rtc_bound_session")
+
+
+def test_codex_live_delegation_runs_normal_chatbot_workflow(
+    monkeypatch,
+    isolated_store,
+) -> None:
+    lesson = _seed_workspace(isolated_store)
+    workspace = workspace_state.load_workspace_for_user(TEST_USER_ID)
+    package = workspace_state.package_view_for_lesson(workspace, workspace.packages[0], lesson.id)
+    captured = {}
+
+    def _fake_chat(lesson_id, request, *, user_id, commit_metadata=None):
+        captured.update(
+            lesson_id=lesson_id,
+            message=request.message,
+            selection=request.selection,
+            user_id=user_id,
+            commit_metadata=commit_metadata,
+        )
+        return SimpleNamespace(
+            chatbot_message="已根据当前板书完成处理。",
+            needs_clarification=False,
+            clarification_questions=[],
+            course_package=package,
+        )
+
+    selection = SelectionRef(
+        kind="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        excerpt="第三节 情景对话",
+    )
+    monkeypatch.setattr(chat_service, "process_chat_on_lesson", _fake_chat)
+    response = execute_realtime_delegation(
+        lesson_id=lesson.id,
+        user_id=TEST_USER_ID,
+        message="读取我选中的板书并继续编辑。",
+        client_session_id="codex_session",
+        delegation_id="delegation_1",
+        selection=selection,
+    )
+
+    assert response.status == "ok"
+    assert response.model_output["route"] == "client_delegation"
+    assert response.model_output["chatbot_message"] == "已根据当前板书完成处理。"
+    assert response.course_package is not None
+    assert captured == {
+        "lesson_id": lesson.id,
+        "message": "读取我选中的板书并继续编辑。",
+        "selection": selection,
+        "user_id": TEST_USER_ID,
+        "commit_metadata": {
+            "chat_visibility": "hidden",
+            "interaction_channel": "realtime_delegation",
+            "realtime_client_session_id": "codex_session",
+            "realtime_delegation_id": "delegation_1",
+        },
+    }
 
 
 def test_codex_live_falls_back_to_supported_avas_voice(monkeypatch) -> None:

@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -176,6 +177,20 @@ def _realtime_instructions(*, lesson_title: str, latest_assistant_message: str |
     )
 
 
+def _codex_realtime_instructions(*, lesson_title: str) -> str:
+    return (
+        "You are the realtime voice form of the OpenClass Chatbot shown in the left conversation panel.\n"
+        "For every learner utterance, delegate the learner's exact request to the client before answering. "
+        "Do not independently read, infer, summarize, or modify board content.\n"
+        "The client runs the authoritative OpenClass Chatbot workflow, including board access, document editing, "
+        "and other tools. Speak the client's supplied result faithfully and naturally without exposing delegation "
+        "or internal implementation details. Never claim an action succeeded unless the client result says so.\n"
+        "Generate every learner-facing sentence from the current conversation and client result; do not use scripted "
+        "subject templates. Keep spoken responses focused and conversational. The learner may interrupt at any time.\n"
+        f"Current lesson title: {lesson_title}"
+    )
+
+
 def _select_realtime_model(raw: AIModelSelection | None) -> AIModelSelection:
     selected = raw or default_realtime_selection()
     if selected.provider == "openai":
@@ -238,10 +253,19 @@ def build_openai_realtime_session_config(
     if selected.provider == "openai_codex":
         session_payload = {
             "model": model,
-            "instructions": session_payload["instructions"],
+            "instructions": _codex_realtime_instructions(lesson_title=lesson_title),
             "audio": {"output": {"voice": voice}},
             "delegation": {"type": "client"},
         }
+        latest_assistant_message = _compact_text(request.latest_assistant_message, limit=800)
+        if latest_assistant_message:
+            session_payload["initial_items"] = [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": latest_assistant_message}],
+                }
+            ]
     if tools_enabled:
         session_payload["tools"] = realtime_tool_schemas()
     return RealtimeSessionConfig(
@@ -268,6 +292,7 @@ def connect_openai_realtime_session(
     workspace = workspace_state.load_workspace_for_user(user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     config = build_openai_realtime_session_config(lesson_title=lesson.title, request=request)
+    transport_session_id: str | None = None
     try:
         with httpx.Client(timeout=30) as client:
             if config.provider == "openai_codex":
@@ -343,7 +368,26 @@ def connect_openai_realtime_session(
     if not answer_sdp.strip():
         raise RealtimeServiceError(502, "Realtime 响应缺少 SDP answer。")
 
-    call_id = _call_id_from_location(response.headers.get("Location"))
+    call_id = _call_id_from_location(response.headers.get("Location")) or response.headers.get("openai-session-id")
+    client_delegation_enabled = config.provider == "openai_codex"
+    delegation_websocket_url: str | None = None
+    if client_delegation_enabled:
+        if not call_id or not transport_session_id:
+            raise RealtimeServiceError(502, "Codex Live 响应缺少旁路会话标识。")
+        from app.services.codex_live_sideband import register_codex_live_session
+
+        register_codex_live_session(
+            call_id=call_id,
+            lesson_id=lesson_id,
+            user_id=user_id,
+            client_session_id=config.client_session_id,
+            transport_session_id=transport_session_id,
+            selection=request.selection,
+        )
+        delegation_websocket_url = (
+            f"/api/lessons/{quote(lesson_id, safe='')}/realtime/codex-sideband/"
+            f"{quote(call_id, safe='')}?client_session_id={quote(config.client_session_id, safe='')}"
+        )
     ai_usage_logger.log_event(
         "openai_realtime_call_created",
         lesson_id=lesson_id,
@@ -352,6 +396,7 @@ def connect_openai_realtime_session(
         voice=config.voice,
         call_id=call_id,
         tools_enabled=config.tools_enabled,
+        client_delegation_enabled=client_delegation_enabled,
         provider=config.provider,
     )
     return RealtimeConnectResponse(
@@ -361,6 +406,8 @@ def connect_openai_realtime_session(
         voice=config.voice,
         call_id=call_id,
         tools_enabled=config.tools_enabled,
+        client_delegation_enabled=client_delegation_enabled,
+        delegation_websocket_url=delegation_websocket_url,
         client_session_id=config.client_session_id,
     )
 
