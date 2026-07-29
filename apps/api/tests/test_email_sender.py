@@ -4,7 +4,10 @@ from email.message import EmailMessage
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
+from app.models import UserView
+from app.routers import contact
 from app.services import email_sender
 
 
@@ -20,7 +23,7 @@ SMTP_ENV_KEYS = (
 
 
 def _clear_email_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (*SMTP_ENV_KEYS, "RESEND_API_KEY", "RESEND_FROM_EMAIL"):
+    for key in (*SMTP_ENV_KEYS, "RESEND_API_KEY", "RESEND_FROM_EMAIL", "NEXT_PUBLIC_CONTACT_EMAIL"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -101,3 +104,76 @@ def test_send_email_code_requires_a_provider(monkeypatch: pytest.MonkeyPatch) ->
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "邮箱验证码服务尚未配置"
+
+
+def test_send_contact_message_targets_platform_mailbox_and_sets_reply_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_email_env(monkeypatch)
+    monkeypatch.setenv("OPENCLASS_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("OPENCLASS_SMTP_USERNAME", "mailer@example.com")
+    monkeypatch.setenv("OPENCLASS_SMTP_PASSWORD", "client-security-password")
+    monkeypatch.setenv("NEXT_PUBLIC_CONTACT_EMAIL", "team@example.com")
+    sent: dict[str, object] = {}
+
+    class FakeSMTPClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def __enter__(self) -> FakeSMTPClient:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def login(self, *_: object) -> None:
+            pass
+
+        def send_message(self, message: EmailMessage) -> None:
+            sent["message"] = message
+
+    monkeypatch.setattr(email_sender.smtplib, "SMTP_SSL", FakeSMTPClient)
+
+    email_sender.send_contact_message(
+        sender_email="learner@example.com",
+        sender_name="Learner <script>",
+        user_id="user-123",
+        subject="合作咨询\n抄送",
+        message="我想了解团队版。<script>alert(1)</script>",
+    )
+
+    message = sent["message"]
+    assert isinstance(message, EmailMessage)
+    assert message["To"] == "team@example.com"
+    assert message["Reply-To"] == "learner@example.com"
+    assert message["Subject"] == "[OpenClass 联系] 合作咨询 抄送"
+    html_body = message.get_body(preferencelist=("html",))
+    assert html_body is not None
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_body.get_content()
+
+
+def test_contact_endpoint_uses_authenticated_account_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    contact.contact_rate_limiter.reset()
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(contact, "send_contact_message", lambda **kwargs: captured.update(kwargs))
+    request = Request({"type": "http", "client": ("203.0.113.10", 1234), "headers": []})
+    user = UserView(
+        id="user-123",
+        email="learner@example.com",
+        role="user",
+        display_name="Learner",
+        created_at="2026-07-29T00:00:00Z",
+    )
+
+    response = contact.submit_contact_message(
+        contact.ContactMessageRequest(subject="产品建议", message="希望增加更方便的联系入口。"),
+        request,
+        user,
+    )
+
+    assert response.message == "联系消息已发送"
+    assert captured == {
+        "sender_email": "learner@example.com",
+        "sender_name": "Learner",
+        "user_id": "user-123",
+        "subject": "产品建议",
+        "message": "希望增加更方便的联系入口。",
+    }

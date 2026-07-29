@@ -14,6 +14,7 @@ from app.routers import (
     chat,
     codex_provider,
     communities,
+    contact,
     contributions,
     documents,
     geometry,
@@ -78,6 +79,7 @@ app.include_router(workspace.router)
 app.include_router(auth.router)
 app.include_router(billing.router)
 app.include_router(communities.router)
+app.include_router(contact.router)
 app.include_router(contributions.router)
 app.include_router(project_collaboration.router)
 app.include_router(documents.router)
