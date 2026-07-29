@@ -253,7 +253,14 @@ def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isola
     assert captured["json"]["sdp"] == "v=0-codex-offer"
     assert captured["json"]["session"]["model"] == "gpt-live-1-codex"
     assert "OpenClass Chatbot" in captured["json"]["session"]["instructions"]
-    assert set(captured["json"]["session"]) == {"model", "instructions"}
+    assert captured["json"]["session"]["audio"] == {"output": {"voice": "cove"}}
+    assert captured["json"]["session"]["delegation"] == {"type": "client"}
+    assert set(captured["json"]["session"]) == {
+        "model",
+        "instructions",
+        "audio",
+        "delegation",
+    }
 
 
 def test_codex_live_omits_unsupported_avas_tool_parameters(monkeypatch) -> None:
@@ -274,6 +281,25 @@ def test_codex_live_omits_unsupported_avas_tool_parameters(monkeypatch) -> None:
     assert config.tools_enabled is False
     assert "tools" not in config.session_payload
     assert "tool_choice" not in config.session_payload
+
+
+def test_codex_live_falls_back_to_supported_avas_voice(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_VOICE", "marin")
+
+    config = openai_realtime.build_openai_realtime_session_config(
+        lesson_title="Any lesson",
+        request=RealtimeConnectRequest(
+            offer_sdp="v=0",
+            realtime_model=AIModelSelection(
+                provider="openai_codex",
+                model="gpt-live-1-codex",
+                access_method="platform_credits",
+            ),
+        ),
+    )
+
+    assert config.voice == "cove"
+    assert config.session_payload["audio"] == {"output": {"voice": "cove"}}
 
 
 def test_realtime_connect_rejects_codex_live_without_proxy_credentials(monkeypatch, isolated_store) -> None:

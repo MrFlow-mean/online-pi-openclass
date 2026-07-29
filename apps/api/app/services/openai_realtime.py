@@ -38,6 +38,18 @@ load_root_dotenv()
 
 OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
 OPENAI_CODEX_REALTIME_PROXY_URL = "http://127.0.0.1:8317/v1/live"
+OPENAI_CODEX_REALTIME_DEFAULT_VOICE = "cove"
+OPENAI_CODEX_REALTIME_VOICES = {
+    "arbor",
+    "breeze",
+    "cove",
+    "ember",
+    "juniper",
+    "maple",
+    "sol",
+    "spruce",
+    "vale",
+}
 
 
 class RealtimeServiceError(RuntimeError):
@@ -120,6 +132,18 @@ def _realtime_reasoning_effort() -> str:
     return value if value in {"low", "medium", "high"} else "low"
 
 
+def _codex_realtime_voice() -> str:
+    value = (
+        os.getenv("OPENCLASS_CODEX_REALTIME_VOICE")
+        or OPENAI_CODEX_REALTIME_DEFAULT_VOICE
+    ).strip().lower()
+    return (
+        value
+        if value in OPENAI_CODEX_REALTIME_VOICES
+        else OPENAI_CODEX_REALTIME_DEFAULT_VOICE
+    )
+
+
 def _compact_text(value: str | None, *, limit: int = 500) -> str:
     normalized = " ".join((value or "").split())
     return normalized if len(normalized) <= limit else f"{normalized[: limit - 1]}..."
@@ -176,7 +200,11 @@ def build_openai_realtime_session_config(
         if selected.provider == "openai_codex"
         else os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
     )
-    voice = (os.getenv("OPENAI_REALTIME_VOICE") or "marin").strip()
+    voice = (
+        _codex_realtime_voice()
+        if selected.provider == "openai_codex"
+        else (os.getenv("OPENAI_REALTIME_VOICE") or "marin").strip()
+    )
     client_session_id = request.client_session_id or new_id("realtime")
     transport_capabilities = REALTIME_TRANSPORT_CAPABILITIES[selected.provider]
     tools_enabled = (
@@ -211,6 +239,8 @@ def build_openai_realtime_session_config(
         session_payload = {
             "model": model,
             "instructions": session_payload["instructions"],
+            "audio": {"output": {"voice": voice}},
+            "delegation": {"type": "client"},
         }
     if tools_enabled:
         session_payload["tools"] = realtime_tool_schemas()
