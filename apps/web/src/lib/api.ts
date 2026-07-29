@@ -309,6 +309,22 @@ export type CreditTransaction = {
   created_at: string;
 };
 
+export type ModelRunLogEvent = {
+  id: string;
+  occurred_at: string;
+  event_type: string;
+  context: Record<string, unknown>;
+  payload: Record<string, unknown>;
+};
+
+export type ModelRunHistoryResponse = {
+  lesson_id: string;
+  events: ModelRunLogEvent[];
+  next_cursor: string | null;
+  truncated: boolean;
+  cursor_found?: boolean;
+};
+
 export type PayPalOrder = {
   order_id: string;
   approve_url: string | null;
@@ -682,6 +698,19 @@ export const api = {
   },
   getWorkspace() {
     return request<WorkspaceState>("/api/workspace");
+  },
+  getModelRunHistory(lessonId: string, options?: { limit?: number; after?: string | null }) {
+    const query = new URLSearchParams();
+    if (options?.limit) {
+      query.set("limit", String(options.limit));
+    }
+    if (options?.after) {
+      query.set("after", options.after);
+    }
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<ModelRunHistoryResponse>(
+      `/api/lessons/${encodeURIComponent(lessonId)}/model-run-history${suffix}`
+    );
   },
   createPackage(title: string, summary = "") {
     return request<WorkspaceState>("/api/packages", {
