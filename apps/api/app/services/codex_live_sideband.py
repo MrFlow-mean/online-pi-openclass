@@ -14,6 +14,7 @@ from websockets.asyncio.client import ClientConnection, connect
 
 from app.models import SelectionRef, new_id
 from app.services.ai_logging import ai_usage_logger
+from app.services.ai_model_catalog import OPENAI_CODEX_REALTIME_MODEL
 from app.services.openai_realtime import (
     _codex_realtime_proxy_api_key,
     _codex_realtime_proxy_url,
@@ -234,7 +235,22 @@ async def _handle_client_messages(
         elif payload.get("type") == "input_text":
             text = str(payload.get("text") or "").strip()
             if text:
-                await delegation_queue.put((new_id("typed_delegation"), text, False))
+                delegation_id = new_id("typed_delegation")
+                ai_usage_logger.log_model_run_event(
+                    "queued",
+                    run_id=delegation_id,
+                    parent_run_id=session.client_session_id,
+                    provider="openai_codex",
+                    model=OPENAI_CODEX_REALTIME_MODEL,
+                    status="queued",
+                    user_id=session.user_id,
+                    lesson_id=session.lesson_id,
+                    turn_id=delegation_id,
+                    request_kind="typed_delegation",
+                    input_data={"text": text},
+                    metadata={"call_id": session.call_id, "queue_source": "client"},
+                )
+                await delegation_queue.put((delegation_id, text, False))
 
 
 async def _handle_delegations(
@@ -247,6 +263,20 @@ async def _handle_delegations(
     while True:
         delegation_id, prompt, provider_delegation = await queue.get()
         try:
+            ai_usage_logger.log_model_run_event(
+                "started",
+                run_id=delegation_id,
+                parent_run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="running",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                turn_id=delegation_id,
+                request_kind="provider_delegation" if provider_delegation else "typed_delegation",
+                input_data={"text": prompt},
+                metadata={"call_id": session.call_id},
+            )
             await websocket.send_json(
                 {
                     "type": "codex_live.workflow.started",
@@ -268,6 +298,33 @@ async def _handle_delegations(
                     "delegation_id": delegation_id,
                     "result": result.model_dump(mode="json"),
                 }
+            )
+            ai_usage_logger.log_model_run_event(
+                "completed" if result.status == "ok" else "failed",
+                run_id=delegation_id,
+                parent_run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="completed" if result.status == "ok" else "failed",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                turn_id=delegation_id,
+                request_kind="provider_delegation" if provider_delegation else "typed_delegation",
+                output_data={
+                    "status": result.status,
+                    "model_output": result.model_output,
+                    "resolved_focus": (
+                        result.resolved_focus.model_dump(mode="json")
+                        if result.resolved_focus is not None
+                        else None
+                    ),
+                },
+                error=(
+                    str(result.model_output.get("message") or "Codex Live delegation failed")
+                    if result.status != "ok"
+                    else None
+                ),
+                metadata={"call_id": session.call_id},
             )
             response_text = str(result.model_output.get("chatbot_message") or "").strip()
             if result.status == "ok" and response_text:
@@ -293,6 +350,7 @@ async def _handle_delegations(
 async def _handle_upstream_messages(
     websocket: WebSocket,
     upstream: ClientConnection,
+    session: CodexLiveSession,
     delegation_queue: asyncio.Queue[tuple[str, str, bool]],
 ) -> None:
     async for raw_payload in upstream:
@@ -302,6 +360,17 @@ async def _handle_upstream_messages(
             continue
         kind = event["kind"]
         if kind == "transcript_delta":
+            ai_usage_logger.log_model_run_event(
+                "transcript_delta",
+                run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="running",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                delta=event["text"],
+                metadata={"role": event["role"], "call_id": session.call_id},
+            )
             await websocket.send_json(
                 {
                     "type": "codex_live.transcript.delta",
@@ -310,6 +379,17 @@ async def _handle_upstream_messages(
                 }
             )
         elif kind == "transcript_done":
+            ai_usage_logger.log_model_run_event(
+                "transcript_completed",
+                run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="completed",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                output_data={"role": event["role"], "text": event["text"]},
+                metadata={"call_id": session.call_id},
+            )
             await websocket.send_json(
                 {
                     "type": "codex_live.transcript.done",
@@ -318,10 +398,57 @@ async def _handle_upstream_messages(
                 }
             )
         elif kind == "delegation":
+            ai_usage_logger.log_model_run_event(
+                "queued",
+                run_id=event["id"],
+                parent_run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="queued",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                turn_id=event["id"],
+                request_kind="provider_delegation",
+                input_data={"text": event["prompt"]},
+                metadata={"call_id": session.call_id, "queue_source": "provider"},
+            )
             await delegation_queue.put((event["id"], event["prompt"], True))
         elif kind == "error":
+            ai_usage_logger.log_model_run_event(
+                "provider_error",
+                run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="failed",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                error=event["message"],
+                metadata={"call_id": session.call_id},
+            )
             await websocket.send_json(
                 {"type": "codex_live.error", "message": event["message"]}
+            )
+        elif kind == "session_started":
+            ai_usage_logger.log_model_run_event(
+                "provider_started",
+                run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="running",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                metadata={"call_id": session.call_id},
+            )
+        elif kind == "ignored":
+            ai_usage_logger.log_model_run_event(
+                "provider_event",
+                run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="running",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                metadata={"call_id": session.call_id, "event_type": event["event_type"]},
             )
 
 
@@ -366,9 +493,19 @@ async def bridge_codex_live_sideband(websocket: WebSocket, session: CodexLiveSes
                 )
             )
             upstream_task = asyncio.create_task(
-                _handle_upstream_messages(websocket, upstream, delegation_queue)
+                _handle_upstream_messages(websocket, upstream, session, delegation_queue)
             )
             await websocket.send_json({"type": "codex_live.ready"})
+            ai_usage_logger.log_model_run_event(
+                "ready",
+                run_id=session.client_session_id,
+                provider="openai_codex",
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                status="running",
+                user_id=session.user_id,
+                lesson_id=session.lesson_id,
+                metadata={"call_id": session.call_id},
+            )
             try:
                 done, _pending = await asyncio.wait(
                     {client_task, delegation_task, upstream_task},
@@ -401,4 +538,14 @@ async def bridge_codex_live_sideband(websocket: WebSocket, session: CodexLiveSes
         except Exception:
             pass
     finally:
+        ai_usage_logger.log_model_run_event(
+            "closed",
+            run_id=session.client_session_id,
+            provider="openai_codex",
+            model=OPENAI_CODEX_REALTIME_MODEL,
+            status="completed",
+            user_id=session.user_id,
+            lesson_id=session.lesson_id,
+            metadata={"call_id": session.call_id},
+        )
         release_codex_live_session(session.call_id)

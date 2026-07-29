@@ -8,11 +8,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from time import perf_counter
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.models import AgentActivityEvent, ChatRequest, ChatResponse, UserView, new_id, now_iso
 from app.routers.auth import current_user
+from app.services import workspace_state
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.chat_service import process_chat_on_lesson
 from app.services.codex_app_server import CodexTurnCancelledError
@@ -267,7 +268,33 @@ def chat_on_lesson(
     request: ChatRequest,
     user: UserView = Depends(current_user),
 ) -> ChatResponse:
-    return process_chat_on_lesson(lesson_id, request, user_id=user.id)
+    with ai_log_context(
+        trace_id=new_id("chat"),
+        route="/api/lessons/{lesson_id}/chat",
+        lesson_id=lesson_id,
+        user_id=user.id,
+    ):
+        return process_chat_on_lesson(lesson_id, request, user_id=user.id)
+
+
+@router.get("/api/lessons/{lesson_id}/model-run-history")
+def model_run_history(
+    lesson_id: str,
+    limit: int = Query(default=500, ge=1, le=2000),
+    after: str | None = Query(default=None),
+    user: UserView = Depends(current_user),
+) -> dict[str, object]:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.find_lesson_package(workspace, lesson_id)
+    history = ai_usage_logger.read_lesson_events(
+        lesson_id=lesson_id,
+        limit=limit,
+        after_event_id=after,
+    )
+    return {
+        "lesson_id": lesson_id,
+        **history,
+    }
 
 
 @router.post("/api/lessons/{lesson_id}/chat/stream")

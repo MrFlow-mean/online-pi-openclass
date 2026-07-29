@@ -20,7 +20,7 @@ from typing import Any, Callable, TypeVar
 from pydantic import BaseModel
 
 from app.models import AgentActivityEvent, new_id, now_iso
-from app.services.ai_logging import ai_usage_logger
+from app.services.ai_logging import ai_usage_logger, current_ai_log_context
 from app.services.billing_service import BillingError, BillingService
 from app.services.config import DATA_DIR, load_root_dotenv
 from app.services.codex_app_server import CodexTurnCancelledError
@@ -97,15 +97,21 @@ class _PiActivityRecorder:
         *,
         turn_id: str,
         request_id: str,
+        owner_user_id: str,
+        lesson_id: str | None,
         provider: str,
         model: str,
+        request_kind: str,
         callback: Callable[[AgentActivityEvent], None] | None,
         on_text_delta: Callable[[str], None] | None = None,
     ) -> None:
         self.turn_id = turn_id
         self.request_id = request_id
+        self.owner_user_id = owner_user_id
+        self.lesson_id = lesson_id
         self.provider = provider
         self.model = model
+        self.request_kind = request_kind
         self.callback = callback
         self.on_text_delta = on_text_delta
         self._events: dict[str, AgentActivityEvent] = {}
@@ -179,6 +185,17 @@ class _PiActivityRecorder:
         event_type = str(payload.get("type") or "")
         runtime_id = self._event_id("runtime")
         if event_type == "agent_start":
+            ai_usage_logger.log_model_run_event(
+                "provider_started",
+                run_id=self.request_id,
+                provider=self.provider,
+                model=self.model,
+                status="running",
+                user_id=self.owner_user_id,
+                lesson_id=self.lesson_id,
+                turn_id=self.turn_id,
+                request_kind=self.request_kind,
+            )
             self._publish(
                 event_id=runtime_id,
                 label="OpenClass 已连接模型",
@@ -189,6 +206,18 @@ class _PiActivityRecorder:
             return
         if event_type == "agent_end":
             self._observe_usage(payload)
+            ai_usage_logger.log_model_run_event(
+                "provider_completed",
+                run_id=self.request_id,
+                provider=self.provider,
+                model=self.model,
+                status="completed",
+                user_id=self.owner_user_id,
+                lesson_id=self.lesson_id,
+                turn_id=self.turn_id,
+                request_kind=self.request_kind,
+                usage=self.usage,
+            )
             self._publish(
                 event_id=runtime_id,
                 label="OpenClass 已完成模型运行",
@@ -285,6 +314,23 @@ class _PiActivityRecorder:
             if isinstance(delta, str):
                 self._character_counts[event_id] = (
                     self._character_counts.get(event_id, 0) + len(delta)
+                )
+                ai_usage_logger.log_model_run_event(
+                    "reasoning_progress" if kind == "reasoning" else "output_delta",
+                    run_id=self.request_id,
+                    provider=self.provider,
+                    model=self.model,
+                    status="running",
+                    user_id=self.owner_user_id,
+                    lesson_id=self.lesson_id,
+                    turn_id=self.turn_id,
+                    request_kind=self.request_kind,
+                    delta=delta if kind == "model_output" else None,
+                    metadata={
+                        "content_index": update.get("contentIndex", 0),
+                        "character_count": self._character_counts[event_id],
+                        "private_reasoning_omitted": kind == "reasoning",
+                    },
                 )
                 if kind == "model_output" and delta:
                     if self.first_text_at is None:
@@ -1006,8 +1052,11 @@ class PiTextClient:
             recorder = _PiActivityRecorder(
                 turn_id=turn_id,
                 request_id=request_id,
+                owner_user_id=self.owner_user_id,
+                lesson_id=str(current_ai_log_context().get("lesson_id") or "") or None,
                 provider=self.provider,
                 model=self.model,
+                request_kind=request_id.rsplit(":", 2)[-2],
                 callback=on_activity,
                 on_text_delta=on_text_delta,
             )
@@ -1027,6 +1076,28 @@ class PiTextClient:
                 reservation_active = True
             try:
                 command = self._command(system_prompt=system_prompt, image_paths=image_paths)
+                ai_usage_logger.log_model_run_event(
+                    "started",
+                    run_id=request_id,
+                    provider=self.provider,
+                    model=self.model,
+                    status="running",
+                    user_id=self.owner_user_id,
+                    turn_id=turn_id,
+                    request_kind=recorder.request_kind,
+                    input_data={
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "image_count": len(image_paths),
+                    },
+                    metadata={
+                        "agent_backend": "pi",
+                        "access_method": self.access_method,
+                        "reasoning_effort": self.reasoning_effort,
+                        "service_tier": self.service_tier,
+                        "attempt": int(request_id.rsplit(":", 1)[-1]),
+                    },
+                )
                 if self._process_runner is None:
                     result = _run_streaming_pi_process(
                         command,
@@ -1051,9 +1122,33 @@ class PiTextClient:
                     for line in result.stdout.splitlines():
                         recorder.observe_line(line)
             except subprocess.TimeoutExpired as exc:
+                ai_usage_logger.log_model_run_event(
+                    "failed",
+                    run_id=request_id,
+                    provider=self.provider,
+                    model=self.model,
+                    status="failed",
+                    user_id=self.owner_user_id,
+                    turn_id=turn_id,
+                    request_kind=recorder.request_kind,
+                    error=f"Pi model request timed out after {timeout_seconds} seconds",
+                )
                 raise RuntimeError(
                     f"Pi model request timed out after {timeout_seconds} seconds"
                 ) from exc
+            except Exception as exc:
+                ai_usage_logger.log_model_run_event(
+                    "failed",
+                    run_id=request_id,
+                    provider=self.provider,
+                    model=self.model,
+                    status="failed",
+                    user_id=self.owner_user_id,
+                    turn_id=turn_id,
+                    request_kind=recorder.request_kind,
+                    error=str(exc),
+                )
+                raise
             finally:
                 ai_usage_logger.log_event(
                     "pi_request_timing",
@@ -1085,15 +1180,52 @@ class PiTextClient:
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
             recorder.fail("模型进程返回失败状态。")
+            ai_usage_logger.log_model_run_event(
+                "failed",
+                run_id=request_id,
+                provider=self.provider,
+                model=self.model,
+                status="failed",
+                user_id=self.owner_user_id,
+                turn_id=turn_id,
+                request_kind=recorder.request_kind,
+                error=detail or f"exit code {result.returncode}",
+                metadata={"returncode": result.returncode},
+            )
             raise RuntimeError(
                 "Pi model request failed"
                 + (f": {detail}" if detail else f" with exit code {result.returncode}")
             )
         try:
-            return _assistant_text(result.stdout)
-        except RuntimeError:
+            output_text = _assistant_text(result.stdout)
+        except RuntimeError as exc:
             recorder.fail("模型没有返回可用的助手结果。")
+            ai_usage_logger.log_model_run_event(
+                "failed",
+                run_id=request_id,
+                provider=self.provider,
+                model=self.model,
+                status="failed",
+                user_id=self.owner_user_id,
+                turn_id=turn_id,
+                request_kind=recorder.request_kind,
+                error=str(exc),
+            )
             raise
+        ai_usage_logger.log_model_run_event(
+            "completed",
+            run_id=request_id,
+            provider=self.provider,
+            model=self.model,
+            status="completed",
+            user_id=self.owner_user_id,
+            turn_id=turn_id,
+            request_kind=recorder.request_kind,
+            output_data={"text": output_text},
+            usage=recorder.usage,
+            metadata=recorder.timing_payload(),
+        )
+        return output_text
 
     def _run(
         self,
