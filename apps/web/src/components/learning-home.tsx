@@ -52,7 +52,7 @@ import {
 } from "@/components/project-visibility-control";
 import { CourseSearchResults } from "@/components/public-course-search-results";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
-import { api } from "@/lib/api";
+import { api, request } from "@/lib/api";
 import {
   forkPublicLesson,
   forkPublicPackage,
@@ -101,6 +101,8 @@ type LessonMenuState = {
   top: number;
   left: number;
 };
+
+type ContactSubmitState = "idle" | "sending" | "sent";
 
 function publicationReviewProgressText(
   progress: PublicationReviewProgressUpdate,
@@ -227,6 +229,11 @@ export function LearningHome() {
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
   const [isCreatingPackageInline, setIsCreatingPackageInline] = useState(false);
   const [standaloneCreateMenuOpen, setStandaloneCreateMenuOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
+  const [contactSubject, setContactSubject] = useState("");
+  const [contactMessage, setContactMessage] = useState("");
+  const [contactSubmitState, setContactSubmitState] = useState<ContactSubmitState>("idle");
+  const [contactError, setContactError] = useState<string | null>(null);
   const ridocFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -306,6 +313,7 @@ export function LearningHome() {
       setLessonMoveMenuState(null);
       setIsCreatingPackageInline(false);
       setStandaloneCreateMenuOpen(false);
+      setContactOpen(false);
       setSelectedPackageId(null);
       setSelectedLessonId(null);
       setPackageLessonsExpanded(false);
@@ -384,7 +392,48 @@ export function LearningHome() {
   const githubLinkLabel = language === "en" ? "Open GitHub repository" : "打开 GitHub 仓库";
   const projectDocsLinkLabel = language === "en" ? "Open project documentation" : "打开项目文档";
   const contactLinkLabel =
-    language === "en" ? `Email ${PLATFORM_CONTACT_EMAIL}` : `发送邮件至 ${PLATFORM_CONTACT_EMAIL}`;
+    language === "en" ? `Contact OpenClass at ${PLATFORM_CONTACT_EMAIL}` : `联系 OpenClass，消息发送至 ${PLATFORM_CONTACT_EMAIL}`;
+
+  function openContactDialog() {
+    if (contactSubmitState === "sent") {
+      setContactSubject("");
+      setContactMessage("");
+      setContactSubmitState("idle");
+    }
+    setContactError(null);
+    setContactOpen(true);
+  }
+
+  function closeContactDialog() {
+    if (contactSubmitState !== "sending") {
+      setContactOpen(false);
+    }
+  }
+
+  async function handleContactSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (contactSubmitState === "sending") {
+      return;
+    }
+    setContactSubmitState("sending");
+    setContactError(null);
+    try {
+      await request<{ message: string }>("/api/contact", {
+        method: "POST",
+        body: JSON.stringify({ subject: contactSubject, message: contactMessage }),
+      });
+      setContactSubmitState("sent");
+    } catch (submitError) {
+      setContactSubmitState("idle");
+      setContactError(
+        submitError instanceof Error
+          ? submitError.message
+          : language === "en"
+            ? "Could not send your message. Please try again."
+            : "联系消息发送失败，请重试。",
+      );
+    }
+  }
 
   async function handleOpenLesson(lessonId: string) {
     setSelectedLessonId(lessonId);
@@ -1568,19 +1617,139 @@ export function LearningHome() {
       ) : null}
 
       {!isSearchMode ? (
+        contactOpen ? (
+          <div
+            className="fixed inset-0 z-[190] flex items-end justify-center bg-stone-950/30 p-4 backdrop-blur-sm sm:items-center"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                closeContactDialog();
+              }
+            }}
+          >
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="contact-dialog-title"
+              className="w-full max-w-lg rounded-[28px] border border-white/70 bg-white p-6 shadow-[0_28px_80px_rgba(15,23,42,0.22)] sm:p-7"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">OpenClass</p>
+                  <h2 id="contact-dialog-title" className="mt-2 text-xl font-bold text-stone-950">
+                    {language === "en" ? "Contact our team" : "联系开放课堂团队"}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-stone-500">
+                    {language === "en"
+                      ? `Your message will be delivered to ${PLATFORM_CONTACT_EMAIL}. We will reply to your account email.`
+                      : `消息会直接发送至 ${PLATFORM_CONTACT_EMAIL}，我们将通过你的账户邮箱回复。`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeContactDialog}
+                  disabled={contactSubmitState === "sending"}
+                  aria-label={language === "en" ? "Close contact form" : "关闭联系表单"}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {contactSubmitState === "sent" ? (
+                <div className="py-8 text-center" aria-live="polite">
+                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+                    <Check className="h-6 w-6" />
+                  </div>
+                  <h3 className="mt-4 text-lg font-bold text-stone-950">
+                    {language === "en" ? "Message sent" : "消息已发送"}
+                  </h3>
+                  <p className="mt-2 text-sm text-stone-500">
+                    {language === "en" ? "We will reply to your account email." : "团队会通过你的账户邮箱回复。"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={closeContactDialog}
+                    className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-stone-950 px-6 text-sm font-semibold text-white transition hover:bg-stone-800"
+                  >
+                    {language === "en" ? "Done" : "完成"}
+                  </button>
+                </div>
+              ) : (
+                <form className="mt-6 space-y-4" onSubmit={handleContactSubmit}>
+                  <label className="block">
+                    <span className="text-sm font-semibold text-stone-700">{language === "en" ? "Subject" : "主题"}</span>
+                    <input
+                      value={contactSubject}
+                      onChange={(event) => setContactSubject(event.target.value)}
+                      minLength={2}
+                      maxLength={120}
+                      required
+                      autoFocus
+                      placeholder={language === "en" ? "What would you like to discuss?" : "你想和我们讨论什么？"}
+                      className="mt-2 h-11 w-full rounded-xl border border-stone-200 bg-stone-50 px-3.5 text-sm text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-semibold text-stone-700">{language === "en" ? "Message" : "联系内容"}</span>
+                    <textarea
+                      value={contactMessage}
+                      onChange={(event) => setContactMessage(event.target.value)}
+                      minLength={10}
+                      maxLength={4000}
+                      required
+                      rows={6}
+                      placeholder={language === "en" ? "Share the details so we can help." : "请写下具体情况，便于我们回复。"}
+                      className="mt-2 w-full resize-y rounded-xl border border-stone-200 bg-stone-50 px-3.5 py-3 text-sm leading-6 text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100"
+                    />
+                    <span className="mt-1 block text-right text-xs text-stone-400">{contactMessage.length}/4000</span>
+                  </label>
+                  {contactError ? (
+                    <p role="alert" className="rounded-xl bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+                      {contactError}
+                    </p>
+                  ) : null}
+                  <div className="flex justify-end gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={closeContactDialog}
+                      disabled={contactSubmitState === "sending"}
+                      className="h-11 rounded-xl px-4 text-sm font-semibold text-stone-600 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {language === "en" ? "Cancel" : "取消"}
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={contactSubmitState === "sending"}
+                      className="inline-flex h-11 min-w-28 items-center justify-center gap-2 rounded-xl bg-sky-600 px-5 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {contactSubmitState === "sending" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                      {contactSubmitState === "sending"
+                        ? language === "en" ? "Sending" : "发送中"
+                        : language === "en" ? "Send message" : "发送消息"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </section>
+          </div>
+        ) : null
+      ) : null}
+
+      {!isSearchMode ? (
         <nav
           aria-label={quickLinksLabel}
           className="fixed bottom-4 right-4 z-[130] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border border-stone-200 bg-white/92 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur xl:bottom-6 xl:right-8"
         >
-        <a
-          href={`mailto:${PLATFORM_CONTACT_EMAIL}`}
+        <button
+          type="button"
+          onClick={openContactDialog}
           aria-label={contactLinkLabel}
           title={contactLinkLabel}
           className="inline-flex h-10 items-center gap-2 rounded-md px-3 text-sm font-semibold text-stone-700 transition hover:bg-sky-50 hover:text-sky-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
         >
           <Mail className="h-4 w-4" />
           <span>{language === "en" ? "Contact" : "联系"}</span>
-        </a>
+        </button>
         <a
           href={GITHUB_REPOSITORY_URL}
           target="_blank"

@@ -1577,12 +1577,57 @@ test("manages standalone lessons from the profile project list", async ({ page }
   await expect(packageMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
 });
 
-test("shows the configured platform contact email on the home page", async ({ page }) => {
-  await enterAsGuest(page);
+test("sends a contact message from the home page without opening a mail client", async ({ page }) => {
+  const guestResponse = await page.request.post(`${API_BASE_URL}/api/auth/guest`);
+  expect(guestResponse.ok()).toBeTruthy();
+  const { token } = (await guestResponse.json()) as { token: string };
+  await page.context().addCookies([
+    { name: "openclass.auth.token", value: token, domain: "127.0.0.1", path: "/" },
+  ]);
+  await page.addInitScript((authToken) => {
+    window.localStorage.setItem("openclass.auth.token", authToken);
+  }, token);
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "contact-test-user",
+        email: "learner@example.com",
+        role: "user",
+        display_name: "Learner",
+        avatar_url: null,
+        created_at: "2026-07-29T00:00:00Z",
+        last_login_at: null,
+        email_verified_at: "2026-07-29T00:00:00Z",
+        auth_identities: [],
+      }),
+    }),
+  );
+  let submitted: { subject?: string; message?: string } = {};
+  await page.route("**/api/contact", async (route) => {
+    submitted = route.request().postDataJSON() as { subject: string; message: string };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "联系消息已发送" }),
+    });
+  });
+  await page.goto("/");
 
-  const contactLink = page.getByRole("link", { name: "发送邮件至 hello@open-classes.com" });
-  await expect(contactLink).toBeVisible();
-  await expect(contactLink).toHaveAttribute("href", "mailto:hello@open-classes.com");
+  const contactButton = page.getByRole("button", { name: "联系 OpenClass，消息发送至 hello@open-classes.com" });
+  await expect(contactButton).toBeVisible();
+  await contactButton.click();
+  await expect(page.getByRole("dialog", { name: "联系开放课堂团队" })).toBeVisible();
+  await page.getByLabel("主题").fill("产品建议");
+  await page.getByLabel("联系内容").fill("希望通过站内表单直接联系开放课堂团队。");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "消息已发送" })).toBeVisible();
+  expect(submitted).toEqual({
+    subject: "产品建议",
+    message: "希望通过站内表单直接联系开放课堂团队。",
+  });
 });
 
 test("collapses course package and standalone lesson lists independently", async ({ page }) => {
