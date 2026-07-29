@@ -13,6 +13,7 @@ type CourseStudioPageShellProps = {
   rightSidebarOpen: boolean;
   error: string | null;
   tabs: ReactNode;
+  accountMenu: ReactNode;
   selectionPopover?: ReactNode;
   children: ReactNode;
   onReturnHome: () => void;
@@ -28,6 +29,7 @@ export function CourseStudioPageShell({
   rightSidebarOpen,
   error,
   tabs,
+  accountMenu,
   selectionPopover,
   children,
   onReturnHome,
@@ -62,7 +64,7 @@ export function CourseStudioPageShell({
           </div>
 
           <div className="flex shrink-0 items-center gap-4">
-            <div className="ml-2 flex items-center gap-1 border-l border-gray-200 pl-4">
+            <div className="mr-12 flex items-center gap-1 border-l border-gray-200 pl-4">
               <button
                 type="button"
                 onClick={() => onRightSidebarOpenChange(!rightSidebarOpen)}
@@ -96,6 +98,10 @@ export function CourseStudioPageShell({
             </div>
           </div>
         </header>
+      </div>
+
+      <div className="fixed right-3 top-1 z-[80]">
+        {accountMenu}
       </div>
 
       <button

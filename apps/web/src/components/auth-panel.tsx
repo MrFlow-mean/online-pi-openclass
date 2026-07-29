@@ -948,8 +948,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         throw new Error("游客会话未返回有效令牌");
       }
       storeGuestAuthToken(payload.token);
-      const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
-      navigateAfterAuth(nextPath);
+      navigateAfterAuth("/studio");
     } catch (guestError) {
       setError(guestError instanceof Error ? guestError.message : "游客访问失败");
     } finally {

@@ -16,6 +16,18 @@ const publicRoutes = [
 ];
 const publicRoutePrefixes = ["/courses"];
 const productLandingRedirects = ["/admin", "/following", "/profile", "/studio"];
+const guestAccessibleRoutes = [
+  "/studio",
+  "/login",
+  "/register",
+  "/forgot-password",
+  "/reset-password",
+  "/auth/callback",
+  "/verify-email",
+  "/privacy",
+  "/terms",
+  "/security",
+];
 
 function isPublicRoute(pathname: string) {
   const contributionDetail = pathname.match(/^\/contributions\/([^/]+)$/)?.[1];
@@ -23,6 +35,12 @@ function isPublicRoute(pathname: string) {
     Boolean(contributionDetail) ||
     publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`)) ||
     publicRoutePrefixes.some((route) => pathname === route || pathname.startsWith(`${route}/`))
+  );
+}
+
+function isGuestAccessibleRoute(pathname: string) {
+  return guestAccessibleRoutes.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
   );
 }
 
@@ -50,6 +68,10 @@ export function proxy(request: NextRequest) {
   const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   const guestToken = request.cookies.get(GUEST_AUTH_COOKIE_NAME)?.value;
   const hasSession = Boolean(token || guestToken);
+
+  if (!token && guestToken && !isGuestAccessibleRoute(pathname)) {
+    return NextResponse.redirect(new URL("/studio", request.url));
+  }
 
   if (!token && pathname.startsWith("/admin")) {
     const loginUrl = new URL("/login", request.url);

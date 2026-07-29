@@ -66,6 +66,12 @@ OTHER_USER = UserView(
     display_name="Searcher",
     created_at="2026-01-02T00:00:00+00:00",
 )
+GUEST_USER = UserView(
+    id="guest_smoke",
+    email="guest_smoke@guest.openclass.local",
+    role="guest",
+    created_at="2026-01-03T00:00:00+00:00",
+)
 
 
 @pytest.fixture
@@ -830,6 +836,52 @@ def test_standalone_lessons_and_packages_have_revocable_public_visibility(
     )
     assert private_package.status_code == 200
     assert api_client.get(f"/api/public/packages/{package_id}").status_code == 404
+
+
+def test_guest_workspace_can_stay_private_but_cannot_publish(
+    api_client: TestClient,
+) -> None:
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: GUEST_USER
+    standalone_lesson_response = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Guest Studio trial", "start_blank": True},
+    )
+    assert standalone_lesson_response.status_code == 200
+    standalone_lesson = standalone_lesson_response.json()["lessons"][0]
+
+    rejected_lesson = api_client.post(
+        f"/api/lessons/{standalone_lesson['id']}/visibility",
+        json={"visibility": "public"},
+    )
+    assert rejected_lesson.status_code == 403
+    assert rejected_lesson.json()["detail"] == "请先注册或登录后再公开项目"
+
+    rejected_stream = api_client.post(
+        f"/api/lessons/{standalone_lesson['id']}/visibility/stream",
+        json={"visibility": "public"},
+    )
+    assert rejected_stream.status_code == 403
+
+    created_package = api_client.post(
+        "/api/packages",
+        json={"title": "Guest private package", "summary": "Studio trial"},
+    )
+    assert created_package.status_code == 200
+    package_id = created_package.json()["active_package_id"]
+
+    rejected_package = api_client.post(
+        f"/api/packages/{package_id}",
+        json={"visibility": "public"},
+    )
+    assert rejected_package.status_code == 403
+
+    private_package = api_client.post(
+        f"/api/packages/{package_id}",
+        json={"visibility": "private"},
+    )
+    assert private_package.status_code == 200
+    package = next(item for item in private_package.json()["packages"] if item["id"] == package_id)
+    assert package["visibility"] == "private"
 
 
 def test_public_course_search_returns_real_projects_from_other_users(

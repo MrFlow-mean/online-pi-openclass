@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useEffectEvent, useRef, useState, type CSSProperties } from "react";
 import { BookOpen, Plus } from "lucide-react";
 
+import { AccountMenu } from "@/components/account-menu";
 import { BoardEditorPanel } from "@/components/course-studio/board-editor-panel";
 import { CourseStudioChatSidebar } from "@/components/course-studio/chat-sidebar";
 import { CourseStudioPageShell } from "@/components/course-studio/course-studio-page-shell";
@@ -750,6 +751,7 @@ export function CourseStudio() {
         rightSidebarOpen={rightSidebarOpen}
         error={error}
         tabs={lessonTabs}
+        accountMenu={<AccountMenu compact ariaLabel="开放课堂用户头像" />}
         selectionPopover={selectionPopoverNode}
         onReturnHome={() => void handleReturnHome()}
         onTopCollapsedChange={setTopCollapsed}
@@ -793,6 +795,7 @@ export function CourseStudio() {
       rightSidebarOpen={rightSidebarOpen}
       error={error}
       tabs={lessonTabs}
+      accountMenu={<AccountMenu compact ariaLabel="开放课堂用户头像" />}
       selectionPopover={selectionPopoverNode}
       onReturnHome={() => void handleReturnHome()}
       onTopCollapsedChange={setTopCollapsed}

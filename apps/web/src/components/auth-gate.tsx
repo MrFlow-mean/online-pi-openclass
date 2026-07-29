@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { LoaderCircle, ShieldCheck } from "lucide-react";
 
+import { AuthSessionProvider } from "@/contexts/auth-session-context";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 
 import { api, clearAuthToken } from "@/lib/api";
@@ -12,6 +13,7 @@ import type { UserView } from "@/types";
 
 type AuthGateProps = {
   adminOnly?: boolean;
+  allowGuest?: boolean;
   children: ReactNode;
 };
 
@@ -23,7 +25,11 @@ function loginHref() {
   return `/login?next=${encodeURIComponent(next || "/")}`;
 }
 
-export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
+export function AuthGate({
+  adminOnly = false,
+  allowGuest = false,
+  children,
+}: AuthGateProps) {
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
   const a = txt.auth;
@@ -44,6 +50,10 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
           setError(a.noAdminPermission);
           return;
         }
+        if (!allowGuest && currentUser.role === "guest") {
+          router.replace("/studio");
+          return;
+        }
         setUser(currentUser);
       } catch {
         clearAuthToken();
@@ -62,7 +72,7 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
     return () => {
       disposed = true;
     };
-  }, [adminOnly, router, a.noAdminPermission]);
+  }, [adminOnly, allowGuest, router, a.noAdminPermission]);
 
   if (error) {
     return (
@@ -84,5 +94,5 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
     );
   }
 
-  return <>{children}</>;
+  return <AuthSessionProvider user={user}>{children}</AuthSessionProvider>;
 }

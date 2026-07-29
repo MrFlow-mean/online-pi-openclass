@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import { resolve } from "node:path";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8110";
+const ROOT_DIR = resolve(process.cwd(), "../..");
+const E2E_DATABASE_PATH = resolve(os.tmpdir(), "openclass-e2e/openclass.sqlite3");
 
 test.beforeEach(async ({ page }) => {
   const textModel = {
@@ -50,7 +55,7 @@ test.beforeEach(async ({ page }) => {
 async function enterAsGuest(page: Page, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
   await page.getByRole("button", { name: /游客登录/ }).click();
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  await expect(page).toHaveURL(/\/studio$/);
 }
 
 async function enterAsGuestThroughApi(page: Page) {
@@ -63,19 +68,61 @@ async function enterAsGuestThroughApi(page: Page) {
     window.localStorage.setItem("openclass.connected-guest.auth.token", token);
     document.cookie = `openclass.guest.auth.token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
   }, session.token);
-  await page.goto("/home");
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  await page.goto("/studio");
+  await expect(page).toHaveURL(/\/studio$/);
 }
 
 async function createPackageFromHome(page: Page, title: string) {
-  await page.getByLabel("添加课程包").click();
-  await page.getByLabel("课程包名称").fill(title);
-  const createPackageResponse = page.waitForResponse(
-    (response) => response.url().endsWith("/api/packages") && response.request().method() === "POST"
+  const guestToken = await page.evaluate(() =>
+    window.sessionStorage.getItem("openclass.guest.auth.token")
   );
-  await page.getByLabel("确认").click();
-  await createPackageResponse;
-  await expect(page.locator("[data-package-selection-root]").filter({ hasText: title }).first()).toBeVisible();
+  const response = await page.request.post(`${API_BASE_URL}/api/packages`, {
+    headers: guestToken ? { Authorization: `Bearer ${guestToken}` } : undefined,
+    data: { title, summary: "" },
+  });
+  expect(response.ok()).toBeTruthy();
+  await page.goto("/studio");
+  await expect(page).toHaveURL(/\/studio$/);
+}
+
+async function enterAsMemberThroughApi(page: Page) {
+  const guestResponse = await page.request.post(`${API_BASE_URL}/api/auth/guest`);
+  expect(guestResponse.ok()).toBeTruthy();
+  const guestSession = (await guestResponse.json()) as { token: string };
+  const pythonExecutable = process.env.OPENCLASS_E2E_PYTHON
+    ? resolve(ROOT_DIR, process.env.OPENCLASS_E2E_PYTHON)
+    : resolve(ROOT_DIR, ".venv/bin/python");
+  const subject = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const script = [
+    "import sys",
+    "from pathlib import Path",
+    "sys.path.insert(0, str(Path.cwd() / 'apps/api'))",
+    "from app.services.auth_service import AuthService, OAuthProfile",
+    "auth = AuthService(Path(sys.argv[1]))",
+    "token, _ = auth.login_with_oauth(",
+    "    OAuthProfile(provider='e2e', subject=sys.argv[3], email=f'{sys.argv[3]}@example.com', display_name='E2E member'),",
+    "    guest_session_token=sys.argv[2],",
+    ")",
+    "print(token)",
+  ].join("\n");
+  const memberToken = execFileSync(
+    pythonExecutable,
+    ["-c", script, E2E_DATABASE_PATH, guestSession.token, subject],
+    { cwd: ROOT_DIR, encoding: "utf8" }
+  ).trim();
+  await page.context().addCookies([
+    {
+      name: "openclass.auth.token",
+      value: memberToken,
+      domain: "127.0.0.1",
+      path: "/",
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ]);
+  await page.goto("/");
+  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  return memberToken;
 }
 
 async function nameNextGeneratedLessonForTest(page: Page, title: string) {
@@ -158,24 +205,15 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("引用 1 · 对话引用")).toBeVisible();
   await expect(page.getByText(/历史节点：Auto Save 类型：Document/)).toBeVisible();
 
-  const shareHref = await historyNode.getByRole("link", { name: "分享到社区" }).getAttribute("href");
-  expect(shareHref).toBeTruthy();
-  const shareUrl = new URL(shareHref!, "http://localhost");
-  expect(shareUrl.searchParams.get("reference")).toBe("history_node");
-  expect(shareUrl.searchParams.get("lesson_id")).toBeTruthy();
-  expect(shareUrl.searchParams.get("history_node")).toBeTruthy();
-  expect(shareUrl.searchParams.has("prefill")).toBe(false);
-  expect(shareHref).not.toContain(documentText);
+  await expect(historyNode.getByRole("link", { name: "分享到社区" })).toHaveCount(0);
+  await expect(page.getByText("课程协作", { exact: true })).toHaveCount(0);
 });
 
 test("sets standalone lessons and course packages to public or private", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `可见性单课 ${unique}`;
   const packageTitle = `可见性课程包 ${unique}`;
-  await enterAsGuestThroughApi(page);
-
-  const token = await page.evaluate(() => window.sessionStorage.getItem("openclass.guest.auth.token"));
-  expect(token).toBeTruthy();
+  const token = await enterAsMemberThroughApi(page);
   const generated = await page.request.post(`${API_BASE_URL}/api/lessons/generate`, {
     headers: { Authorization: `Bearer ${token}` },
     data: { topic: lessonTitle, start_blank: true },
@@ -303,11 +341,9 @@ test("sets standalone lessons and course packages to public or private", async (
   await expect(page.getByText("All rights reserved.")).toBeVisible();
 
   await createPackageFromHome(page, packageTitle);
-  await page.locator("[data-package-selection-root]").filter({ hasText: packageTitle }).first().click();
   const packagedLessonTitle = `课程包内课节 ${unique}`;
   await createLessonFromEmptyStudio(page, packagedLessonTitle);
-  const packageContext = await page.evaluate(async ({ apiBase, expectedTitle }) => {
-    const authToken = window.sessionStorage.getItem("openclass.guest.auth.token");
+  const packageContext = await page.evaluate(async ({ apiBase, expectedTitle, authToken }) => {
     const response = await fetch(`${apiBase}/api/workspace`, {
       headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
     });
@@ -326,7 +362,7 @@ test("sets standalone lessons and course packages to public or private", async (
       lessonId: packagedLesson.id,
       historyNodeId: packagedLesson.history_graph.commits[0]?.id,
     };
-  }, { apiBase: API_BASE_URL, expectedTitle: packageTitle });
+  }, { apiBase: API_BASE_URL, expectedTitle: packageTitle, authToken: token });
   expect(packageContext.historyNodeId).toBeTruthy();
 
   await page.goto("/home");
@@ -1502,7 +1538,7 @@ test("places the create control first and orders lesson tabs from newest to olde
   await expect(lessonTabs.nth(2)).toHaveAccessibleName(`${firstTitle} main`);
 });
 
-test("uses the top-right profile avatar as the only account menu on the home page", async ({ page }) => {
+test("uses the top-right profile avatar as the only account menu in Studio", async ({ page }) => {
   await enterAsGuest(page);
 
   const accountMenu = page.locator("[data-account-menu-root]");
@@ -1518,10 +1554,7 @@ test("manages standalone lessons from the profile project list", async ({ page }
   const lessonTitle = `个人项目管理课程 ${unique}`;
   const renamedLessonTitle = `${lessonTitle} 已重命名`;
   const targetPackageTitle = `个人项目目标课程包 ${unique}`;
-  await enterAsGuestThroughApi(page);
-
-  const token = await page.evaluate(() => window.sessionStorage.getItem("openclass.guest.auth.token"));
-  expect(token).toBeTruthy();
+  const token = await enterAsMemberThroughApi(page);
   const authorization = { Authorization: `Bearer ${token}` };
   const generated = await page.request.post(`${API_BASE_URL}/api/lessons/generate`, {
     headers: authorization,
@@ -1631,7 +1664,7 @@ test("sends a contact message from the home page without opening a mail client",
 });
 
 test("collapses course package and standalone lesson lists independently", async ({ page }) => {
-  await enterAsGuest(page);
+  await enterAsMemberThroughApi(page);
 
   const packageList = page.locator("#learning-home-course-packages");
   const standaloneList = page.locator("#learning-home-standalone-lessons");
@@ -1655,7 +1688,7 @@ test("collapses course package and standalone lesson lists independently", async
 test("exports and imports a RIDOC file as a standalone lesson", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `主页课程包入口 ${unique}`;
-  await enterAsGuest(page);
+  await enterAsMemberThroughApi(page);
   await page.getByLabel("添加单独课程").click();
   await expect(page.getByRole("menuitem", { name: "导入课程文件" })).toBeVisible();
   await nameNextGeneratedLessonForTest(page, lessonTitle);
@@ -1699,7 +1732,7 @@ test("renames a standalone lesson from its actions menu", async ({ page }) => {
   const originalTitle = `待重命名课程 ${unique}`;
   const renamedTitle = `已重命名课程 ${unique}`;
 
-  await enterAsGuest(page);
+  await enterAsMemberThroughApi(page);
   await page.getByLabel("添加单独课程").click();
   await nameNextGeneratedLessonForTest(page, originalTitle);
   await page.getByRole("menuitem", { name: "新建课程" }).click();
@@ -1879,7 +1912,7 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   const unique = Date.now();
   const firstVersion = `RIDOC 历史版本一 ${unique}`;
   const secondVersion = `RIDOC 历史版本二 ${unique}`;
-  await enterAsGuest(page);
+  await enterAsMemberThroughApi(page);
   await page.getByLabel(/进入单独课程工作台|添加单独课程/).click();
   const createLessonMenuItem = page.getByRole("menuitem", { name: "新建课程" });
   if (await createLessonMenuItem.isVisible()) {

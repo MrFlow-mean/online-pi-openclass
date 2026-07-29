@@ -72,6 +72,14 @@ from app.services.workspace_state import (
 router = APIRouter()
 
 
+def _require_registered_project_publisher(
+    user: UserView,
+    visibility: Literal["private", "public"],
+) -> None:
+    if visibility == "public" and user.role == "guest":
+        raise HTTPException(status_code=403, detail="请先注册或登录后再公开项目")
+
+
 def _public_lesson_view(lesson) -> PublicLessonView:
     return PublicLessonView(
         id=lesson.id,
@@ -165,6 +173,8 @@ def update_package(
     request: UpdatePackageRequest,
     user: UserView = Depends(current_user),
 ) -> WorkspaceStateView:
+    if request.visibility is not None:
+        _require_registered_project_publisher(user, request.visibility)
     workspace, revision = load_workspace_for_user_with_revision(user.id)
     package = get_package(workspace, package_id)
 
@@ -201,6 +211,7 @@ def update_lesson_visibility(
     request: UpdateVisibilityRequest,
     user: UserView = Depends(current_user),
 ) -> WorkspaceStateView:
+    _require_registered_project_publisher(user, request.visibility)
     workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     if not workspace.packages or package.id != workspace.packages[0].id:
@@ -228,6 +239,7 @@ def stream_lesson_visibility_update(
 ) -> StreamingResponse:
     if request.visibility != "public":
         raise HTTPException(status_code=400, detail="Streaming review is only used when publishing")
+    _require_registered_project_publisher(user, request.visibility)
 
     workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)

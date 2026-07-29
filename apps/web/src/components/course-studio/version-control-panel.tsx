@@ -33,6 +33,7 @@ import {
   type HistoryNodeKind,
 } from "@/components/course-studio/history-graph-utils";
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
+import { useAuthenticatedUser } from "@/contexts/auth-session-context";
 import { api } from "@/lib/api";
 import {
   LessonPackageControls,
@@ -340,6 +341,7 @@ function HistoryGraphRowItem({
   onCreateBranchFromCommit,
   onReferenceHistoryNode,
   onSwitchBranch,
+  canUseCommunity,
 }: {
   row: HistoryGraphRow;
   lanes: HistoryGraphLane[];
@@ -350,6 +352,7 @@ function HistoryGraphRowItem({
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onReferenceHistoryNode: (selection: SelectionRef) => void;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  canUseCommunity: boolean;
 }) {
   return (
     <div
@@ -411,17 +414,19 @@ function HistoryGraphRowItem({
           >
             <Quote className="h-3.5 w-3.5" />
           </button>
-          <a
-            href={historyNodeCommunityShareHref(activeLesson, row.commit)}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="分享到社区"
-            title="分享到社区"
-            onClick={(event) => event.stopPropagation()}
-            className="inline-flex h-6 w-6 items-center justify-center rounded border border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-          </a>
+          {canUseCommunity ? (
+            <a
+              href={historyNodeCommunityShareHref(activeLesson, row.commit)}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="分享到社区"
+              title="分享到社区"
+              onClick={(event) => event.stopPropagation()}
+              className="inline-flex h-6 w-6 items-center justify-center rounded border border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+            </a>
+          ) : null}
           <button
             type="button"
             aria-label="Restore"
@@ -492,6 +497,8 @@ export function VersionControlPanel({
   onMergeBranch,
   lessonPackageControls,
 }: VersionControlPanelProps) {
+  const currentUser = useAuthenticatedUser();
+  const canUseCommunity = currentUser.role !== "guest";
   const learningRequirementDisplay = activeRequirements
     ? buildLearningRequirementDisplay({ requirementSheet: activeRequirements })
     : null;
@@ -501,7 +508,7 @@ export function VersionControlPanel({
     <div className="space-y-8">
       <LessonPackageControls {...lessonPackageControls} />
 
-      <LessonContributionSection activeLesson={activeLesson} />
+      {canUseCommunity ? <LessonContributionSection activeLesson={activeLesson} /> : null}
 
       <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <div className="flex items-center justify-between gap-3">
@@ -577,6 +584,7 @@ export function VersionControlPanel({
               onCreateBranchFromCommit={onCreateBranchFromCommit}
               onReferenceHistoryNode={onReferenceHistoryNode}
               onSwitchBranch={onSwitchBranch}
+              canUseCommunity={canUseCommunity}
             />
           ))}
         </div>

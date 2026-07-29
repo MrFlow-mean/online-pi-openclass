@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function StudioPage() {
   return (
-    <AuthGate>
+    <AuthGate allowGuest>
       <CourseStudio />
     </AuthGate>
   );
