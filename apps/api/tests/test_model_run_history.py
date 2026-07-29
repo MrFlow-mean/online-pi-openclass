@@ -12,6 +12,7 @@ from app.routers import chat
 from app.services import codex_live_sideband, pi_agent_runtime
 from app.services.ai_logging import AIUsageLogger, ai_log_context
 from app.services.codex_live_sideband import CodexLiveSession
+from app.services.codex_live_task_lifecycle import CodexLiveTaskCoordinator
 from app.services.pi_agent_runtime import PiTextClient
 
 
@@ -173,24 +174,28 @@ def test_codex_live_typed_input_is_queued_with_a_correlated_audit_event(
                 return {"type": "input_text", "text": "继续这个任务"}
             raise WebSocketDisconnect()
 
-    async def exercise() -> tuple[str, str, bool]:
-        queue: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue()
+        async def send_json(self, _payload):
+            return None
+
+    async def exercise():
+        coordinator = CodexLiveTaskCoordinator()
         with pytest.raises(WebSocketDisconnect):
             await codex_live_sideband._handle_client_messages(  # noqa: SLF001
                 Socket(),
                 object(),
                 session,
                 asyncio.Lock(),
-                queue,
+                asyncio.Lock(),
+                coordinator,
             )
-        return queue.get_nowait()
+        return coordinator.queue.get_nowait()
 
-    delegation_id, prompt, provider_delegation = asyncio.run(exercise())
-    assert prompt == "继续这个任务"
-    assert provider_delegation is False
+    queued_task = asyncio.run(exercise())
+    assert queued_task.prompt == "继续这个任务"
+    assert queued_task.provider_delegation is False
     history = logger.read_lesson_events(lesson_id="lesson_a")
     queued = history["events"][-1]["payload"]
-    assert queued["run_id"] == delegation_id
+    assert queued["run_id"] == queued_task.delegation_id
     assert queued["parent_run_id"] == "realtime_a"
     assert queued["event"] == "queued"
     assert queued["input"] == {"text": "继续这个任务"}

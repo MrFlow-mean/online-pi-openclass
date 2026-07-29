@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
-from app.models import ChatRequest, RealtimeToolCallRequest, RealtimeToolCallResponse, SelectionRef
+from app.models import AgentActivityEvent, ChatRequest, RealtimeToolCallRequest, RealtimeToolCallResponse, SelectionRef
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
 from app.services.chat.turn_context import board_state
@@ -204,6 +204,9 @@ def execute_realtime_delegation(
     client_session_id: str,
     delegation_id: str,
     selection: SelectionRef | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> RealtimeToolCallResponse:
     """Run a Codex Live client delegation through the normal Chatbot workflow."""
     normalized = message.strip()
@@ -219,6 +222,9 @@ def execute_realtime_delegation(
             lesson_id,
             ChatRequest(message=normalized, selection=selection),
             user_id=user_id,
+            on_delta=on_delta,
+            on_agent_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
             commit_metadata={
                 "chat_visibility": "visible",
                 "interaction_channel": "realtime_delegation",

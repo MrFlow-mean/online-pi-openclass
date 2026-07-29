@@ -14,6 +14,11 @@ from app.models import (
     SelectionRef,
 )
 from app.services import ai_model_catalog, chat_service, codex_live_sideband, openai_realtime, workspace_state
+from app.services.codex_live_task_lifecycle import (
+    CodexLiveTask,
+    CodexLiveTaskCoordinator,
+    task_texts_match,
+)
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.realtime_board_context import read_realtime_board_context
@@ -379,7 +384,7 @@ def test_codex_live_typed_input_enters_chatbot_queue() -> None:
             raise AssertionError("typed learner input must enter Chatbot before provider context")
 
     async def _exercise():
-        queue = asyncio.Queue()
+        coordinator = CodexLiveTaskCoordinator()
         session = codex_live_sideband.CodexLiveSession(
             call_id="rtc_typed",
             lesson_id="lesson_typed",
@@ -395,18 +400,70 @@ def test_codex_live_typed_input_enters_chatbot_queue() -> None:
                 _FakeUpstream(),
                 session,
                 asyncio.Lock(),
-                queue,
+                asyncio.Lock(),
+                coordinator,
             )
         )
-        delegation_id, prompt, provider_delegation = await asyncio.wait_for(queue.get(), timeout=1)
+        queued = await asyncio.wait_for(coordinator.queue.get(), timeout=1)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        return delegation_id, prompt, provider_delegation
+        return queued
 
-    delegation_id, prompt, provider_delegation = asyncio.run(_exercise())
-    assert delegation_id.startswith("typed_delegation_")
-    assert prompt == "读取当前板书"
-    assert provider_delegation is False
+    queued = asyncio.run(_exercise())
+    assert queued.delegation_id.startswith("typed_delegation_")
+    assert queued.prompt == "读取当前板书"
+    assert queued.provider_delegation is False
+
+
+def test_codex_live_task_matching_deduplicates_repeated_work_but_not_distinct_actions() -> None:
+    assert task_texts_match("读取当前板书，然后补充一段。", "读取当前板书然后补充一段")
+    assert not task_texts_match("读取第一段", "读取第二段")
+    assert not task_texts_match("解释当前内容", "把当前内容写入板书")
+
+
+def test_codex_live_running_input_waits_for_explicit_lifecycle_action() -> None:
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        first = CodexLiveTask("task_1", "读取当前板书", True)
+        await coordinator.submit(first)
+        await coordinator.begin(await coordinator.queue.get())
+
+        pending = await coordinator.submit(CodexLiveTask("task_2", "补充一个例子", True))
+        duplicate = await coordinator.submit(CodexLiveTask("task_3", "读取当前板书。", True))
+        resolved = await coordinator.resolve("task_2", "queue")
+        return coordinator, pending, duplicate, resolved
+
+    coordinator, pending, duplicate, resolved = asyncio.run(_exercise())
+    assert pending.kind == "pending"
+    assert duplicate.kind == "duplicate"
+    assert duplicate.duplicate_of == "task_1"
+    assert resolved is not None and resolved.kind == "queued"
+    assert coordinator.snapshot() == {
+        "running_count": 1,
+        "queued_count": 1,
+        "pending_count": 0,
+        "active_delegation_id": "task_1",
+    }
+
+
+def test_codex_live_replace_cancels_active_and_clears_older_waiting_work() -> None:
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        first = CodexLiveTask("task_1", "处理当前任务", True)
+        await coordinator.submit(first)
+        active = await coordinator.queue.get()
+        cancel_event = await coordinator.begin(active)
+        await coordinator.submit(CodexLiveTask("task_2", "稍后处理另一项", True, action="queue"))
+        replacement = CodexLiveTask("task_3", "改为处理新任务", True, action="replace")
+        decision = await coordinator.submit(replacement)
+        next_task = coordinator.queue.get_nowait()
+        return cancel_event.is_set(), decision, next_task, coordinator
+
+    cancelled, decision, next_task, coordinator = asyncio.run(_exercise())
+    assert cancelled is True
+    assert decision.kind == "queued"
+    assert next_task.delegation_id == "task_3"
+    assert coordinator._tasks["task_2"].status == "dismissed"  # noqa: SLF001
 
 
 def test_codex_live_typed_result_uses_speakable_session_context() -> None:
@@ -446,7 +503,7 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
     package = workspace_state.package_view_for_lesson(workspace, workspace.packages[0], lesson.id)
     captured = {}
 
-    def _fake_chat(lesson_id, request, *, user_id, commit_metadata=None):
+    def _fake_chat(lesson_id, request, *, user_id, commit_metadata=None, **_kwargs):
         captured.update(
             lesson_id=lesson_id,
             message=request.message,
