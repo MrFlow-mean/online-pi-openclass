@@ -108,7 +108,7 @@ export function CollaborativeLessonEditor({
     }
   }
 
-  const backHref = `/profile?tab=collaboration&project=${encodeURIComponent(`${projectKind}:${projectId}`)}`;
+  const backHref = "/profile?tab=repositories";
 
   if (loading) {
     return <main className="flex min-h-screen items-center justify-center gap-2 bg-[#f7f5ef] text-sm text-stone-500"><LoaderCircle className="h-5 w-5 animate-spin" />正在载入协作编辑器…</main>;

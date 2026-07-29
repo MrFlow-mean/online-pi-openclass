@@ -188,30 +188,20 @@ test("lists received and submitted lesson contributions", async ({ page }) => {
   await expect(page.getByText("当前筛选下还没有课程改进方案。")).toBeVisible();
 });
 
-test("keeps collaboration in the selected profile repository instead of the home navigation", async ({ page }) => {
+test("keeps the profile free of the removed collaboration panel", async ({ page }) => {
   await authenticate(page);
   await page.route("**/api/workspace", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(workspaceWithProject()) })
-  );
-  await page.route("**/api/contributions?role=received", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([contribution()]) })
-  );
-  await page.route("**/api/contributions?role=submitted", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
   );
 
   await page.goto("/");
   await expect(page.getByRole("link", { name: "打开课程协作" })).toHaveCount(0);
 
   await page.goto("/profile?tab=collaboration");
-  await expect(page.getByRole("button", { name: "协作" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "项目协作" })).toBeVisible();
-  await page.getByRole("button", { name: "管理协作" }).click();
-
-  await expect(page).toHaveURL(/tab=collaboration&project=lesson%3Alesson_source/);
-  await expect(page.getByRole("heading", { name: "公开课程" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /补充关键背景/ })).toBeVisible();
-  await expect(page.getByText("1 个待处理")).toBeVisible();
+  await expect(page).toHaveURL(/tab=repositories/);
+  await expect(page.getByRole("button", { name: "协作" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "项目协作" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /打开 .+ 的协作管理/ })).toHaveCount(0);
 });
 
 test("shows a public diff without exposing write controls", async ({ page }) => {
