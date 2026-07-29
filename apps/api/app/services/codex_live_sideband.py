@@ -12,7 +12,7 @@ from urllib.parse import urlparse, urlunparse
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection, connect
 
-from app.models import SelectionRef
+from app.models import SelectionRef, new_id
 from app.services.ai_logging import ai_usage_logger
 from app.services.openai_realtime import (
     _codex_realtime_proxy_api_key,
@@ -196,6 +196,7 @@ async def _send_context(
     *,
     text: str,
     delegation_id: str | None = None,
+    channel: str | None = None,
 ) -> None:
     event_type = "delegation.context.append" if delegation_id else "session.context.append"
     for chunk in chunk_codex_live_text(text):
@@ -205,6 +206,9 @@ async def _send_context(
         }
         if delegation_id:
             event["delegation_item_id"] = delegation_id
+        if channel:
+            event["channel"] = channel
+        elif delegation_id:
             event["channel"] = "speakable"
         async with send_lock:
             await upstream.send(json.dumps(event, ensure_ascii=False))
@@ -215,6 +219,7 @@ async def _handle_client_messages(
     upstream: ClientConnection,
     session: CodexLiveSession,
     send_lock: asyncio.Lock,
+    delegation_queue: asyncio.Queue[tuple[str, str, bool]],
 ) -> None:
     while True:
         payload = await websocket.receive_json()
@@ -229,7 +234,7 @@ async def _handle_client_messages(
         elif payload.get("type") == "input_text":
             text = str(payload.get("text") or "").strip()
             if text:
-                await _send_context(upstream, send_lock, text=text)
+                await delegation_queue.put((new_id("typed_delegation"), text, False))
 
 
 async def _handle_delegations(
@@ -237,10 +242,10 @@ async def _handle_delegations(
     upstream: ClientConnection,
     session: CodexLiveSession,
     send_lock: asyncio.Lock,
-    queue: asyncio.Queue[tuple[str, str]],
+    queue: asyncio.Queue[tuple[str, str, bool]],
 ) -> None:
     while True:
-        delegation_id, prompt = await queue.get()
+        delegation_id, prompt, provider_delegation = await queue.get()
         try:
             await websocket.send_json(
                 {
@@ -270,7 +275,8 @@ async def _handle_delegations(
                     upstream,
                     send_lock,
                     text=response_text,
-                    delegation_id=delegation_id,
+                    delegation_id=delegation_id if provider_delegation else None,
+                    channel="speakable",
                 )
             else:
                 await websocket.send_json(
@@ -287,7 +293,7 @@ async def _handle_delegations(
 async def _handle_upstream_messages(
     websocket: WebSocket,
     upstream: ClientConnection,
-    delegation_queue: asyncio.Queue[tuple[str, str]],
+    delegation_queue: asyncio.Queue[tuple[str, str, bool]],
 ) -> None:
     async for raw_payload in upstream:
         payload = raw_payload.decode("utf-8") if isinstance(raw_payload, bytes) else raw_payload
@@ -312,7 +318,7 @@ async def _handle_upstream_messages(
                 }
             )
         elif kind == "delegation":
-            await delegation_queue.put((event["id"], event["prompt"]))
+            await delegation_queue.put((event["id"], event["prompt"], True))
         elif kind == "error":
             await websocket.send_json(
                 {"type": "codex_live.error", "message": event["message"]}
@@ -340,9 +346,15 @@ async def bridge_codex_live_sideband(websocket: WebSocket, session: CodexLiveSes
             max_size=None,
         ) as upstream:
             send_lock = asyncio.Lock()
-            delegation_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+            delegation_queue: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue()
             client_task = asyncio.create_task(
-                _handle_client_messages(websocket, upstream, session, send_lock)
+                _handle_client_messages(
+                    websocket,
+                    upstream,
+                    session,
+                    send_lock,
+                    delegation_queue,
+                )
             )
             delegation_task = asyncio.create_task(
                 _handle_delegations(

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -359,6 +360,83 @@ def test_codex_live_sideband_session_is_bound_and_single_claim() -> None:
         codex_live_sideband.release_codex_live_session("rtc_bound_session")
 
 
+def test_codex_live_typed_input_enters_chatbot_queue() -> None:
+    class _FakeWebSocket:
+        def __init__(self):
+            self.calls = 0
+
+        async def receive_json(self):
+            self.calls += 1
+            if self.calls == 1:
+                return {"type": "input_text", "text": "读取当前板书"}
+            await asyncio.Future()
+
+        async def send_json(self, _payload):
+            return None
+
+    class _FakeUpstream:
+        async def send(self, _payload):
+            raise AssertionError("typed learner input must enter Chatbot before provider context")
+
+    async def _exercise():
+        queue = asyncio.Queue()
+        session = codex_live_sideband.CodexLiveSession(
+            call_id="rtc_typed",
+            lesson_id="lesson_typed",
+            user_id=TEST_USER_ID,
+            client_session_id="client_typed",
+            transport_session_id="transport_typed",
+            selection=None,
+            created_at=0,
+        )
+        task = asyncio.create_task(
+            codex_live_sideband._handle_client_messages(
+                _FakeWebSocket(),
+                _FakeUpstream(),
+                session,
+                asyncio.Lock(),
+                queue,
+            )
+        )
+        delegation_id, prompt, provider_delegation = await asyncio.wait_for(queue.get(), timeout=1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return delegation_id, prompt, provider_delegation
+
+    delegation_id, prompt, provider_delegation = asyncio.run(_exercise())
+    assert delegation_id.startswith("typed_delegation_")
+    assert prompt == "读取当前板书"
+    assert provider_delegation is False
+
+
+def test_codex_live_typed_result_uses_speakable_session_context() -> None:
+    class _FakeUpstream:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+    async def _exercise():
+        upstream = _FakeUpstream()
+        await codex_live_sideband._send_context(
+            upstream,
+            asyncio.Lock(),
+            text="工作流返回内容",
+            channel="speakable",
+        )
+        return upstream.sent
+
+    sent = asyncio.run(_exercise())
+    assert sent == [
+        {
+            "type": "session.context.append",
+            "channel": "speakable",
+            "content": [{"type": "input_text", "text": "工作流返回内容"}],
+        }
+    ]
+
+
 def test_codex_live_delegation_runs_normal_chatbot_workflow(
     monkeypatch,
     isolated_store,
@@ -409,7 +487,7 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
         "selection": selection,
         "user_id": TEST_USER_ID,
         "commit_metadata": {
-            "chat_visibility": "hidden",
+            "chat_visibility": "visible",
             "interaction_channel": "realtime_delegation",
             "realtime_client_session_id": "codex_session",
             "realtime_delegation_id": "delegation_1",

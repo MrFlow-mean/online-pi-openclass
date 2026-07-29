@@ -220,7 +220,7 @@ def execute_realtime_delegation(
             ChatRequest(message=normalized, selection=selection),
             user_id=user_id,
             commit_metadata={
-                "chat_visibility": "hidden",
+                "chat_visibility": "visible",
                 "interaction_channel": "realtime_delegation",
                 "realtime_client_session_id": client_session_id,
                 "realtime_delegation_id": delegation_id,

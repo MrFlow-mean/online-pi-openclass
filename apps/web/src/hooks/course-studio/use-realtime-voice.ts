@@ -407,10 +407,12 @@ export function useRealtimeVoice({
     }
     const turnId = currentTurnId();
     const messageId = `realtime:${turnId}:user`;
-    enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized, {
-      clientEventId: messageId,
-      turnId,
-    });
+    if (!openAIClientDelegationEnabledRef.current) {
+      enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized, {
+        clientEventId: messageId,
+        turnId,
+      });
+    }
     onTranscriptUpdate({
       lessonId,
       turnId,
@@ -705,10 +707,6 @@ export function useRealtimeVoice({
               } else if (transcript) {
                 const turnId = currentTurnId();
                 const messageId = currentAssistantMessageId();
-                enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, transcript, {
-                  clientEventId: messageId,
-                  turnId,
-                });
                 onTranscriptUpdate({
                   lessonId,
                   turnId,
@@ -1090,10 +1088,12 @@ export function useRealtimeVoice({
     const turnId = beginRealtimeTurn();
     const messageId = `realtime:${turnId}:user`;
     onTranscriptUpdate({ lessonId, turnId, messageId, role: "user", text: normalized, final: true });
-    enqueueRealtimeLogEvent(lessonId, "user", "conversation.item.input_text", normalized, {
-      clientEventId: messageId,
-      turnId,
-    });
+    if (!usesClientDelegation) {
+      enqueueRealtimeLogEvent(lessonId, "user", "conversation.item.input_text", normalized, {
+        clientEventId: messageId,
+        turnId,
+      });
+    }
     if (usesClientDelegation) {
       codexLiveSocket?.send(JSON.stringify({ type: "input_text", text: normalized }));
       setVoiceStatusText("Codex Live 正在处理文字消息");
