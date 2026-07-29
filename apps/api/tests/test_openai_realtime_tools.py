@@ -234,7 +234,7 @@ def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isola
     assert response.answer_sdp == "codex-answer-sdp"
     assert response.provider == "openai_codex"
     assert response.model == "gpt-live-1-codex"
-    assert response.tools_enabled is True
+    assert response.tools_enabled is False
     assert response.call_id == "rtc_codex_call"
     assert captured["url"] == "http://127.0.0.1:8317/v1/live"
     assert captured["headers"]["Authorization"] == "Bearer proxy-api-key"
@@ -245,21 +245,11 @@ def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isola
     assert captured["json"]["sdp"] == "v=0-codex-offer"
     assert captured["json"]["session"]["model"] == "gpt-live-1-codex"
     assert "OpenClass Chatbot" in captured["json"]["session"]["instructions"]
-    assert captured["json"]["session"]["tool_choice"] == "auto"
-    assert {tool["name"] for tool in captured["json"]["session"]["tools"]} == {
-        "read_board_context",
-        "run_chatbot_workflow",
-    }
-    assert set(captured["json"]["session"]) == {
-        "model",
-        "instructions",
-        "tools",
-        "tool_choice",
-    }
+    assert set(captured["json"]["session"]) == {"model", "instructions"}
 
 
-def test_codex_live_respects_shared_realtime_tools_switch(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_REALTIME_TOOLS_ENABLED", "false")
+def test_codex_live_omits_unsupported_avas_tool_parameters(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_TOOLS_ENABLED", "true")
 
     config = openai_realtime.build_openai_realtime_session_config(
         lesson_title="Any lesson",

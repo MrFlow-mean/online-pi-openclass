@@ -57,6 +57,18 @@ class RealtimeSessionConfig:
     session_payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RealtimeTransportCapabilities:
+    supports_session_tools: bool
+
+
+REALTIME_TRANSPORT_CAPABILITIES = {
+    "openai": RealtimeTransportCapabilities(supports_session_tools=True),
+    # The Codex Live AVAS session_data contract currently rejects tool_choice.
+    "openai_codex": RealtimeTransportCapabilities(supports_session_tools=False),
+}
+
+
 def _env_truthy(name: str, *, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -168,7 +180,11 @@ def build_openai_realtime_session_config(
     )
     voice = (os.getenv("OPENAI_REALTIME_VOICE") or "marin").strip()
     client_session_id = request.client_session_id or new_id("realtime")
-    tools_enabled = _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
+    transport_capabilities = REALTIME_TRANSPORT_CAPABILITIES[selected.provider]
+    tools_enabled = (
+        transport_capabilities.supports_session_tools
+        and _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
+    )
     session_payload: dict[str, Any] = {
         "type": "realtime",
         "model": model,
