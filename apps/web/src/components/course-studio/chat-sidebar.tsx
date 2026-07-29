@@ -1,11 +1,9 @@
 import clsx from "clsx";
 import {
   AudioLines,
-  BrainCircuit,
   Check,
   ChevronDown,
   LoaderCircle,
-  MessageSquare,
   PencilLine,
   Send,
   Square,
@@ -764,50 +762,6 @@ export function CourseStudioChatSidebar({
                 }
                 onError={onError}
               />
-              <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
-                <button
-                  type="button"
-                  aria-label="Ask Mode"
-                  disabled={interactionLocked}
-                  onClick={() =>
-                    onUpdateComposerState((current) => ({
-                      ...current,
-                      composerMode: "ask",
-                    }))
-                  }
-                  className={clsx(
-                    "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
-                    composerMode === "ask" && "bg-white text-black shadow-sm"
-                  )}
-                  title="Ask Mode"
-                >
-                  <MessageSquare className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Agent Edit Mode"
-                  disabled={interactionLocked}
-                  onClick={() => {
-                    onUpdateComposerState((current) => {
-                      const editSelection = (current.composerSelections ?? []).at(-1) ?? current.composerSelection;
-                      return {
-                        ...current,
-                        composerMode: "direct_edit",
-                        includeSelectionInPrompt: true,
-                        composerSelection: editSelection ?? null,
-                        composerSelections: editSelection ? [editSelection] : [],
-                      };
-                    });
-                  }}
-                  className={clsx(
-                    "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
-                    composerMode === "direct_edit" && "bg-white text-amber-700 shadow-sm"
-                  )}
-                  title="Agent Edit Mode"
-                >
-                  <BrainCircuit className="h-3.5 w-3.5" />
-                </button>
-              </div>
               {composerSelection && composerSelections.length ? (
                 <button
                   type="button"

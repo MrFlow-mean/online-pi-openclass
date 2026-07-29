@@ -193,6 +193,9 @@ test("creates a package and lesson, edits the document, and persists a version",
   await createPackageFromHome(page, `维护性测试课程包 ${unique}`);
   await createLessonFromEmptyStudio(page, lessonTitle);
 
+  await expect(page.getByRole("button", { name: "Ask Mode" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Agent Edit Mode" })).toHaveCount(0);
+
   await writeEditorTextAndWaitForSave(page, documentText);
   await openHistoryPanel(page);
 
