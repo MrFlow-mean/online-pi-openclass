@@ -8,6 +8,7 @@ from app.models import (
     UserView,
 )
 from app.routers.auth import current_user
+from app.services.ai_model_catalog import text_model_provider_enabled
 from app.services.pi_agent_runtime import (
     PI_PERSONAL_API_PROVIDERS,
     pi_personal_api_configured,
@@ -27,7 +28,10 @@ def _registered_user(user: UserView) -> None:
 
 def _provider(provider: str) -> str:
     normalized = provider.strip().lower().replace("_", "-")
-    if normalized not in PI_PERSONAL_API_PROVIDERS:
+    if (
+        normalized not in PI_PERSONAL_API_PROVIDERS
+        or not text_model_provider_enabled(normalized)
+    ):
         raise HTTPException(status_code=400, detail="该模型服务商暂不支持个人 API Key")
     return normalized
 
@@ -51,6 +55,7 @@ def list_model_credentials(
     return [
         _status(user=user, provider=provider)
         for provider in sorted(PI_PERSONAL_API_PROVIDERS)
+        if text_model_provider_enabled(provider)
     ]
 
 

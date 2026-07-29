@@ -98,3 +98,24 @@ def test_model_credentials_reject_unsupported_providers(
         assert "sk-openai-private" not in response.text
     finally:
         main_module.app.dependency_overrides.clear()
+
+
+def test_disabled_provider_is_not_listed_or_configurable(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_TEXT_MODEL_PROVIDERS", "openai_codex")
+    monkeypatch.setattr(pi_agent_runtime, "pi_runtime_root", lambda: tmp_path)
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: MEMBER
+    try:
+        client = TestClient(main_module.app)
+        assert client.get("/api/model-credentials").json() == []
+
+        response = client.put(
+            "/api/model-credentials/deepseek",
+            json={"api_key": "sk-disabled-provider"},
+        )
+        assert response.status_code == 400
+        assert "sk-disabled-provider" not in response.text
+    finally:
+        main_module.app.dependency_overrides.clear()

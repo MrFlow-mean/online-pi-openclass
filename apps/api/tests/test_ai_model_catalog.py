@@ -170,6 +170,43 @@ def test_catalog_disables_openai_options_until_pi_account_is_configured(monkeypa
     assert catalog.realtime[0].enabled is False
 
 
+def test_provider_policy_exposes_only_codex_models(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_TEXT_MODEL_PROVIDERS", "openai_codex")
+    monkeypatch.setenv("OPENCLASS_REALTIME_MODEL_PROVIDERS", "openai_codex")
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY", "proxy-key")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", TEST_USER_ID)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "server-shared-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-platform-key")
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_personal_api_configured",
+        lambda **_kwargs: True,
+    )
+
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+
+    assert {option.provider for option in catalog.text} == {"openai_codex"}
+    assert {option.provider for option in catalog.realtime} == {"openai_codex"}
+    assert catalog.defaults["text"].provider == "openai_codex"
+    assert catalog.defaults["realtime"].provider == "openai_codex"
+    with pytest.raises(RuntimeError, match="Unsupported text model provider"):
+        ai_model_catalog.resolve_text_model_selection(
+            AIModelSelection(
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                access_method="platform_credits",
+            ),
+            user_id=TEST_USER_ID,
+        )
+
+
 def test_catalog_enables_openai_realtime_with_backend_key_and_flag(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")

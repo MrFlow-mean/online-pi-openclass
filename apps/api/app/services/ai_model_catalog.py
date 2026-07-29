@@ -63,6 +63,37 @@ PI_OPENAI_CODEX_SERVICE_TIERS = (
         "description": "Faster processing with higher usage.",
     },
 )
+DEFAULT_TEXT_MODEL_PROVIDERS = frozenset({"openai_codex", "deepseek"})
+DEFAULT_REALTIME_MODEL_PROVIDERS = frozenset({"openai", "openai_codex"})
+
+
+def _enabled_model_providers(
+    env_name: str,
+    *,
+    defaults: frozenset[str],
+) -> frozenset[str]:
+    configured = os.getenv(env_name)
+    if configured is None:
+        return defaults
+    return frozenset(
+        item.strip().lower().replace("-", "_")
+        for item in configured.replace(",", " ").split()
+        if item.strip()
+    )
+
+
+def text_model_provider_enabled(provider: str) -> bool:
+    return provider.strip().lower().replace("-", "_") in _enabled_model_providers(
+        "OPENCLASS_TEXT_MODEL_PROVIDERS",
+        defaults=DEFAULT_TEXT_MODEL_PROVIDERS,
+    )
+
+
+def realtime_model_provider_enabled(provider: str) -> bool:
+    return provider.strip().lower().replace("-", "_") in _enabled_model_providers(
+        "OPENCLASS_REALTIME_MODEL_PROVIDERS",
+        defaults=DEFAULT_REALTIME_MODEL_PROVIDERS,
+    )
 
 
 def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
@@ -127,7 +158,11 @@ def resolve_text_model_selection(
 ) -> AIModelSelection:
     if selection is not None:
         selected_model = selection.model.strip()
-        if selection.provider in {"openai_codex", "deepseek"} and selected_model:
+        if (
+            selection.provider in {"openai_codex", "deepseek"}
+            and text_model_provider_enabled(selection.provider)
+            and selected_model
+        ):
             access_method = selection.access_method or (
                 "chatgpt_subscription"
                 if selection.provider == "openai_codex"
@@ -431,77 +466,70 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             service_tiers=_service_tiers(item),
         )
         for item in models
+        if text_model_provider_enabled("openai_codex")
     ]
-    deepseek_models = list(DEEPSEEK_CURATED_MODELS)
-    if not any(model == shared_deepseek.model for model, _label in deepseek_models):
-        deepseek_models.insert(0, (shared_deepseek.model, f"DeepSeek {shared_deepseek.model}"))
-    def platform_model_configured(model: str) -> bool:
-        if not openrouter_config.provisioning_enabled:
-            return shared_deepseek.configured
-        if not openrouter_config.active:
-            return False
-        try:
-            openrouter_config.resolve_model("deepseek", model)
-        except RuntimeError:
-            return False
-        return True
+    if text_model_provider_enabled("deepseek"):
+        deepseek_models = list(DEEPSEEK_CURATED_MODELS)
+        if not any(model == shared_deepseek.model for model, _label in deepseek_models):
+            deepseek_models.insert(0, (shared_deepseek.model, f"DeepSeek {shared_deepseek.model}"))
 
-    platform_default_configured = platform_model_configured(shared_deepseek.model)
-    deepseek_is_default = platform_default_configured and not pi_openai_configured
-    text_options.extend(
-        AIModelOption(
-            provider="deepseek",
-            model=model,
-            access_method="platform_credits",
-            label=label,
-            capability="text",
-            enabled=platform_model_configured(model),
-            configured=platform_model_configured(model),
-            default=deepseek_is_default and model == shared_deepseek.model,
+        def platform_model_configured(model: str) -> bool:
+            if not openrouter_config.provisioning_enabled:
+                return shared_deepseek.configured
+            if not openrouter_config.active:
+                return False
+            try:
+                openrouter_config.resolve_model("deepseek", model)
+            except RuntimeError:
+                return False
+            return True
+
+        platform_default_configured = platform_model_configured(shared_deepseek.model)
+        deepseek_is_default = platform_default_configured and not pi_openai_configured
+        text_options.extend(
+            AIModelOption(
+                provider="deepseek",
+                model=model,
+                access_method="platform_credits",
+                label=label,
+                capability="text",
+                enabled=platform_model_configured(model),
+                configured=platform_model_configured(model),
+                default=deepseek_is_default and model == shared_deepseek.model,
+            )
+            for model, label in deepseek_models
         )
-        for model, label in deepseek_models
+        text_options.extend(
+            AIModelOption(
+                provider="deepseek",
+                model=model,
+                access_method="personal_api",
+                label=label,
+                capability="text",
+                enabled=personal_deepseek_configured,
+                configured=personal_deepseek_configured,
+                default=False,
+            )
+            for model, label in deepseek_models
+        )
+    if not text_options:
+        raise RuntimeError("No text model providers are enabled")
+    default_option = next(
+        (option for option in text_options if option.default and option.enabled),
+        None,
+    ) or next(
+        (option for option in text_options if option.enabled),
+        next((option for option in text_options if option.default), text_options[0]),
     )
-    text_options.extend(
-        AIModelOption(
-            provider="deepseek",
-            model=model,
-            access_method="personal_api",
-            label=label,
-            capability="text",
-            enabled=personal_deepseek_configured,
-            configured=personal_deepseek_configured,
-            default=False,
-        )
-        for model, label in deepseek_models
+    for option in text_options:
+        option.default = option is default_option
+    text_default = AIModelSelection(
+        provider=default_option.provider,
+        model=default_option.model,
+        access_method=default_option.access_method,
+        reasoning_effort=default_option.default_reasoning_effort,
+        service_tier=default_option.default_service_tier,
     )
-    codex_default_option = next(option for option in text_options if option.provider == "openai_codex" and option.default)
-    if deepseek_is_default:
-        codex_default_option.default = False
-        text_default = AIModelSelection(
-            provider="deepseek",
-            model=shared_deepseek.model,
-            access_method="platform_credits",
-        )
-    elif personal_deepseek_configured and not pi_openai_configured:
-        text_default = AIModelSelection(
-            provider="deepseek",
-            model=shared_deepseek.model,
-            access_method="personal_api",
-        )
-        next(
-            option
-            for option in text_options
-            if option.provider == "deepseek"
-            and option.model == shared_deepseek.model
-            and option.access_method == "personal_api"
-        ).default = True
-        codex_default_option.default = False
-    else:
-        text_default = default_text_selection(
-            model=codex_default_option.model,
-            reasoning_effort=codex_default_option.default_reasoning_effort,
-            service_tier=codex_default_option.default_service_tier,
-        )
     realtime_options = [
         AIModelOption(
             provider="openai",
@@ -515,8 +543,9 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             transport="openai_webrtc",
         )
         for model, label in realtime_models
+        if realtime_model_provider_enabled("openai")
     ]
-    if codex_realtime_exposed:
+    if codex_realtime_exposed and realtime_model_provider_enabled("openai_codex"):
         realtime_options.insert(
             0,
             AIModelOption(
@@ -537,7 +566,11 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             model=OPENAI_CODEX_REALTIME_MODEL,
             access_method="platform_credits",
         )
-        if codex_realtime_enabled
+        if realtime_model_provider_enabled("openai_codex")
+        and (
+            codex_realtime_enabled
+            or not realtime_model_provider_enabled("openai")
+        )
         else realtime_default
     )
     catalog = AIModelCatalog(
