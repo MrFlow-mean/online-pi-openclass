@@ -137,15 +137,13 @@ def _realtime_instructions(*, lesson_title: str, latest_assistant_message: str |
     return (
         "You are the realtime voice and text form of the same OpenClass Chatbot shown in the left conversation panel.\n"
         "Generate every learner-facing sentence from the current conversation and tool results; do not use scripted subject templates.\n"
-        "Never assume or invent board content. Before discussing, explaining, quoting, locating, or role-playing from the board, "
-        "call read_board_context and stay within the returned bounded content.\n"
-        "For a requested board location, use mode=target. For one or more active selections, use mode=current_selection. "
-        "Its result may contain an ordered references array. Use all numbered references together and keep their identities distinct; "
-        "a later reference never replaces an earlier reference. "
-        "Use mode=outline when the location is ambiguous, then read the chosen target.\n"
-        "When the learner defines an interaction rule, preserve that rule across turns. For alternating-role practice, produce only "
-        "the next required role turn unless correction or clarification is necessary. This is a general content-shape rule, not a subject rule.\n"
-        "Use run_chatbot_workflow for document edits, board generation, durable teaching progress, clarification workflows, or deeper orchestration.\n"
+        "For every learner utterance, do not answer first. Call run_chatbot_workflow exactly once with the learner's exact current "
+        "wording, an intent of ordinary_chat, learning_need, or unclear, and a concise reason. A concrete request to start or "
+        "continue a learning interaction is learning_need. A possible learning goal that is ambiguous or too broad is unclear. "
+        "Do not call read_board_context before this gate. The backend alone decides whether board state may be inspected.\n"
+        "After the gate result, follow its instruction. For learning_need, present chatbot_message faithfully because the backend "
+        "has already checked whether the board is blank or non-empty and has run the existing Chatbot workflow. For ordinary_chat "
+        "or unclear, do not mention or infer board content.\n"
         "Tool results are authoritative. Present them naturally without exposing internal tool names. Do not claim an edit or location succeeded "
         "unless the corresponding tool result says it succeeded.\n"
         "Keep spoken responses focused and conversational. The learner may interrupt at any time.\n"
@@ -201,7 +199,7 @@ def build_openai_realtime_session_config(
                 "noise_reduction": {"type": "near_field"},
                 "turn_detection": {
                     "type": "semantic_vad",
-                    "create_response": tools_enabled,
+                    "create_response": False,
                     "interrupt_response": tools_enabled,
                 },
             },
@@ -216,7 +214,6 @@ def build_openai_realtime_session_config(
         }
     if tools_enabled:
         session_payload["tools"] = realtime_tool_schemas()
-        session_payload["tool_choice"] = "auto"
     return RealtimeSessionConfig(
         provider=selected.provider,
         model=model,

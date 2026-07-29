@@ -5,6 +5,7 @@ from typing import Any
 from app.models import ChatRequest, RealtimeToolCallRequest, RealtimeToolCallResponse
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
+from app.services.chat.turn_context import board_state
 from app.services.realtime_board_context import read_realtime_board_context
 
 
@@ -36,16 +37,27 @@ def realtime_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "name": "run_chatbot_workflow",
             "description": (
-                "Run the existing OpenClass Chatbot workflow for a learner request that needs document edits, "
-                "board generation, durable teaching progress, clarification, or deeper orchestration. "
-                "After success, present chatbot_message faithfully to the learner."
+                "Mandatory first-turn gate for every learner utterance. Classify the current utterance, using "
+                "conversation history when it continues an active task. ordinary_chat is social conversation with "
+                "no learning or work goal. learning_need is a concrete request to learn, practise, explain, write, "
+                "edit, or work on content, including a rule-based learning interaction. unclear is a possible "
+                "learning goal that is ambiguous or too broad to act on. Preserve message as the learner's exact "
+                "wording. The backend inspects board state only for learning_need."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "message": {"type": "string", "description": "The learner request to process."},
+                    "message": {"type": "string", "description": "The learner's exact current utterance."},
+                    "intent": {
+                        "type": "string",
+                        "enum": ["ordinary_chat", "learning_need", "unclear"],
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "A concise content-agnostic reason for this TurnDecision.",
+                    },
                 },
-                "required": ["message"],
+                "required": ["message", "intent", "reason"],
                 "additionalProperties": False,
             },
         },
@@ -59,7 +71,7 @@ def execute_realtime_tool(
     request: RealtimeToolCallRequest,
 ) -> RealtimeToolCallResponse:
     workspace = workspace_state.load_workspace_for_user(user_id)
-    workspace_state.find_lesson_package(workspace, lesson_id)
+    _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     try:
         if request.name == "read_board_context":
             result = read_realtime_board_context(
@@ -77,32 +89,87 @@ def execute_realtime_tool(
             message = str(request.arguments.get("message") or "").strip()
             if not message:
                 raise ValueError("message is required")
-            from app.services.chat_service import process_chat_on_lesson
+            intent = str(request.arguments.get("intent") or "").strip()
+            if intent not in {"ordinary_chat", "learning_need", "unclear"}:
+                raise ValueError("intent must be ordinary_chat, learning_need, or unclear")
+            reason = str(request.arguments.get("reason") or "").strip()
+            if not reason:
+                raise ValueError("reason is required")
+            decision_trace = {
+                "intent_signals": [f"realtime_intent:{intent}"],
+                "matched_rules": ["explicit_learning_need_board_gate"],
+                "selected_action": intent,
+                "target_resolver": "board_state" if intent == "learning_need" else "none",
+                "sequence_mode": "single_turn",
+                "role_executed": "turn_decision",
+                "document_changed": False,
+                "reason": reason,
+            }
+            if intent == "ordinary_chat":
+                response = RealtimeToolCallResponse(
+                    status="ok",
+                    model_output={
+                        "status": "ok",
+                        "route": intent,
+                        "board_state": "not_checked",
+                        "decision_trace": decision_trace,
+                        "instruction": (
+                            "Reply naturally to this ordinary conversation. Do not mention, read, summarize, "
+                            "or modify the board or any learning requirement sheet."
+                        ),
+                    },
+                )
+            elif intent == "unclear":
+                response = RealtimeToolCallResponse(
+                    status="ok",
+                    model_output={
+                        "status": "ok",
+                        "route": intent,
+                        "board_state": "not_checked",
+                        "decision_trace": decision_trace,
+                        "instruction": (
+                            "Help the learner narrow the possible learning goal with one focused question and, "
+                            "when useful, a few relevant directions. Do not read or modify the board, generate "
+                            "learning content, or update any requirement sheet yet."
+                        ),
+                    },
+                )
+            else:
+                computed_board_state = board_state(lesson.board_document.content_text)
+                from app.services.chat_service import process_chat_on_lesson
 
-            chat_response = process_chat_on_lesson(
-                lesson_id,
-                ChatRequest(message=message, selection=request.selection),
-                user_id=user_id,
-                commit_metadata={
-                    "chat_visibility": "hidden",
-                    "interaction_channel": "realtime_tool",
-                    "realtime_client_session_id": request.client_session_id,
-                    "realtime_turn_id": request.turn_id or "",
-                },
-            )
-            focus = _latest_resolved_focus(chat_response.course_package, lesson_id)
-            response = RealtimeToolCallResponse(
-                status="ok",
-                model_output={
-                    "status": "ok",
-                    "chatbot_message": chat_response.chatbot_message,
-                    "needs_clarification": chat_response.needs_clarification,
-                    "clarification_questions": chat_response.clarification_questions,
-                    "instruction": "Present chatbot_message faithfully and naturally. Do not claim an action beyond this result.",
-                },
-                resolved_focus=focus,
-                course_package=chat_response.course_package,
-            )
+                chat_response = process_chat_on_lesson(
+                    lesson_id,
+                    ChatRequest(message=message, selection=request.selection),
+                    user_id=user_id,
+                    commit_metadata={
+                        "chat_visibility": "hidden",
+                        "interaction_channel": "realtime_tool",
+                        "realtime_client_session_id": request.client_session_id,
+                        "realtime_turn_id": request.turn_id or "",
+                    },
+                )
+                focus = _latest_resolved_focus(chat_response.course_package, lesson_id)
+                response = RealtimeToolCallResponse(
+                    status="ok",
+                    model_output={
+                        "status": "ok",
+                        "route": intent,
+                        "board_state": (
+                            "board_blank" if computed_board_state == "empty" else "board_nonempty"
+                        ),
+                        "decision_trace": decision_trace,
+                        "chatbot_message": chat_response.chatbot_message,
+                        "needs_clarification": chat_response.needs_clarification,
+                        "clarification_questions": chat_response.clarification_questions,
+                        "instruction": (
+                            "Present chatbot_message faithfully and naturally. Do not claim an action beyond "
+                            "this result. The Chatbot workflow already handled the required board path."
+                        ),
+                    },
+                    resolved_focus=focus,
+                    course_package=chat_response.course_package,
+                )
         else:  # pragma: no cover - guarded by the request schema
             raise ValueError(f"Unsupported realtime tool: {request.name}")
         ai_usage_logger.log_event(

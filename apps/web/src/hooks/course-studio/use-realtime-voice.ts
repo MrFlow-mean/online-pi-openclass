@@ -119,7 +119,23 @@ function sendOpenAIFunctionOutput(
       output: JSON.stringify(output),
     },
   }));
-  dataChannel.send(JSON.stringify({ type: "response.create" }));
+  dataChannel.send(JSON.stringify({
+    type: "response.create",
+    response: { tools: [] },
+  }));
+}
+
+function sendOpenAITurnDecisionRequest(dataChannel: RTCDataChannel) {
+  if (dataChannel.readyState !== "open") {
+    return false;
+  }
+  dataChannel.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      tool_choice: { type: "function", name: "run_chatbot_workflow" },
+    },
+  }));
+  return true;
 }
 
 type UseRealtimeVoiceOptions = {
@@ -383,7 +399,12 @@ export function useRealtimeVoice({
       final: true,
     });
     if (openAIRealtimeToolsEnabledRef.current) {
-      setVoiceStatusText("Realtime 正在通过后端 Chatbot 工具处理这句话");
+      const dataChannel = realtimeChannelRef.current;
+      if (!dataChannel || !sendOpenAITurnDecisionRequest(dataChannel)) {
+        setVoiceStatusText("Realtime 回合决策通道未就绪");
+        return;
+      }
+      setVoiceStatusText("Realtime 正在判断本轮需求与板书路径");
       return;
     }
     if (chatRequestInFlightRef.current) {
@@ -883,7 +904,11 @@ export function useRealtimeVoice({
         content: [{ type: "input_text", text: normalized }],
       },
     }));
-    dataChannel.send(JSON.stringify({ type: "response.create" }));
+    if (openAIRealtimeToolsEnabledRef.current) {
+      sendOpenAITurnDecisionRequest(dataChannel);
+    } else {
+      dataChannel.send(JSON.stringify({ type: "response.create" }));
+    }
     setVoiceStatusText("Realtime 正在处理文字消息");
     return true;
   }
