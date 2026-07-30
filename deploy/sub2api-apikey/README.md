@@ -43,3 +43,20 @@ The deployment keeps OpenClass `/api/*` unchanged. Sub2API uses:
 - management API: `/apikey/api/v1/*`
 - model gateways: `/apikey/v1/*` and `/apikey/v1beta/*`
 - direct Codex gateway: `/apikey/backend-api/codex/*`
+
+## Connect OpenClass text models
+
+OpenClass uses its provider-neutral Responses API adapter for this gateway.
+Keep the generated gateway key in a restricted server file rather than in the
+repository or an inline environment variable:
+
+```dotenv
+OPENCLASS_CODEX_TEXT_PROXY_URL=http://127.0.0.1:18080/v1
+OPENCLASS_CODEX_TEXT_PROXY_API_KEY_FILE=/etc/openclass/model-proxy-api-key
+OPENCLASS_TEXT_MODEL_PROVIDERS=openai_codex
+```
+
+The configured Sub2API OpenAI group must contain at least one active,
+schedulable account. OpenClass exposes every model in its Codex text model
+catalog through the same adapter; model selection is not limited to the
+default model.

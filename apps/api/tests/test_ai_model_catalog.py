@@ -86,7 +86,7 @@ def test_platform_codex_text_models_are_catalogued_for_all_users_and_routed(
         owner_user_id=TEST_USER_ID,
     )
     assert isinstance(adapter, ai_execution_adapter.CodexTextProxyAIExecutionAdapter)
-    assert adapter._selected_model_audit()["transport"] == "cliproxyapi"
+    assert adapter._selected_model_audit()["transport"] == "responses_api"
     assert adapter._selected_model_audit()["access_method"] == "platform_credits"
     assert adapter._selected_model_audit()["agent_backend"] == "platform_proxy"
 

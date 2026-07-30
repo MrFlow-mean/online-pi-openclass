@@ -49,8 +49,8 @@ CODEX_TEXT_PROXY_LEGACY_REASONING_EFFORTS = (
     "high",
     "xhigh",
 )
-DEFAULT_CODEX_TEXT_PROXY_URL = "http://127.0.0.1:8317/v1"
-DEFAULT_CODEX_TEXT_PROXY_KEY_FILE = "/etc/cliproxyapi/api-key"
+DEFAULT_CODEX_TEXT_PROXY_URL = "http://127.0.0.1:18080/v1"
+DEFAULT_CODEX_TEXT_PROXY_KEY_FILE = "/etc/openclass/model-proxy-api-key"
 
 
 def _normalized_secret(value: str | None) -> str | None:
@@ -270,7 +270,7 @@ class CodexTextProxyClient:
                 "agent_backend": "platform_proxy",
                 "provider": "openai_codex",
                 "model": self.model,
-                "transport": "cliproxyapi",
+                "transport": "responses_api",
             },
         )
         if on_activity is not None:

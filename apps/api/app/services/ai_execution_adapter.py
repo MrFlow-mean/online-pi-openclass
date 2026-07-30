@@ -991,7 +991,7 @@ class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
         return {
             **super()._selected_model_audit(),
             "agent_backend": "platform_proxy",
-            "transport": "cliproxyapi",
+            "transport": "responses_api",
         }
 
 
