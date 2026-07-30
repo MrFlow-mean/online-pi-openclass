@@ -1,3 +1,4 @@
+import hashlib
 import json
 from decimal import Decimal
 
@@ -18,6 +19,7 @@ TEST_USER_ID = "user_model_catalog"
 @pytest.fixture(autouse=True)
 def _no_personal_api_credentials(monkeypatch) -> None:
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.delenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY_FILE", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_URL", raising=False)
@@ -28,11 +30,11 @@ def _no_personal_api_credentials(monkeypatch) -> None:
     )
 
 
-def test_owner_only_codex_text_proxy_models_are_catalogued_and_routed(
+def test_platform_codex_text_models_are_catalogued_for_all_users_and_routed(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", TEST_USER_ID)
-    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "private-proxy-key")
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", "*")
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "platform-proxy-key")
     monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_URL", "http://127.0.0.1:8317/v1")
     monkeypatch.setattr(
         ai_model_catalog,
@@ -40,44 +42,87 @@ def test_owner_only_codex_text_proxy_models_are_catalogued_and_routed(
         lambda **_kwargs: False,
     )
 
-    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
-    proxy_options = [
-        option for option in catalog.text if option.model in CODEX_TEXT_PROXY_MODEL_IDS
-    ]
+    for user_id in (TEST_USER_ID, "guest_model_catalog"):
+        catalog = ai_model_catalog.build_model_catalog(user_id)
+        proxy_options = [
+            option
+            for option in catalog.text
+            if option.access_method == "platform_credits"
+            and option.provider == "openai_codex"
+        ]
 
-    assert [option.model for option in proxy_options] == [
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    ]
-    assert all(option.enabled and option.configured for option in proxy_options)
-    assert all(
-        option.access_method == "chatgpt_subscription" for option in proxy_options
-    )
-    assert [
-        effort.reasoning_effort
-        for effort in proxy_options[0].supported_reasoning_efforts
-    ] == ["none", "low", "medium", "high", "xhigh", "max"]
-    assert proxy_options[0].service_tiers == []
-    assert catalog.defaults["text"].model == "gpt-5.6-sol"
+        assert [option.model for option in proxy_options] == [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex-spark",
+        ]
+        assert all(option.enabled and option.configured for option in proxy_options)
+        assert [
+            effort.reasoning_effort
+            for effort in proxy_options[0].supported_reasoning_efforts
+        ] == ["none", "low", "medium", "high", "xhigh", "max"]
+        assert [
+            effort.reasoning_effort
+            for effort in proxy_options[3].supported_reasoning_efforts
+        ] == ["minimal", "low", "medium", "high", "xhigh"]
+        assert all(option.service_tiers == [] for option in proxy_options)
+        assert catalog.defaults["text"].model == "gpt-5.5"
+        assert catalog.defaults["text"].access_method == "platform_credits"
 
     selection = ai_model_catalog.resolve_text_model_selection(
         AIModelSelection(
             provider="openai_codex",
-            model="gpt-5.6-sol",
-            access_method="chatgpt_subscription",
+            model="gpt-5.3-codex-spark",
         ),
         user_id=TEST_USER_ID,
     )
+    assert selection.access_method == "platform_credits"
     adapter = ai_execution_adapter.build_ai_execution_adapter(
         selection,
         owner_user_id=TEST_USER_ID,
     )
     assert isinstance(adapter, ai_execution_adapter.CodexTextProxyAIExecutionAdapter)
     assert adapter._selected_model_audit()["transport"] == "cliproxyapi"
+    assert adapter._selected_model_audit()["access_method"] == "platform_credits"
+    assert adapter._selected_model_audit()["agent_backend"] == "platform_proxy"
 
 
-def test_codex_text_proxy_models_are_hidden_and_rejected_for_other_users(
+def test_platform_codex_models_inherit_codex_live_all_user_policy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", "*")
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "platform-proxy-key")
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "pi_credentials_available",
+        lambda **_kwargs: False,
+    )
+
+    catalog = ai_model_catalog.build_model_catalog("new_guest_user")
+    platform_models = [
+        option.model
+        for option in catalog.text
+        if option.provider == "openai_codex"
+        and option.access_method == "platform_credits"
+        and option.enabled
+    ]
+
+    assert platform_models == [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+    ]
+
+
+def test_platform_codex_models_are_hidden_and_rejected_outside_explicit_allowlist(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", TEST_USER_ID)
@@ -91,13 +136,21 @@ def test_codex_text_proxy_models_are_hidden_and_rejected_for_other_users(
 
     catalog = ai_model_catalog.build_model_catalog(other_user_id)
 
-    assert not CODEX_TEXT_PROXY_MODEL_IDS.intersection(
-        option.model for option in catalog.text
+    assert not [
+        option
+        for option in catalog.text
+        if option.provider == "openai_codex"
+        and option.access_method == "platform_credits"
+    ]
+    assert CODEX_TEXT_PROXY_MODEL_IDS.issubset(
+        option.model
+        for option in catalog.text
+        if option.access_method == "chatgpt_subscription"
     )
     forged = AIModelSelection(
         provider="openai_codex",
-        model="gpt-5.6-sol",
-        access_method="chatgpt_subscription",
+        model="gpt-5.5",
+        access_method="platform_credits",
     )
     with pytest.raises(RuntimeError, match="not allowed"):
         ai_model_catalog.resolve_text_model_selection(
@@ -109,6 +162,23 @@ def test_codex_text_proxy_models_are_hidden_and_rejected_for_other_users(
             forged,
             owner_user_id=other_user_id,
         )
+
+    personal = ai_model_catalog.resolve_text_model_selection(
+        AIModelSelection(
+            provider="openai_codex",
+            model="gpt-5.5",
+            access_method="chatgpt_subscription",
+        ),
+        user_id=other_user_id,
+    )
+    assert personal.access_method == "chatgpt_subscription"
+    assert isinstance(
+        ai_execution_adapter.build_ai_execution_adapter(
+            personal,
+            owner_user_id=other_user_id,
+        ),
+        ai_execution_adapter.PiAIExecutionAdapter,
+    )
 
 
 class _ProxyProbe(BaseModel):
@@ -185,6 +255,9 @@ def test_codex_text_proxy_uses_responses_api_for_structured_and_text_output(
     assert first_payload["reasoning"] == {"effort": "high"}
     assert first_payload["max_output_tokens"] == 512
     assert first_payload["text"]["format"]["type"] == "json_schema"
+    assert first_payload["safety_identifier"] == hashlib.sha256(
+        TEST_USER_ID.encode("utf-8")
+    ).hexdigest()
 
 
 def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypatch) -> None:
@@ -207,6 +280,9 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
         (option.access_method, option.provider, option.model)
         for option in catalog.text
     ] == [
+        ("chatgpt_subscription", "openai_codex", "gpt-5.6-sol"),
+        ("chatgpt_subscription", "openai_codex", "gpt-5.6-terra"),
+        ("chatgpt_subscription", "openai_codex", "gpt-5.6-luna"),
         ("chatgpt_subscription", "openai_codex", "gpt-5.5"),
         ("chatgpt_subscription", "openai_codex", "gpt-5.4"),
         ("chatgpt_subscription", "openai_codex", "gpt-5.4-mini"),
@@ -217,6 +293,9 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
         ("personal_api", "deepseek", "deepseek-v4-pro"),
     ]
     assert [option.label for option in catalog.text] == [
+        "GPT 5.6 Sol",
+        "GPT 5.6 Terra",
+        "GPT 5.6 Luna",
         "GPT 5.5",
         "GPT 5.4",
         "GPT 5.4 Mini",
@@ -263,7 +342,7 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
     assert [
         option.reasoning_effort
         for option in catalog.text[0].supported_reasoning_efforts
-    ] == ["minimal", "low", "medium", "high", "xhigh"]
+    ] == ["none", "low", "medium", "high", "xhigh", "max"]
     assert [tier.id for tier in catalog.text[0].service_tiers] == ["priority"]
     assert all(
         option.supported_reasoning_efforts and option.service_tiers
@@ -301,7 +380,7 @@ def test_catalog_uses_pi_default_without_an_environment_override(
 
     assert catalog.defaults["text"].model == "gpt-5.5"
     assert catalog.defaults["text"].reasoning_effort is None
-    assert catalog.text[0].default is True
+    assert [option.model for option in catalog.text if option.default] == ["gpt-5.5"]
 
 
 def test_catalog_adds_configured_default_when_pi_curated_models_do_not_list_it(monkeypatch) -> None:

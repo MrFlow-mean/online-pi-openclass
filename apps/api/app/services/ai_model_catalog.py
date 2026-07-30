@@ -21,8 +21,8 @@ from app.services.billing_service import BillingConfig, credits_for_upstream_cos
 from app.services.codex_text_proxy import (
     CODEX_TEXT_PROXY_MODEL_IDS,
     CODEX_TEXT_PROXY_MODELS,
-    CODEX_TEXT_PROXY_REASONING_EFFORTS,
     codex_text_proxy_available_for_user,
+    codex_text_proxy_reasoning_efforts,
     codex_text_proxy_user_allowed,
 )
 from app.services.deepseek_api import (
@@ -50,7 +50,9 @@ OPENROUTER_PRICE_CACHE_TTL_SECONDS = 15 * 60
 logger = logging.getLogger(__name__)
 _openrouter_price_cache: tuple[str, float, dict[str, Decimal]] | None = None
 PI_OPENAI_CODEX_MODELS = (
-    *CODEX_TEXT_PROXY_MODELS,
+    ("gpt-5.6-sol", "GPT 5.6 Sol"),
+    ("gpt-5.6-terra", "GPT 5.6 Terra"),
+    ("gpt-5.6-luna", "GPT 5.6 Luna"),
     ("gpt-5.5", "GPT 5.5"),
     ("gpt-5.4", "GPT 5.4"),
     ("gpt-5.4-mini", "GPT 5.4 Mini"),
@@ -165,24 +167,39 @@ def resolve_text_model_selection(
 ) -> AIModelSelection:
     if selection is not None:
         selected_model = selection.model.strip()
-        if (
-            selection.provider == "openai_codex"
-            and selected_model in CODEX_TEXT_PROXY_MODEL_IDS
-            and not codex_text_proxy_available_for_user(user_id)
-        ):
-            raise RuntimeError(
-                "The current user is not allowed to use this Codex private proxy model"
-            )
+        if selection.provider == "openai_codex":
+            if (
+                selection.access_method == "platform_credits"
+                and selected_model not in CODEX_TEXT_PROXY_MODEL_IDS
+            ):
+                raise RuntimeError(
+                    "The selected Codex model is not available through platform credits"
+                )
+            if (
+                selection.access_method == "platform_credits"
+                and not codex_text_proxy_available_for_user(user_id)
+            ):
+                raise RuntimeError(
+                    "The current user is not allowed to use this Codex platform proxy model"
+                )
         if (
             selection.provider in {"openai_codex", "deepseek"}
             and text_model_provider_enabled(selection.provider)
             and selected_model
         ):
-            access_method = selection.access_method or (
-                "chatgpt_subscription"
-                if selection.provider == "openai_codex"
-                else "platform_credits"
-            )
+            access_method = selection.access_method
+            if access_method is None:
+                access_method = (
+                    "platform_credits"
+                    if selection.provider == "openai_codex"
+                    and selected_model in CODEX_TEXT_PROXY_MODEL_IDS
+                    and codex_text_proxy_available_for_user(user_id)
+                    else (
+                        "chatgpt_subscription"
+                        if selection.provider == "openai_codex"
+                        else "platform_credits"
+                    )
+                )
             return selection.model_copy(
                 update={
                     "model": selected_model,
@@ -250,7 +267,7 @@ def codex_realtime_user_allowed(user_id: str) -> bool:
         for item in raw_user_ids.replace(",", " ").split()
         if item
     }
-    return user_id in allowed_user_ids
+    return "*" in allowed_user_ids or user_id in allowed_user_ids
 
 
 def _configured_secret(name: str) -> bool:
@@ -276,19 +293,26 @@ def _pi_text_models() -> tuple[dict[str, Any], ...]:
             "displayName": label,
             "supportedReasoningEfforts": [
                 {"reasoningEffort": effort}
-                for effort in (
-                    CODEX_TEXT_PROXY_REASONING_EFFORTS
-                    if model in CODEX_TEXT_PROXY_MODEL_IDS
-                    else PI_OPENAI_CODEX_REASONING_EFFORTS
-                )
+                for effort in codex_text_proxy_reasoning_efforts(model)
             ],
-            "serviceTiers": (
-                []
-                if model in CODEX_TEXT_PROXY_MODEL_IDS
-                else [dict(tier) for tier in PI_OPENAI_CODEX_SERVICE_TIERS]
-            ),
+            "serviceTiers": [dict(tier) for tier in PI_OPENAI_CODEX_SERVICE_TIERS],
         }
         for model, label in PI_OPENAI_CODEX_MODELS
+    )
+
+
+def _platform_codex_text_models() -> tuple[dict[str, Any], ...]:
+    return tuple(
+        {
+            "model": model,
+            "displayName": label,
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": effort}
+                for effort in codex_text_proxy_reasoning_efforts(model)
+            ],
+            "serviceTiers": [],
+        }
+        for model, label in CODEX_TEXT_PROXY_MODELS
     )
 
 
@@ -473,38 +497,49 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="openai_codex",
             model=str(item["model"]),
-            access_method="chatgpt_subscription",
+            access_method="platform_credits",
             label=str(item["displayName"]),
             capability="text",
-            enabled=(
-                codex_text_proxy_configured
-                if item["model"] in CODEX_TEXT_PROXY_MODEL_IDS
-                else pi_openai_configured
-            ),
-            configured=(
-                codex_text_proxy_configured
-                if item["model"] in CODEX_TEXT_PROXY_MODEL_IDS
-                else pi_openai_configured
-            ),
+            enabled=codex_text_proxy_configured,
+            configured=codex_text_proxy_configured,
             default=item["model"] == default_model_id,
             default_reasoning_effort=_optional_string(
                 item.get("defaultReasoningEffort")
                 or item.get("default_reasoning_effort")
             ),
             supported_reasoning_efforts=_reasoning_efforts(item),
-            default_service_tier=_optional_string(
-                item.get("defaultServiceTier")
-                or item.get("default_service_tier")
-            ),
-            service_tiers=_service_tiers(item),
+            default_service_tier=None,
+            service_tiers=[],
         )
-        for item in models
-        if text_model_provider_enabled("openai_codex")
-        and (
-            item["model"] not in CODEX_TEXT_PROXY_MODEL_IDS
-            or codex_text_proxy_allowed
-        )
+        for item in _platform_codex_text_models()
+        if text_model_provider_enabled("openai_codex") and codex_text_proxy_allowed
     ]
+    text_options.extend(
+        [
+            AIModelOption(
+                provider="openai_codex",
+                model=str(item["model"]),
+                access_method="chatgpt_subscription",
+                label=str(item["displayName"]),
+                capability="text",
+                enabled=pi_openai_configured,
+                configured=pi_openai_configured,
+                default=item["model"] == default_model_id,
+                default_reasoning_effort=_optional_string(
+                    item.get("defaultReasoningEffort")
+                    or item.get("default_reasoning_effort")
+                ),
+                supported_reasoning_efforts=_reasoning_efforts(item),
+                default_service_tier=_optional_string(
+                    item.get("defaultServiceTier")
+                    or item.get("default_service_tier")
+                ),
+                service_tiers=_service_tiers(item),
+            )
+            for item in models
+            if text_model_provider_enabled("openai_codex")
+        ]
+    )
     if text_model_provider_enabled("deepseek"):
         deepseek_models = list(DEEPSEEK_CURATED_MODELS)
         if not any(model == shared_deepseek.model for model, _label in deepseek_models):
