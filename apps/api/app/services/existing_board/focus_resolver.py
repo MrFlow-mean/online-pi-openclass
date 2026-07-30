@@ -36,10 +36,18 @@ TargetResolutionReason = Literal[
     "selection_stale_hash",
     "selection_text_mismatch",
     "selection_text_too_large",
+    "target_scope_too_large",
+    "whole_board_scope_requires_confirmation",
     "ambiguous_candidates",
     "below_confidence_threshold",
     "target_not_found",
 ]
+
+
+# One backend-owned boundary applies to every model role that receives an
+# already-resolved board target.  This is large enough for a normal section but
+# remains intentionally smaller than an unbounded document read.
+MAX_APPROVED_BOARD_TARGET_CHARS = 16_000
 
 
 class TargetResolution(BaseModel):
@@ -202,6 +210,8 @@ class FocusResolver:
         last_order = ordered_positions[-1]
         if first_order < 0 or last_order >= len(segments):
             return self._unresolved("selection_segment_missing")
+        if first_order == 0 and last_order == len(segments) - 1:
+            return self._unresolved("whole_board_scope_requires_confirmation")
         source_segments = segments[first_order : last_order + 1]
         if [segment.segment_id for segment in source_segments] != [
             focus.segment_id for focus in resolved
@@ -228,6 +238,8 @@ class FocusResolver:
         excerpt = markdown[range_start:range_end]
         if not excerpt:
             return self._unresolved("selection_text_mismatch")
+        if len(excerpt) > MAX_APPROVED_BOARD_TARGET_CHARS:
+            return self._unresolved("target_scope_too_large")
 
         return TargetResolution(
             status="resolved",
@@ -263,7 +275,15 @@ class FocusResolver:
             and selection.source_commit_id != current_head_commit(lesson).id
         ):
             return self._unresolved("selection_stale_version")
-        if selection.location_kind == "target_range" and len(selection.excerpt) > 1_200:
+        if (
+            selection.location_kind == "target_range"
+            and _selection_covers_whole_board(lesson, segments, selection.excerpt)
+        ):
+            return self._unresolved("whole_board_scope_requires_confirmation")
+        if (
+            selection.location_kind == "target_range"
+            and len(selection.excerpt) > MAX_APPROVED_BOARD_TARGET_CHARS
+        ):
             return self._unresolved("selection_text_too_large")
 
         if selection.segment_id:
@@ -402,17 +422,18 @@ class FocusResolver:
                 and source_segments[0].order_index == 0
                 and len(source_segments) == len(segments)
             )
-            if not covers_whole_board:
-                excerpt_override = _section_markdown_excerpt(
-                    lesson,
-                    segments,
-                    source_segments,
-                )
-                if not excerpt_override:
-                    return self._unresolved("selection_text_mismatch")
-                freeze_range_hash = True
-            else:
-                source_segments = None
+            if covers_whole_board:
+                return self._unresolved("whole_board_scope_requires_confirmation")
+            excerpt_override = _section_markdown_excerpt(
+                lesson,
+                segments,
+                source_segments,
+            )
+            if not excerpt_override:
+                return self._unresolved("selection_text_mismatch")
+            if len(excerpt_override) > MAX_APPROVED_BOARD_TARGET_CHARS:
+                return self._unresolved("target_scope_too_large")
+            freeze_range_hash = True
         return TargetResolution(
             status="resolved",
             machine_reason=reason,
@@ -565,6 +586,26 @@ def _selection_excerpt_matches(excerpt: str, segment_text: str) -> bool:
     if not selected or not current:
         return False
     return selected == current or selected in current
+
+
+def _selection_covers_whole_board(
+    lesson: Lesson,
+    segments: Sequence[BoardSegment],
+    excerpt: str,
+) -> bool:
+    selected = _normalize_range_text(excerpt)
+    if not selected:
+        return False
+    markdown = _normalize_range_text(document_to_markdown(lesson.board_document))
+    plain_segments = _normalize_range_text(
+        "\n\n".join(segment.text for segment in segments)
+    )
+    return selected in {markdown, plain_segments}
+
+
+def _normalize_range_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value or "")
+    return " ".join(normalized.split())
 
 
 def _anchor_context_matches(selection: SelectionRef, segment_text: str) -> bool:

@@ -13,6 +13,9 @@ from app.models import (
     new_id,
 )
 from app.services.ai_execution_adapter import AIExecutionAdapter
+from app.services.existing_board.focus_resolver import (
+    MAX_APPROVED_BOARD_TARGET_CHARS,
+)
 from app.services.existing_board.interaction_session import (
     InteractionRoute,
     InteractionRouteDecision,
@@ -22,8 +25,6 @@ from app.services.existing_board.interaction_session import (
     transition_interaction,
 )
 
-
-MAX_TARGET_EXCERPT_CHARS = 640
 MAX_INTERACTION_MESSAGE_CHARS = 12_000
 
 INTERACTION_RULE_BUILDER_INSTRUCTIONS = """
@@ -84,7 +85,7 @@ class InteractionRouteModelDraft(BaseModel):
         return value.strip()
 
     @model_validator(mode="after")
-    def require_violation_correction(self) -> "InteractionRouteModelDraft":
+    def require_violation_correction(self) -> InteractionRouteModelDraft:
         if self.route == "rule_violation" and not self.correction_note:
             raise ValueError("rule_violation requires a correction_note")
         return self
@@ -102,7 +103,7 @@ class ExistingBoardInteractionResult(BaseModel):
     activity: list[AgentActivityEvent] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_runtime_result(self) -> "ExistingBoardInteractionResult":
+    def validate_runtime_result(self) -> ExistingBoardInteractionResult:
         if self.should_reroute_original:
             if not self.transition.should_reroute_original:
                 raise ValueError("runtime reroute must come from the validated transition")
@@ -365,7 +366,7 @@ def _validate_interaction_task(
         raise InteractionRuntimeError("interaction focus lacks stable target identity")
     if resolved_focus.confidence <= 0:
         raise InteractionRuntimeError("interaction focus lacks reliable confidence")
-    if len(resolved_focus.excerpt) > MAX_TARGET_EXCERPT_CHARS:
+    if len(resolved_focus.excerpt) > MAX_APPROVED_BOARD_TARGET_CHARS:
         raise InteractionRuntimeError("interaction target exceeds the bounded scope")
     if _focus_identity(board_task.target_location) != _focus_identity(resolved_focus):
         raise InteractionRuntimeError("interaction focus does not match the task target")

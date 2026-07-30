@@ -14,7 +14,9 @@ from app.models import (
     new_id,
 )
 from app.services.ai_execution_adapter import AIExecutionAdapter
-
+from app.services.existing_board.focus_resolver import (
+    MAX_APPROVED_BOARD_TARGET_CHARS,
+)
 
 MutationAction = Literal["edit", "write", "delete"]
 MutationBindingKind = Literal["target_range", "insertion_anchor"]
@@ -41,7 +43,6 @@ MutationConfirmationStatus = Literal[
     "rejected",
 ]
 
-MAX_TARGET_EXCERPT_CHARS = 1_200
 MAX_PARENT_HEADING_DEPTH = 8
 MAX_PARENT_HEADING_CHARS = 240
 
@@ -102,7 +103,7 @@ class MutationPlannerOperationDraft(BaseModel):
     content_markdown: str = ""
 
     @model_validator(mode="after")
-    def validate_action_contract(self) -> "MutationPlannerOperationDraft":
+    def validate_action_contract(self) -> MutationPlannerOperationDraft:
         if self.action == "delete" and self.content_markdown:
             raise ValueError("delete content must be empty")
         if self.action in {"edit", "write"} and not self.content_markdown:
@@ -121,7 +122,7 @@ class MutationPlannerModelDraft(BaseModel):
     reason: str = ""
 
     @model_validator(mode="after")
-    def validate_operation_ids(self) -> "MutationPlannerModelDraft":
+    def validate_operation_ids(self) -> MutationPlannerModelDraft:
         operation_ids = [operation.operation_id for operation in self.operations]
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("operation ids must be unique")
@@ -343,7 +344,10 @@ def _safe_resolved_focus(
     ):
         raise MutationPlannerError("Resolved mutation focus lacks stable identity")
     excerpt = resolved_focus.excerpt.strip()
-    if len(excerpt) > MAX_TARGET_EXCERPT_CHARS or resolved_focus.confidence <= 0:
+    if (
+        len(excerpt) > MAX_APPROVED_BOARD_TARGET_CHARS
+        or resolved_focus.confidence <= 0
+    ):
         raise MutationPlannerError("Resolved mutation focus exceeds its safe boundary")
     if board_task.target_location is not None:
         expected = _focus_identity(board_task.target_location)

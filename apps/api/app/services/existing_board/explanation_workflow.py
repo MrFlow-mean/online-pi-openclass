@@ -14,9 +14,9 @@ from app.models import (
     ConversationTurn,
 )
 from app.services.ai_execution_adapter import AIExecutionAdapter
-
-
-MAX_TARGET_EXCERPT_CHARS = 640
+from app.services.existing_board.focus_resolver import (
+    MAX_APPROVED_BOARD_TARGET_CHARS,
+)
 
 BOARD_MANAGER_DIRECTIVE_INSTRUCTIONS = """
 You are the Board Manager. Produce a BoardExplanationDirective from only the
@@ -172,7 +172,7 @@ def _validate_and_bound_inputs(
         raise ExplanationWorkflowError("Resolved focus lacks stable target identity")
     if resolved_focus.confidence <= 0:
         raise ExplanationWorkflowError("Resolved focus lacks reliable confidence")
-    if len(resolved_focus.excerpt) > MAX_TARGET_EXCERPT_CHARS:
+    if len(resolved_focus.excerpt) > MAX_APPROVED_BOARD_TARGET_CHARS:
         raise ExplanationWorkflowError("Resolved target excerpt exceeds the bounded scope")
 
     expected_identity = _focus_identity(board_task.target_location)

@@ -5,9 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from app.models import (
     AIModelSelection,
     BoardExplanationDirective,
+    BoardFocusRef,
+    BoardTaskRequirementSheet,
     ChatRequest,
     SelectionRef,
 )
@@ -18,7 +21,26 @@ from app.services.existing_board.document_destination_workflow import (
     NewLessonArtifact,
     WholeBoardReplacement,
 )
-from app.services.existing_board.mutation_planner import MutationPlannerModelDraft
+from app.services.existing_board.explanation_workflow import (
+    ExplanationWorkflowError,
+    run_existing_board_explanation,
+)
+from app.services.existing_board.focus_resolver import (
+    MAX_APPROVED_BOARD_TARGET_CHARS,
+    FocusResolver,
+    resolve_board_focus,
+)
+from app.services.existing_board.interaction_runtime import (
+    InteractionRouteModelDraft,
+    InteractionRuntimeError,
+    run_existing_board_interaction,
+)
+from app.services.existing_board.interaction_session import InteractionRule
+from app.services.existing_board.mutation_planner import (
+    MutationPlannerError,
+    MutationPlannerModelDraft,
+    plan_existing_board_mutation,
+)
 from app.services.existing_board.task_manager import BoardTaskManagerDraft
 from app.services.existing_board.workflow import (
     ExistingBoardWorkflowError,
@@ -26,7 +48,7 @@ from app.services.existing_board.workflow import (
 )
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
-from app.services.rich_document import build_document
+from app.services.rich_document import build_document, document_to_markdown
 
 TEST_USER_ID = "existing_board_workflow_user"
 FULL_BOARD_SENTINEL = "FULL_BOARD_SENTINEL_MUST_STAY_OUTSIDE_MODEL_PROMPTS"
@@ -254,7 +276,7 @@ def test_approved_explanation_persists_ready_then_consumed_without_document_chan
 ) -> None:
     store, lesson = workflow_store
     before_text = lesson.board_document.content_text
-    adapter = RecordingAdapter(_draft())
+    adapter = RecordingAdapter(_draft(extent="paragraph"))
 
     response = process_existing_board_workflow(
         lesson.id,
@@ -681,7 +703,10 @@ def test_board_manager_clarification_keeps_the_task_active_for_refinement(
     workflow_store,
 ) -> None:
     store, lesson = workflow_store
-    adapter = RecordingAdapter(_draft(), directive_status="needs_clarification")
+    adapter = RecordingAdapter(
+        _draft(extent="paragraph"),
+        directive_status="needs_clarification",
+    )
 
     response = process_existing_board_workflow(
         lesson.id,
@@ -742,3 +767,289 @@ def test_expected_head_conflict_fails_closed_without_persisting_workflow_commit(
     _package, saved = workspace_state.find_lesson_package(persisted, lesson.id)
     assert current_head_commit(saved).id == before_head
     assert saved.board_task_requirements is None
+
+
+APPROVED_SCOPE_OUTSIDE_SENTINEL = "OUTSIDE_APPROVED_SECTION_MUST_NOT_REACH_A_MODEL"
+
+
+def _approved_scope_lesson(content: str):
+    lesson = create_empty_lesson("Approved target scope")
+    lesson.board_document = build_document(
+        title="Approved target scope",
+        content_text=content,
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    return lesson
+
+
+def _approved_scope_task(
+    focus: BoardFocusRef,
+    action: str,
+) -> BoardTaskRequirementSheet:
+    return BoardTaskRequirementSheet(
+        task_id=f"board_task_{action}",
+        location_kind="target_range",
+        target_hint="the approved section",
+        target_location=focus.model_copy(deep=True),
+        location_status="resolved",
+        requested_action=action,
+        question_or_topic="perform the requested operation inside the approved section",
+        special_interaction_requirements=(
+            "take turns under the learner-defined rule" if action == "interact" else "none"
+        ),
+        content_extent="section",
+        topic_relation="current_document",
+        document_destination="current_lesson",
+        base_commit_id="commit_current",
+        base_document_hash="document_hash_current",
+        missing_items=[],
+        progress=100,
+    )
+
+
+class ApprovedScopeRoleAdapter:
+    def __init__(self) -> None:
+        self.parse_calls: list[dict[str, object]] = []
+        self.text_calls: list[dict[str, object]] = []
+
+    def parse_structured(self, **kwargs):
+        self.parse_calls.append(kwargs)
+        schema = kwargs["schema"]
+        payload = json.loads(str(kwargs["user_prompt"]))
+        if schema is BoardExplanationDirective:
+            output = BoardExplanationDirective(
+                status="approved",
+                target_excerpt=payload["resolved_target"]["excerpt"],
+                teaching_instruction="explain only the approved target",
+            )
+        elif schema is MutationPlannerModelDraft:
+            output = {
+                "operations": [
+                    {
+                        "operation_id": "edit_approved_section",
+                        "action": "edit",
+                        "binding": {"kind": "target_range", "position": "replace"},
+                        "content_markdown": "## Long target\n\nRewritten bounded content.",
+                    }
+                ],
+                "extent": "section",
+                "destination": "current_lesson",
+                "topic_relation": "current_document",
+                "requires_confirmation": False,
+                "reason": "bounded section edit",
+            }
+        elif schema is InteractionRouteModelDraft:
+            output = {
+                "route": "continue_rule",
+                "reason": "the input follows the active rule",
+                "progress_note": "one bounded turn completed",
+                "correction_note": "",
+            }
+        else:  # pragma: no cover - new model roles must be explicit here.
+            raise AssertionError(f"Unexpected schema: {schema}")
+        return SimpleNamespace(output_parsed=output, activity=[])
+
+    def complete_text(self, **kwargs):
+        self.text_calls.append(kwargs)
+        return SimpleNamespace(output_text="model generated bounded response", activity=[])
+
+
+class NoApprovedScopeModelCallAdapter:
+    def parse_structured(self, **kwargs):  # pragma: no cover - fail-closed assertion
+        raise AssertionError("an oversized target reached a model role")
+
+    def complete_text(self, **kwargs):  # pragma: no cover - fail-closed assertion
+        raise AssertionError("an oversized target reached a model role")
+
+
+def _approved_scope_interaction_rule() -> InteractionRule:
+    return InteractionRule(
+        rule_text="take turns under the learner-defined rule",
+        interaction_goal="complete the bounded interaction",
+        compliant_input_description="the input performs the learner's current turn",
+        assistant_behavior_instruction="perform only the next assistant turn",
+    )
+
+
+def test_five_thousand_character_section_reaches_all_bounded_roles_without_adjacent_text() -> None:
+    body = "\n\n".join(
+        f"Paragraph {index}: " + (chr(65 + index % 26) * 230)
+        for index in range(20)
+    )
+    lesson = _approved_scope_lesson(
+        f"# Root\n\n## Long target\n\n{body}\n\n"
+        f"## Outside\n\n{APPROVED_SCOPE_OUTSIDE_SENTINEL}"
+    )
+    resolution = resolve_board_focus(
+        lesson,
+        target_text="Long target",
+        content_extent="section",
+    )
+
+    assert resolution.status == "resolved"
+    assert resolution.focus is not None
+    focus = resolution.focus
+    assert 4_000 <= len(focus.excerpt) <= 5_500
+    assert APPROVED_SCOPE_OUTSIDE_SENTINEL not in focus.excerpt
+
+    adapter = ApprovedScopeRoleAdapter()
+    explanation = run_existing_board_explanation(
+        adapter=adapter,
+        board_task=_approved_scope_task(focus, "explain"),
+        resolved_focus=focus,
+        teaching_requirements=["stay inside the approved section"],
+        current_user_message="explain this section",
+    )
+    mutation = plan_existing_board_mutation(
+        adapter=adapter,
+        board_task=_approved_scope_task(focus, "edit"),
+        resolved_focus=focus,
+        current_commit_id="commit_current",
+        current_document_hash="document_hash_current",
+        parent_heading_path=focus.heading_path,
+    )
+    interaction = run_existing_board_interaction(
+        adapter=adapter,
+        board_task=_approved_scope_task(focus, "interact"),
+        resolved_focus=focus,
+        current_message="continue the activity",
+        input_event_id="event_long_section",
+        board_task_run_id="run_long_section",
+        board_task_version_id="version_long_section",
+        initial_rule=_approved_scope_interaction_rule(),
+        interaction_session_id="session_long_section",
+    )
+
+    assert explanation.substantive_explanation_allowed is True
+    assert mutation.plan.execution_allowed is True
+    assert interaction.transition.route == "continue_rule"
+    prompts = [
+        *(str(call["user_prompt"]) for call in adapter.parse_calls),
+        *(str(call["user_prompt"]) for call in adapter.text_calls),
+    ]
+    assert all(APPROVED_SCOPE_OUTSIDE_SENTINEL not in prompt for prompt in prompts)
+    payloads = [json.loads(prompt) for prompt in prompts]
+    approved_excerpts = [
+        target["excerpt"]
+        for payload in payloads
+        for key in ("approved_target", "resolved_target")
+        if (target := payload.get(key)) is not None
+    ]
+    assert approved_excerpts
+    assert all(excerpt == focus.excerpt for excerpt in approved_excerpts)
+
+
+def test_oversized_section_fails_before_resolution_and_every_model_role() -> None:
+    lesson = _approved_scope_lesson(
+        "# Root\n\n## Oversized\n\n"
+        + ("Y" * (MAX_APPROVED_BOARD_TARGET_CHARS + 1))
+        + "\n\n## Outside\n\nOutside."
+    )
+    resolution = resolve_board_focus(
+        lesson,
+        target_text="Oversized",
+        content_extent="section",
+    )
+    assert resolution.status == "target_not_resolved"
+    assert resolution.machine_reason == "target_scope_too_large"
+
+    excerpt = "X" * (MAX_APPROVED_BOARD_TARGET_CHARS + 1)
+    focus = BoardFocusRef(
+        source="board",
+        lesson_id="lesson_oversized",
+        document_id="document_oversized",
+        segment_id="segment_oversized",
+        kind="heading",
+        heading_path=["Oversized"],
+        excerpt=excerpt,
+        text_hash="range_hash",
+        excerpt_hash="excerpt_hash",
+        confidence=1.0,
+    )
+    adapter = NoApprovedScopeModelCallAdapter()
+    with pytest.raises(ExplanationWorkflowError, match="bounded scope"):
+        run_existing_board_explanation(
+            adapter=adapter,
+            board_task=_approved_scope_task(focus, "explain"),
+            resolved_focus=focus,
+            teaching_requirements=["stay bounded"],
+        )
+    with pytest.raises(MutationPlannerError, match="safe boundary"):
+        plan_existing_board_mutation(
+            adapter=adapter,
+            board_task=_approved_scope_task(focus, "edit"),
+            resolved_focus=focus,
+            current_commit_id="commit_current",
+            current_document_hash="document_hash_current",
+            parent_heading_path=focus.heading_path,
+        )
+    with pytest.raises(InteractionRuntimeError, match="bounded scope"):
+        run_existing_board_interaction(
+            adapter=adapter,
+            board_task=_approved_scope_task(focus, "interact"),
+            resolved_focus=focus,
+            current_message="continue",
+            input_event_id="event_oversized",
+            board_task_run_id="run_oversized",
+            board_task_version_id="version_oversized",
+            initial_rule=_approved_scope_interaction_rule(),
+        )
+
+
+def test_root_section_and_single_frozen_whole_board_range_require_whole_board_path() -> None:
+    lesson = _approved_scope_lesson(
+        "# Root\n\n## First\n\nBody.\n\n## Second\n\nMore body."
+    )
+    root_result = resolve_board_focus(
+        lesson,
+        target_text="Root",
+        content_extent="section",
+    )
+    first_segment = build_board_segment_index(lesson.board_document).segments[0]
+    all_segments = build_board_segment_index(lesson.board_document).segments
+    single_selection_results = [
+        resolve_board_focus(
+            lesson,
+            selection=SelectionRef(
+                kind="board",
+                location_kind="target_range",
+                excerpt=excerpt,
+                lesson_id=lesson.id,
+                document_id=lesson.board_document.id,
+                source_commit_id=current_head_commit(lesson).id,
+                segment_id=first_segment.segment_id,
+                text_hash=first_segment.text_hash,
+            ),
+            content_extent="section",
+        )
+        for excerpt in (
+            document_to_markdown(lesson.board_document),
+            "\n\n".join(segment.text for segment in all_segments),
+        )
+    ]
+    multi_selection_result = FocusResolver().resolve_many(
+        lesson,
+        selections=[
+            SelectionRef(
+                kind="board",
+                location_kind="target_range",
+                excerpt=segment.text,
+                lesson_id=lesson.id,
+                document_id=lesson.board_document.id,
+                source_commit_id=current_head_commit(lesson).id,
+                segment_id=segment.segment_id,
+                text_hash=segment.text_hash,
+            )
+            for segment in all_segments
+        ],
+    )
+
+    for result in (
+        root_result,
+        *single_selection_results,
+        multi_selection_result,
+    ):
+        assert result.status == "target_not_resolved"
+        assert result.machine_reason == "whole_board_scope_requires_confirmation"
+        assert result.focus is None
