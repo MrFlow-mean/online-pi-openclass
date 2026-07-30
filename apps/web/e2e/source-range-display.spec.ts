@@ -128,8 +128,10 @@ test("describes directory-only trust without claiming full-body coverage", () =>
     "fully_verified"
   );
 
-  expect(note).toContain("目录节点与资料范围已验证");
-  expect(note).toContain("正文将在引用章节后按需读取");
+  expect(note).toContain("资料目录定位与层级已校验");
+  expect(note).toContain("当前仅显示目录列表");
+  expect(note).not.toContain("资料范围已验证");
+  expect(note).not.toContain("正文边界");
   expect(note).not.toContain("整体覆盖已通过验证");
 });
 

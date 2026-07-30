@@ -75,20 +75,11 @@ test.beforeEach(async ({ page }) => {
 async function enterAsGuest(page: Page) {
   await page.goto("/login?next=%2F");
   await page.getByRole("button", { name: /游客登录/ }).click();
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  await expect(page).toHaveURL(/\/studio$/);
+  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
 }
 
-async function createPackageAndLesson(page: Page, unique: number) {
-  await page.getByLabel("添加课程包").click();
-  await page.getByLabel("课程包名称").fill(`板书原图 ${unique}`);
-  const createPackageResponse = page.waitForResponse(
-    (response) => response.url().endsWith("/api/packages") && response.request().method() === "POST"
-  );
-  await page.getByLabel("确认").click();
-  await createPackageResponse;
-
-  await page.goto("/studio");
-  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+async function createLessonInGuestStudio(page: Page, unique: number) {
   await page.route(
     "**/api/lessons/generate",
     async (route) => {
@@ -173,7 +164,7 @@ test("loads the original board asset with auth and ignores recreation HTML", asy
   let assetAuthorization = "";
 
   await enterAsGuest(page);
-  await createPackageAndLesson(page, unique);
+  await createLessonInGuestStudio(page, unique);
   await page.route(`**/api/board-assets/${assetId}/content`, async (route) => {
     assetAuthorization = route.request().headers().authorization ?? "";
     await route.fulfill({
@@ -212,7 +203,7 @@ test("keeps a board asset load failure inside the visual block", async ({ page }
   const visualId = `sourcevisual_missing_${unique}`;
 
   await enterAsGuest(page);
-  await createPackageAndLesson(page, unique);
+  await createLessonInGuestStudio(page, unique);
   await page.route(`**/api/board-assets/${assetId}/content`, async (route) => {
     await route.fulfill({
       status: 404,

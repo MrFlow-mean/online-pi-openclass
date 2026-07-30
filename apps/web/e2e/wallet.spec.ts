@@ -23,11 +23,9 @@ test("shows PayPal points at face value without exposing the internal cost value
       value: "wallet-test-token",
       domain: "127.0.0.1",
       path: "/",
+      httpOnly: true,
     },
   ]);
-  await context.addInitScript(() => {
-    window.localStorage.setItem("openclass.auth.token", "wallet-test-token");
-  });
   await page.route("**/api/auth/me", (route) =>
     route.fulfill({
       status: 200,
@@ -95,11 +93,9 @@ test("opens a standalone checkout with eligible PayPal payment methods", async (
       value: "wallet-methods-token",
       domain: "127.0.0.1",
       path: "/",
+      httpOnly: true,
     },
   ]);
-  await page.addInitScript(() => {
-    window.localStorage.setItem("openclass.auth.token", "wallet-methods-token");
-  });
   await page.route("**/api/auth/me", (route) =>
     route.fulfill({
       status: 200,

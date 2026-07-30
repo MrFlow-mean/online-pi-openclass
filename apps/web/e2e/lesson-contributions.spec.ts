@@ -152,21 +152,10 @@ async function authenticate(page: Page) {
       value: "browser-test-token",
       domain: "127.0.0.1",
       path: "/",
-      sameSite: "Lax",
-    },
-    {
-      name: "openclass.guest.auth.token",
-      value: "browser-test-guest-token",
-      domain: "127.0.0.1",
-      path: "/",
+      httpOnly: true,
       sameSite: "Lax",
     },
   ]);
-  await page.addInitScript(() => {
-    window.localStorage.setItem("openclass.auth.token", "browser-test-token");
-    window.sessionStorage.setItem("openclass.guest.auth.token", "browser-test-guest-token");
-    document.cookie = "openclass.auth.token=browser-test-token; Path=/; SameSite=Lax";
-  });
   await page.route("**/api/auth/me", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(user) })
   );
