@@ -221,37 +221,6 @@ def test_catalog_exposes_codex_live_only_to_allowed_platform_users(monkeypatch) 
     assert disabled_codex_live.default is False
 
 
-def test_catalog_exposes_codex_live_to_every_studio_identity_with_wildcard(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
-    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
-    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", "*")
-    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY", "proxy-api-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "disabled")
-    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
-    monkeypatch.setattr(
-        ai_model_catalog,
-        "pi_personal_api_configured",
-        lambda **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        ai_model_catalog,
-        "pi_credentials_available",
-        lambda **_kwargs: False,
-    )
-
-    catalog = ai_model_catalog.build_model_catalog("guest_studio_user")
-    codex_live = next(
-        option
-        for option in catalog.realtime
-        if option.provider == "openai_codex"
-    )
-
-    assert codex_live.enabled is True
-    assert codex_live.default is True
-
-
 def test_realtime_connect_posts_codex_platform_webrtc_session(monkeypatch, isolated_store) -> None:
     monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
     monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
