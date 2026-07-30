@@ -8,17 +8,19 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
+from weakref import WeakKeyDictionary
 
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection, connect
 
-from app.models import SelectionRef, new_id
+from app.models import ChatRequest, SelectionRef, TurnIntent, new_id
+from app.services import chat_service
 from app.services.ai_logging import ai_usage_logger
 from app.services.ai_model_catalog import OPENAI_CODEX_REALTIME_MODEL
+from app.services.chat_turn_gate import TurnGateResult
 from app.services.codex_live_task_lifecycle import (
     CodexLiveTask,
     CodexLiveTaskCoordinator,
-    TaskAction,
     TaskDecision,
 )
 from app.services.openai_realtime import (
@@ -26,7 +28,6 @@ from app.services.openai_realtime import (
     _codex_realtime_proxy_url,
 )
 from app.services.realtime_tool_bridge import execute_realtime_delegation
-
 
 _CALL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SESSION_TTL_SECONDS = 60 * 60
@@ -45,8 +46,18 @@ class CodexLiveSession:
     claimed: bool = False
 
 
+@dataclass
+class _RoutedCodexLiveTask(CodexLiveTask):
+    prepared_gate: TurnGateResult | None = None
+    provider_intent_hint: str | None = None
+
+
 _sessions: dict[str, CodexLiveSession] = {}
 _sessions_lock = threading.Lock()
+_routed_input_events: WeakKeyDictionary[
+    CodexLiveTaskCoordinator,
+    dict[str, str],
+] = WeakKeyDictionary()
 
 
 def register_codex_live_session(
@@ -196,6 +207,7 @@ def parse_codex_live_event(payload: str) -> dict[str, Any] | None:
             or _nonempty_identifier(item.get("input_event_id")),
             "provider_reference": _nonempty_identifier(event.get("id"))
             or delegation_id,
+            "provider_intent_hint": _provider_intent_hint(event, item),
         }
     if event_type == "error":
         error = event.get("error")
@@ -213,6 +225,35 @@ def parse_codex_live_event(payload: str) -> dict[str, Any] | None:
 
 def _nonempty_identifier(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _provider_intent_hint(*payloads: dict[str, Any]) -> str | None:
+    for payload in payloads:
+        for key in ("intent", "task_action"):
+            value = _nonempty_identifier(payload.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _claim_input_event(
+    coordinator: CodexLiveTaskCoordinator,
+    task: CodexLiveTask,
+) -> str | None:
+    events = _routed_input_events.setdefault(coordinator, {})
+    duplicate_of = events.get(task.input_event_id)
+    if duplicate_of is None:
+        events[task.input_event_id] = task.delegation_id
+    return duplicate_of
+
+
+def _release_input_event(
+    coordinator: CodexLiveTaskCoordinator,
+    task: CodexLiveTask,
+) -> None:
+    events = _routed_input_events.get(coordinator)
+    if events is not None and events.get(task.input_event_id) == task.delegation_id:
+        events.pop(task.input_event_id, None)
 
 
 async def _send_context(
@@ -257,6 +298,264 @@ async def _send_queue_snapshot(
         websocket,
         send_lock,
         {"type": "codex_live.queue.updated", **coordinator.snapshot()},
+    )
+
+
+def _task_identity(task: CodexLiveTask) -> dict[str, str | None]:
+    return {
+        "delegation_id": task.delegation_id,
+        "turn_id": task.turn_id,
+        "workflow_run_id": task.workflow_run_id,
+        "input_event_id": task.input_event_id,
+        "provider_reference": task.provider_reference,
+    }
+
+
+def _chat_request_for_task(
+    session: CodexLiveSession,
+    task: CodexLiveTask,
+) -> ChatRequest:
+    return ChatRequest(
+        message=task.prompt,
+        session_id=session.client_session_id,
+        turn_id=task.turn_id,
+        input_event_id=task.input_event_id,
+        channel="realtime",
+        input_kind=task.input_kind,
+        provider_reference=task.provider_reference,
+        selection=task.selection,
+    )
+
+
+def _log_authoritative_route(
+    session: CodexLiveSession,
+    task: _RoutedCodexLiveTask,
+    intent: TurnIntent,
+    *,
+    source: str,
+) -> None:
+    ai_usage_logger.log_model_run_event(
+        "turn_routed",
+        run_id=task.workflow_run_id,
+        parent_run_id=session.client_session_id,
+        provider="openai_codex",
+        model=OPENAI_CODEX_REALTIME_MODEL,
+        status="completed",
+        user_id=session.user_id,
+        lesson_id=session.lesson_id,
+        turn_id=task.turn_id,
+        request_kind=(
+            "provider_delegation" if task.provider_delegation else "typed_delegation"
+        ),
+        input_data={"text": task.prompt},
+        output_data={"intent": intent},
+        metadata={
+            "call_id": session.call_id,
+            "queue_source": source,
+            "delegation_id": task.delegation_id,
+            "input_event_id": task.input_event_id,
+            "provider_reference": task.provider_reference,
+            "provider_intent_hint": task.provider_intent_hint,
+            "provider_intent_hint_authoritative": False,
+        },
+    )
+
+
+async def _route_task(
+    session: CodexLiveSession,
+    task: _RoutedCodexLiveTask,
+    *,
+    source: str,
+) -> TurnIntent:
+    request = _chat_request_for_task(session, task)
+    gate = await asyncio.to_thread(
+        chat_service.route_chat_request,
+        session.lesson_id,
+        request,
+        user_id=session.user_id,
+    )
+    task.prepared_gate = gate
+    intent = gate.decision.intent
+    _log_authoritative_route(session, task, intent, source=source)
+    return intent
+
+
+async def _execute_task(
+    session: CodexLiveSession,
+    task: CodexLiveTask,
+    *,
+    on_delta=None,
+    on_agent_activity=None,
+    is_cancelled=None,
+):
+    return await asyncio.to_thread(
+        execute_realtime_delegation,
+        lesson_id=session.lesson_id,
+        user_id=session.user_id,
+        message=task.prompt,
+        client_session_id=session.client_session_id,
+        delegation_id=task.delegation_id,
+        turn_id=task.turn_id,
+        workflow_run_id=task.workflow_run_id,
+        input_event_id=task.input_event_id,
+        input_kind=task.input_kind,
+        provider_reference=task.provider_reference,
+        selection=task.selection,
+        on_delta=on_delta,
+        on_agent_activity=on_agent_activity,
+        is_cancelled=is_cancelled,
+        prepared_gate=getattr(task, "prepared_gate", None),
+    )
+
+
+async def _complete_non_learning_task(
+    websocket: WebSocket,
+    client_send_lock: asyncio.Lock,
+    upstream: ClientConnection,
+    upstream_send_lock: asyncio.Lock,
+    session: CodexLiveSession,
+    coordinator: CodexLiveTaskCoordinator,
+    task: _RoutedCodexLiveTask,
+    *,
+    intent: TurnIntent,
+) -> None:
+    result = await _execute_task(session, task)
+    identity = _task_identity(task)
+    await _send_client_event(
+        websocket,
+        client_send_lock,
+        {
+            "type": "codex_live.workflow.result",
+            **identity,
+            "route": intent,
+            "queue_eligible": False,
+            "result": result.model_dump(mode="json"),
+            **coordinator.snapshot(),
+        },
+    )
+    response_text = str(result.model_output.get("chatbot_message") or "").strip()
+    if result.status == "ok" and response_text:
+        await _send_context(
+            upstream,
+            upstream_send_lock,
+            text=response_text,
+            delegation_id=task.delegation_id if task.provider_delegation else None,
+            channel="speakable",
+        )
+        return
+    _release_input_event(coordinator, task)
+    await _send_client_event(
+        websocket,
+        client_send_lock,
+        {
+            "type": "codex_live.workflow.error",
+            **identity,
+            "message": str(
+                result.model_output.get("message")
+                or "Chatbot 工作流未返回可朗读内容"
+            ),
+        },
+    )
+
+
+async def _route_and_dispatch_task(
+    websocket: WebSocket,
+    client_send_lock: asyncio.Lock,
+    upstream: ClientConnection,
+    upstream_send_lock: asyncio.Lock,
+    session: CodexLiveSession,
+    coordinator: CodexLiveTaskCoordinator,
+    task: _RoutedCodexLiveTask,
+    *,
+    source: str,
+) -> None:
+    duplicate_of = _claim_input_event(coordinator, task)
+    if duplicate_of is not None:
+        await _send_client_event(
+            websocket,
+            client_send_lock,
+            {
+                "type": "codex_live.workflow.duplicate",
+                **_task_identity(task),
+                "duplicate_of": duplicate_of,
+                **coordinator.snapshot(),
+            },
+        )
+        return
+    try:
+        intent = await _route_task(session, task, source=source)
+    except Exception as exc:  # noqa: BLE001 - routing failures must fail closed
+        _release_input_event(coordinator, task)
+        ai_usage_logger.log_model_run_event(
+            "turn_route_failed",
+            run_id=task.workflow_run_id,
+            parent_run_id=session.client_session_id,
+            provider="openai_codex",
+            model=OPENAI_CODEX_REALTIME_MODEL,
+            status="failed",
+            user_id=session.user_id,
+            lesson_id=session.lesson_id,
+            turn_id=task.turn_id,
+            request_kind=(
+                "provider_delegation"
+                if task.provider_delegation
+                else "typed_delegation"
+            ),
+            input_data={"text": task.prompt},
+            error=str(exc),
+            metadata={
+                "call_id": session.call_id,
+                "queue_source": source,
+                "delegation_id": task.delegation_id,
+                "input_event_id": task.input_event_id,
+                "provider_intent_hint": task.provider_intent_hint,
+                "provider_intent_hint_authoritative": False,
+            },
+        )
+        await _send_client_event(
+            websocket,
+            client_send_lock,
+            {
+                "type": "codex_live.workflow.error",
+                **_task_identity(task),
+                "message": str(exc),
+                **coordinator.snapshot(),
+            },
+        )
+        return
+    await _send_client_event(
+        websocket,
+        client_send_lock,
+        {
+            "type": "codex_live.turn.routed",
+            **_task_identity(task),
+            "route": intent,
+            "queue_eligible": intent == "learning_need",
+            **coordinator.snapshot(),
+        },
+    )
+    if intent in {"ordinary_chat", "unclear"}:
+        await _complete_non_learning_task(
+            websocket,
+            client_send_lock,
+            upstream,
+            upstream_send_lock,
+            session,
+            coordinator,
+            task,
+            intent=intent,
+        )
+        return
+    decision = await coordinator.submit(task)
+    await _publish_task_decision(
+        websocket,
+        client_send_lock,
+        upstream,
+        upstream_send_lock,
+        session,
+        coordinator,
+        decision,
+        source=source,
     )
 
 
@@ -305,13 +604,14 @@ async def _publish_task_decision(
 ) -> None:
     _log_task_decision(session, decision, source=source)
     task = decision.task
+    identity = _task_identity(task)
     if decision.kind == "queued":
         await _send_client_event(
             websocket,
             client_send_lock,
             {
                 "type": "codex_live.workflow.queued",
-                "delegation_id": task.delegation_id,
+                **identity,
                 "text": task.prompt,
                 "position": decision.queue_position,
                 **coordinator.snapshot(),
@@ -323,7 +623,7 @@ async def _publish_task_decision(
             client_send_lock,
             {
                 "type": "codex_live.workflow.input_pending",
-                "delegation_id": task.delegation_id,
+                **identity,
                 "text": task.prompt,
                 "actions": ["supplement", "replace", "queue", "chat", "dismiss"],
                 **coordinator.snapshot(),
@@ -335,7 +635,7 @@ async def _publish_task_decision(
             client_send_lock,
             {
                 "type": "codex_live.workflow.duplicate",
-                "delegation_id": task.delegation_id,
+                **identity,
                 "duplicate_of": decision.duplicate_of,
                 **coordinator.snapshot(),
             },
@@ -352,7 +652,7 @@ async def _publish_task_decision(
             client_send_lock,
             {
                 "type": "codex_live.workflow.dismissed",
-                "delegation_id": task.delegation_id,
+                **identity,
                 "reason": "ordinary_chat",
                 **coordinator.snapshot(),
             },
@@ -363,7 +663,7 @@ async def _publish_task_decision(
             client_send_lock,
             {
                 "type": "codex_live.workflow.dismissed",
-                "delegation_id": task.delegation_id,
+                **identity,
                 "reason": "user_dismissed",
                 **coordinator.snapshot(),
             },
@@ -396,58 +696,80 @@ async def _handle_client_messages(
         elif payload.get("type") == "input_text":
             text = str(payload.get("text") or "").strip()
             if text:
-                raw_action = str(payload.get("task_action") or "auto")
-                action: TaskAction = (
-                    raw_action
-                    if raw_action in {"auto", "queue", "supplement", "replace", "chat", "dismiss"}
-                    else "auto"
+                task = _RoutedCodexLiveTask(
+                    delegation_id=(
+                        _nonempty_identifier(payload.get("delegation_id"))
+                        or new_id("typed_delegation")
+                    ),
+                    prompt=text,
+                    provider_delegation=False,
+                    turn_id=(
+                        _nonempty_identifier(payload.get("turn_id"))
+                        or new_id("realtime_turn")
+                    ),
+                    workflow_run_id=new_id("workflow_run"),
+                    input_event_id=(
+                        _nonempty_identifier(payload.get("input_event_id"))
+                        or new_id("realtime_input")
+                    ),
+                    input_kind=(
+                        payload["input_kind"]
+                        if payload.get("input_kind") in {"typed", "voice"}
+                        else "typed"
+                    ),
+                    provider_reference=_nonempty_identifier(
+                        payload.get("provider_reference")
+                    ),
+                    selection=_snapshot_selection(session.selection),
+                    action="auto",
+                    provider_intent_hint=_provider_intent_hint(payload),
                 )
-                decision = await coordinator.submit(
-                    CodexLiveTask(
-                        delegation_id=(
-                            _nonempty_identifier(payload.get("delegation_id"))
-                            or new_id("typed_delegation")
-                        ),
-                        prompt=text,
-                        provider_delegation=False,
-                        turn_id=(
-                            _nonempty_identifier(payload.get("turn_id"))
-                            or new_id("realtime_turn")
-                        ),
-                        workflow_run_id=new_id("workflow_run"),
-                        input_event_id=(
-                            _nonempty_identifier(payload.get("input_event_id"))
-                            or new_id("realtime_input")
-                        ),
-                        input_kind=(
-                            payload["input_kind"]
-                            if payload.get("input_kind") in {"typed", "voice"}
-                            else "typed"
-                        ),
-                        provider_reference=_nonempty_identifier(
-                            payload.get("provider_reference")
-                        ),
-                        selection=_snapshot_selection(session.selection),
-                        action=action,
-                    )
-                )
-                await _publish_task_decision(
+                await _route_and_dispatch_task(
                     websocket,
                     client_send_lock,
                     upstream,
                     upstream_send_lock,
                     session,
                     coordinator,
-                    decision,
+                    task,
                     source="client",
                 )
         elif payload.get("type") == "delegation.resolve":
             delegation_id = str(payload.get("delegation_id") or "")
             raw_action = str(payload.get("action") or "")
-            if raw_action not in {"queue", "supplement", "replace", "chat", "dismiss"}:
+            if raw_action not in {
+                "auto",
+                "task",
+                "queue",
+                "supplement",
+                "replace",
+                "chat",
+                "dismiss",
+            }:
                 continue
-            decision = await coordinator.resolve(delegation_id, raw_action)
+            action = (
+                "queue"
+                if raw_action in {"auto", "task", "chat"}
+                else raw_action
+            )
+            if raw_action in {"auto", "task", "chat"}:
+                ai_usage_logger.log_event(
+                    "codex_live_client_intent_hint_ignored",
+                    lesson_id=session.lesson_id,
+                    client_session_id=session.client_session_id,
+                    delegation_id=delegation_id,
+                    client_intent_hint=raw_action,
+                    authoritative_route="learning_need",
+                )
+            decision = await coordinator.resolve(delegation_id, action)
             if decision is not None:
+                if action == "supplement" and isinstance(
+                    decision.task,
+                    _RoutedCodexLiveTask,
+                ):
+                    # The coordinator combines both prompts, so the frozen gate no
+                    # longer matches the resulting message and must be recomputed.
+                    decision.task.prepared_gate = None
                 await _publish_task_decision(
                     websocket,
                     client_send_lock,
@@ -497,7 +819,7 @@ async def _handle_delegations(
                 client_send_lock,
                 {
                     "type": "codex_live.workflow.started",
-                    "delegation_id": task.delegation_id,
+                    **_task_identity(task),
                     **coordinator.snapshot(),
                 },
             )
@@ -528,7 +850,7 @@ async def _handle_delegations(
                         client_send_lock,
                         {
                             "type": "codex_live.workflow.progress",
-                            "delegation_id": task.delegation_id,
+                            **_task_identity(task),
                             "activity": event.model_dump(mode="json"),
                         },
                     ),
@@ -542,26 +864,16 @@ async def _handle_delegations(
                         client_send_lock,
                         {
                             "type": "codex_live.workflow.output_delta",
-                            "delegation_id": task.delegation_id,
+                            **_task_identity(task),
                             "delta": delta,
                         },
                     ),
                     loop,
                 ))
 
-            result = await asyncio.to_thread(
-                execute_realtime_delegation,
-                lesson_id=session.lesson_id,
-                user_id=session.user_id,
-                message=task.prompt,
-                client_session_id=session.client_session_id,
-                delegation_id=task.delegation_id,
-                turn_id=task.turn_id,
-                workflow_run_id=task.workflow_run_id,
-                input_event_id=task.input_event_id,
-                input_kind=task.input_kind,
-                provider_reference=task.provider_reference,
-                selection=task.selection,
+            result = await _execute_task(
+                session,
+                task,
                 on_delta=publish_delta,
                 on_agent_activity=publish_progress,
                 is_cancelled=cancel_event.is_set,
@@ -578,7 +890,7 @@ async def _handle_delegations(
                     client_send_lock,
                     {
                         "type": "codex_live.workflow.cancelled",
-                        "delegation_id": task.delegation_id,
+                        **_task_identity(task),
                         **coordinator.snapshot(),
                     },
                 )
@@ -588,7 +900,7 @@ async def _handle_delegations(
                 client_send_lock,
                 {
                     "type": "codex_live.workflow.result",
-                    "delegation_id": task.delegation_id,
+                    **_task_identity(task),
                     "result": result.model_dump(mode="json"),
                 },
             )
@@ -639,7 +951,7 @@ async def _handle_delegations(
                     client_send_lock,
                     {
                         "type": "codex_live.workflow.error",
-                        "delegation_id": task.delegation_id,
+                        **_task_identity(task),
                         "message": str(result.model_output.get("message") or "Chatbot 工作流未返回可朗读内容"),
                     },
                 )
@@ -707,27 +1019,27 @@ async def _handle_upstream_messages(
                 },
             )
         elif kind == "delegation":
-            decision = await coordinator.submit(
-                CodexLiveTask(
-                    delegation_id=event["id"],
-                    prompt=event["prompt"],
-                    provider_delegation=True,
-                    turn_id=event.get("turn_id") or new_id("realtime_turn"),
-                    workflow_run_id=new_id("workflow_run"),
-                    input_event_id=event.get("input_event_id") or event["id"],
-                    input_kind="voice",
-                    provider_reference=event.get("provider_reference") or event["id"],
-                    selection=_snapshot_selection(session.selection),
-                )
+            task = _RoutedCodexLiveTask(
+                delegation_id=event["id"],
+                prompt=event["prompt"],
+                provider_delegation=True,
+                turn_id=event.get("turn_id") or new_id("realtime_turn"),
+                workflow_run_id=new_id("workflow_run"),
+                input_event_id=event.get("input_event_id") or event["id"],
+                input_kind="voice",
+                provider_reference=event.get("provider_reference") or event["id"],
+                selection=_snapshot_selection(session.selection),
+                action="auto",
+                provider_intent_hint=event.get("provider_intent_hint"),
             )
-            await _publish_task_decision(
+            await _route_and_dispatch_task(
                 websocket,
                 client_send_lock,
                 upstream,
                 upstream_send_lock,
                 session,
                 coordinator,
-                decision,
+                task,
                 source="provider",
             )
         elif kind == "error":

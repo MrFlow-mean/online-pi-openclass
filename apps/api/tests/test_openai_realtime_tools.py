@@ -6,16 +6,22 @@ from types import SimpleNamespace
 from unittest.mock import ANY
 
 import pytest
-
 from app.models import (
     AIModelSelection,
     RealtimeConnectRequest,
     RealtimeToolCallRequest,
+    RealtimeToolCallResponse,
     RealtimeTranscriptLogRequest,
     SelectionRef,
     TurnDecision,
 )
-from app.services import ai_model_catalog, chat_service, codex_live_sideband, openai_realtime, workspace_state
+from app.services import (
+    ai_model_catalog,
+    chat_service,
+    codex_live_sideband,
+    openai_realtime,
+    workspace_state,
+)
 from app.services.codex_live_task_lifecycle import (
     CodexLiveTask,
     CodexLiveTaskCoordinator,
@@ -23,9 +29,11 @@ from app.services.codex_live_task_lifecycle import (
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.realtime_board_context import read_realtime_board_context
-from app.services.realtime_tool_bridge import execute_realtime_delegation, execute_realtime_tool
+from app.services.realtime_tool_bridge import (
+    execute_realtime_delegation,
+    execute_realtime_tool,
+)
 from app.services.rich_document import build_document
-
 
 TEST_USER_ID = "user_realtime_test"
 
@@ -329,6 +337,7 @@ def test_codex_live_sideband_wire_parser_and_utf8_chunking(monkeypatch) -> None:
         "turn_id": None,
         "input_event_id": None,
         "provider_reference": "delegation_1",
+        "provider_intent_hint": None,
     }
     chunks = codex_live_sideband.chunk_codex_live_text("你" * 400)
     assert "".join(chunks) == "你" * 400
@@ -369,7 +378,22 @@ def test_codex_live_sideband_session_is_bound_and_single_claim() -> None:
         codex_live_sideband.release_codex_live_session("rtc_bound_session")
 
 
-def test_codex_live_typed_input_enters_chatbot_queue_with_selection_snapshot() -> None:
+def test_codex_live_typed_input_enters_chatbot_queue_only_after_authoritative_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routed_requests = []
+
+    def _route(_lesson_id, request, *, user_id):
+        routed_requests.append((request, user_id))
+        return SimpleNamespace(
+            decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            )
+        )
+
+    monkeypatch.setattr(chat_service, "route_chat_request", _route)
+
     class _FakeWebSocket:
         def __init__(self):
             self.calls = 0
@@ -385,6 +409,7 @@ def test_codex_live_typed_input_enters_chatbot_queue_with_selection_snapshot() -
                     "input_event_id": "typed_event_client",
                     "input_kind": "typed",
                     "provider_reference": "typed_provider_reference",
+                    "intent": "chat",
                 }
             await asyncio.Future()
 
@@ -435,6 +460,173 @@ def test_codex_live_typed_input_enters_chatbot_queue_with_selection_snapshot() -
     assert queued.provider_delegation is False
     assert queued.selection is not None
     assert queued.selection.excerpt == "初始选区"
+    assert queued.action == "auto"
+    assert routed_requests[0][0].message == "读取当前板书"
+    assert routed_requests[0][0].channel == "realtime"
+    assert routed_requests[0][0].selection is not None
+    assert routed_requests[0][0].selection.excerpt == "初始选区"
+    assert routed_requests[0][1] == TEST_USER_ID
+
+
+@pytest.mark.parametrize(
+    ("authoritative_intent", "client_intent"),
+    [
+        ("ordinary_chat", "task"),
+        ("ordinary_chat", "chat"),
+        ("unclear", "auto"),
+    ],
+)
+def test_codex_live_non_learning_route_bypasses_queue_and_speaks_only_backend_reply(
+    monkeypatch: pytest.MonkeyPatch,
+    authoritative_intent,
+    client_intent,
+) -> None:
+    gate = SimpleNamespace(
+        decision=TurnDecision(
+            intent=authoritative_intent,
+            reason="The backend made the authoritative decision.",
+        )
+    )
+    routed_requests = []
+    executions = []
+
+    def _route(_lesson_id, request, *, user_id):
+        routed_requests.append((request, user_id))
+        return gate
+
+    def _execute(**kwargs):
+        executions.append(kwargs)
+        return RealtimeToolCallResponse(
+            status="ok",
+            model_output={
+                "status": "ok",
+                "route": authoritative_intent,
+                "chatbot_message": "Backend-owned response.",
+            },
+        )
+
+    monkeypatch.setattr(chat_service, "route_chat_request", _route)
+    monkeypatch.setattr(codex_live_sideband, "execute_realtime_delegation", _execute)
+
+    class _FakeWebSocket:
+        def __init__(self):
+            self.calls = 0
+            self.sent = []
+
+        async def receive_json(self):
+            self.calls += 1
+            if self.calls <= 2:
+                return {
+                    "type": "input_text",
+                    "text": "Original learner message.",
+                    "intent": client_intent,
+                    "delegation_id": (
+                        "delegation_direct"
+                        if self.calls == 1
+                        else "delegation_direct_redelivery"
+                    ),
+                    "turn_id": "turn_direct",
+                    "input_event_id": "event_direct",
+                    "provider_reference": "provider_direct",
+                }
+            await asyncio.Future()
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    class _FakeUpstream:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+    async def _exercise():
+        websocket = _FakeWebSocket()
+        upstream = _FakeUpstream()
+        coordinator = CodexLiveTaskCoordinator()
+
+        async def _forbid_submit(_task):
+            raise AssertionError("A non-learning turn must never enter coordinator.submit")
+
+        coordinator.submit = _forbid_submit
+        session = codex_live_sideband.CodexLiveSession(
+            call_id="rtc_direct",
+            lesson_id="lesson_direct",
+            user_id=TEST_USER_ID,
+            client_session_id="session_direct",
+            transport_session_id="transport_direct",
+            selection=None,
+            created_at=0,
+        )
+        handler = asyncio.create_task(
+            codex_live_sideband._handle_client_messages(
+                websocket,
+                upstream,
+                session,
+                asyncio.Lock(),
+                asyncio.Lock(),
+                coordinator,
+            )
+        )
+        for _ in range(50):
+            has_result = any(
+                item.get("type") == "codex_live.workflow.result"
+                for item in websocket.sent
+            )
+            has_duplicate = any(
+                item.get("type") == "codex_live.workflow.duplicate"
+                for item in websocket.sent
+            )
+            if has_result and has_duplicate:
+                break
+            await asyncio.sleep(0)
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        return websocket, upstream, coordinator
+
+    websocket, upstream, coordinator = asyncio.run(_exercise())
+    assert coordinator.snapshot() == {
+        "running_count": 0,
+        "queued_count": 0,
+        "pending_count": 0,
+        "active_delegation_id": None,
+    }
+    routed = next(
+        item for item in websocket.sent if item["type"] == "codex_live.turn.routed"
+    )
+    assert routed["route"] == authoritative_intent
+    assert routed["queue_eligible"] is False
+    assert routed["turn_id"] == "turn_direct"
+    assert routed["workflow_run_id"].startswith("workflow_run_")
+    assert routed["delegation_id"] == "delegation_direct"
+    assert len(
+        {
+            routed["turn_id"],
+            routed["workflow_run_id"],
+            routed["delegation_id"],
+        }
+    ) == 3
+    assert routed_requests[0][0].message == "Original learner message."
+    assert routed_requests[0][1] == TEST_USER_ID
+    assert executions[0]["prepared_gate"] is gate
+    assert executions[0]["message"] == "Original learner message."
+    assert len(routed_requests) == 1
+    assert len(executions) == 1
+    duplicate = next(
+        item
+        for item in websocket.sent
+        if item["type"] == "codex_live.workflow.duplicate"
+    )
+    assert duplicate["duplicate_of"] == "delegation_direct"
+    assert upstream.sent == [
+        {
+            "type": "session.context.append",
+            "channel": "speakable",
+            "content": [{"type": "input_text", "text": "Backend-owned response."}],
+        }
+    ]
+    assert "Original learner message." not in json.dumps(upstream.sent)
 
 
 def test_codex_live_queue_deduplicates_only_the_same_input_event() -> None:
@@ -650,6 +842,79 @@ def test_codex_live_running_work_treats_resolved_chat_as_conversation_not_docume
         "pending_count": 0,
         "active_delegation_id": "task_1",
     }
+
+
+def test_codex_live_client_chat_hint_cannot_override_authoritative_learning_route() -> None:
+    class _FakeWebSocket:
+        def __init__(self):
+            self.calls = 0
+
+        async def receive_json(self):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "type": "delegation.resolve",
+                    "delegation_id": "task_pending",
+                    "action": "chat",
+                }
+            await asyncio.Future()
+
+        async def send_json(self, _payload):
+            return None
+
+    class _FakeUpstream:
+        async def send(self, _payload):
+            raise AssertionError("A client hint must not bypass the backend learning route")
+
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        active = CodexLiveTask("task_active", "Active work.", True)
+        await coordinator.submit(active)
+        await coordinator.begin(await coordinator.queue.get())
+        pending = codex_live_sideband._RoutedCodexLiveTask(
+            "task_pending",
+            "Backend-classified learning work.",
+            True,
+            prepared_gate=SimpleNamespace(
+                decision=TurnDecision(
+                    intent="learning_need",
+                    reason="The backend confirmed a learning request.",
+                )
+            ),
+        )
+        pending_decision = await coordinator.submit(pending)
+        assert pending_decision.kind == "pending"
+        session = codex_live_sideband.CodexLiveSession(
+            call_id="rtc_resolve",
+            lesson_id="lesson_resolve",
+            user_id=TEST_USER_ID,
+            client_session_id="session_resolve",
+            transport_session_id="transport_resolve",
+            selection=None,
+            created_at=0,
+        )
+        handler = asyncio.create_task(
+            codex_live_sideband._handle_client_messages(
+                _FakeWebSocket(),
+                _FakeUpstream(),
+                session,
+                asyncio.Lock(),
+                asyncio.Lock(),
+                coordinator,
+            )
+        )
+        for _ in range(50):
+            if coordinator.queue.qsize() == 1:
+                break
+            await asyncio.sleep(0)
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        return coordinator.queue.get_nowait(), coordinator
+
+    queued, coordinator = asyncio.run(_exercise())
+    assert queued.delegation_id == "task_pending"
+    assert queued.status == "queued"
+    assert coordinator.snapshot()["pending_count"] == 0
 
 
 def test_codex_live_typed_result_uses_speakable_session_context() -> None:

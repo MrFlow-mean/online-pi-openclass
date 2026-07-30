@@ -12,6 +12,7 @@ from app.models import (
     new_id,
 )
 from app.services.ai_logging import ai_usage_logger
+from app.services.chat_turn_gate import TurnGateResult
 
 
 def realtime_tool_schemas() -> list[dict[str, Any]]:
@@ -150,6 +151,7 @@ def execute_realtime_delegation(
     on_delta: Callable[[str], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    prepared_gate: TurnGateResult | None = None,
 ) -> RealtimeToolCallResponse:
     """Run a Codex Live client delegation through the normal Chatbot workflow."""
     normalized = message.strip()
@@ -185,23 +187,29 @@ def execute_realtime_delegation(
         if delegation_id.strip():
             commit_metadata["delegation_id"] = delegation_id.strip()
             commit_metadata["realtime_delegation_id"] = delegation_id.strip()
+        request = ChatRequest(
+            message=normalized,
+            session_id=client_session_id,
+            turn_id=effective_turn_id,
+            input_event_id=effective_input_event_id,
+            channel="realtime",
+            input_kind=input_kind,
+            provider_reference=effective_provider_reference,
+            selection=selection,
+        )
+        process_kwargs: dict[str, Any] = {
+            "user_id": user_id,
+            "on_delta": on_delta,
+            "on_agent_activity": on_agent_activity,
+            "is_cancelled": is_cancelled,
+            "commit_metadata": commit_metadata,
+        }
+        if prepared_gate is not None:
+            process_kwargs["prepared_gate"] = prepared_gate
         chat_response = process_chat_on_lesson(
             lesson_id,
-            ChatRequest(
-                message=normalized,
-                session_id=client_session_id,
-                turn_id=effective_turn_id,
-                input_event_id=effective_input_event_id,
-                channel="realtime",
-                input_kind=input_kind,
-                provider_reference=effective_provider_reference,
-                selection=selection,
-            ),
-            user_id=user_id,
-            on_delta=on_delta,
-            on_agent_activity=on_agent_activity,
-            is_cancelled=is_cancelled,
-            commit_metadata=commit_metadata,
+            request,
+            **process_kwargs,
         )
         response = _chat_response_as_realtime_result(
             chat_response,

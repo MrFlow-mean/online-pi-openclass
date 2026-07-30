@@ -16,7 +16,11 @@ from app.models import (
     SelectionRef,
 )
 from app.services import workspace_state
-from app.services.chat_turn_gate import complete_non_learning_turn, evaluate_turn_gate
+from app.services.chat_turn_gate import (
+    TurnGateResult,
+    complete_non_learning_turn,
+    evaluate_turn_gate,
+)
 from app.services.codex_chat import process_codex_chat_on_lesson
 from app.services.existing_board.interaction_workflow import (
     ExistingBoardInteractionReroute,
@@ -47,7 +51,14 @@ def process_chat_on_lesson(
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     commit_metadata: dict[str, object] | None = None,
+    prepared_gate: TurnGateResult | None = None,
 ) -> ChatResponse:
+    if prepared_gate is not None:
+        _require_matching_prepared_gate(
+            prepared_gate,
+            lesson_id=lesson_id,
+            request=request,
+        )
     idempotency_key = _chat_idempotency_key(request, user_id=user_id)
     if idempotency_key is None:
         return _process_chat_on_lesson_once(
@@ -59,6 +70,7 @@ def process_chat_on_lesson(
             on_agent_activity=on_agent_activity,
             is_cancelled=is_cancelled,
             commit_metadata=commit_metadata,
+            prepared_gate=prepared_gate,
         )
     fingerprint = _chat_request_fingerprint(lesson_id, request)
     with _idempotency_lock:
@@ -92,6 +104,7 @@ def process_chat_on_lesson(
                 **(commit_metadata or {}),
                 **_chat_idempotency_metadata(request),
             },
+            prepared_gate=prepared_gate,
         )
     except BaseException as exc:
         with _idempotency_lock:
@@ -119,10 +132,11 @@ def _process_chat_on_lesson_once(
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     commit_metadata: dict[str, object] | None = None,
+    prepared_gate: TurnGateResult | None = None,
 ) -> ChatResponse:
-    gate = evaluate_turn_gate(
+    gate = prepared_gate or route_chat_request(
+        lesson_id,
         request,
-        lesson_id=lesson_id,
         user_id=user_id,
         on_agent_activity=on_agent_activity,
     )
@@ -187,6 +201,48 @@ def _process_chat_on_lesson_once(
         response,
         user_id=user_id,
     )
+
+
+def route_chat_request(
+    lesson_id: str,
+    request: ChatRequest,
+    *,
+    user_id: str,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+) -> TurnGateResult:
+    """Run the same authoritative, board-free Turn Router used by every chat transport."""
+
+    return evaluate_turn_gate(
+        request,
+        lesson_id=lesson_id,
+        user_id=user_id,
+        on_agent_activity=on_agent_activity,
+    )
+
+
+def _require_matching_prepared_gate(
+    gate: TurnGateResult,
+    *,
+    lesson_id: str,
+    request: ChatRequest,
+) -> None:
+    envelope = gate.envelope
+    expected_references = request.selections or (
+        [request.selection] if request.selection is not None else []
+    )
+    if (
+        envelope.lesson_id != lesson_id
+        or envelope.message != request.message
+        or envelope.session_id != request.session_id
+        or envelope.turn_id != request.turn_id
+        or envelope.input_event_id != request.input_event_id
+        or envelope.channel != request.channel
+        or envelope.input_kind != request.input_kind
+        or envelope.provider_reference != request.provider_reference
+        or [item.model_dump(mode="json") for item in envelope.references]
+        != [item.model_dump(mode="json") for item in expected_references]
+    ):
+        raise ValueError("The prepared Turn Router result does not match this chat input.")
 
 
 def _should_use_bounded_existing_board_workflow(

@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
-from fastapi import WebSocketDisconnect
-
-from app.models import UserView
+from app.models import TurnDecision, UserView
 from app.routers import chat
 from app.services import codex_live_sideband, pi_agent_runtime
 from app.services.ai_logging import AIUsageLogger, ai_log_context
 from app.services.codex_live_sideband import CodexLiveSession
 from app.services.codex_live_task_lifecycle import CodexLiveTaskCoordinator
 from app.services.pi_agent_runtime import PiTextClient
+from fastapi import WebSocketDisconnect
 
 
 def _pi_stdout(content: str) -> str:
@@ -155,6 +155,16 @@ def test_codex_live_typed_input_is_queued_with_a_correlated_audit_event(
 ) -> None:
     logger = AIUsageLogger(tmp_path / "ai-usage.jsonl")
     monkeypatch.setattr(codex_live_sideband, "ai_usage_logger", logger)
+    monkeypatch.setattr(
+        codex_live_sideband.chat_service,
+        "route_chat_request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            )
+        ),
+    )
     session = CodexLiveSession(
         call_id="call_a",
         lesson_id="lesson_a",
@@ -195,7 +205,9 @@ def test_codex_live_typed_input_is_queued_with_a_correlated_audit_event(
     assert queued_task.provider_delegation is False
     history = logger.read_lesson_events(lesson_id="lesson_a")
     queued = history["events"][-1]["payload"]
-    assert queued["run_id"] == queued_task.delegation_id
+    assert queued["run_id"] == queued_task.workflow_run_id
+    assert queued["turn_id"] == queued_task.turn_id
     assert queued["parent_run_id"] == "realtime_a"
     assert queued["event"] == "queued"
     assert queued["input"] == {"text": "继续这个任务"}
+    assert queued["metadata"]["delegation_id"] == queued_task.delegation_id
