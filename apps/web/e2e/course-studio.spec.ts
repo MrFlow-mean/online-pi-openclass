@@ -692,6 +692,8 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await page.getByTitle("展开右侧栏").click();
   await page.getByRole("button", { name: "Sources" }).click();
 
+  await expect(page.getByText("GitHub 仓库", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "连接 GitHub" })).toHaveCount(0);
   await expect(page.getByText("已上传 2 份资料")).toBeVisible();
   await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
     "aria-label",
