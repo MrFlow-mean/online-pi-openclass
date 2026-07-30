@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
+    "prestart": "node ../../scripts/validate-web-runtime.mjs",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
