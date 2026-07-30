@@ -1612,6 +1612,9 @@ export type RealtimeToolName = "read_board_context" | "run_chatbot_workflow";
 export interface RealtimeToolCallPayload {
   client_session_id: string;
   turn_id?: string | null;
+  input_event_id?: string | null;
+  input_kind?: "typed" | "voice";
+  provider_reference?: string | null;
   call_id: string;
   name: RealtimeToolName;
   arguments: Record<string, unknown>;

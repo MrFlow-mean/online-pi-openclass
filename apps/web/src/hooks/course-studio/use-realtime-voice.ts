@@ -38,6 +38,16 @@ type RealtimeFunctionCall = {
   arguments: Record<string, unknown>;
 };
 
+type RealtimeInputKind = "typed" | "voice";
+
+export type RealtimeTurnIdentity = {
+  turnId: string;
+  inputEventId: string;
+  inputKind: RealtimeInputKind;
+};
+
+type RealtimeIdentityFactory = (prefix: string) => string;
+
 type OpenAIRealtimeEvent = {
   type?: string;
   transcript?: string;
@@ -150,6 +160,21 @@ function createClientSessionId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
+export function resolveRealtimeTurnIdentity(
+  current: RealtimeTurnIdentity | null,
+  inputKind: RealtimeInputKind,
+  createId: RealtimeIdentityFactory = createClientSessionId
+): RealtimeTurnIdentity {
+  if (current) {
+    return current;
+  }
+  return {
+    turnId: createId("turn"),
+    inputEventId: createId("input-event"),
+    inputKind,
+  };
+}
+
 export function useRealtimeVoice({
   activeLesson,
   latestAssistantMessageContent,
@@ -190,7 +215,7 @@ export function useRealtimeVoice({
   const openAIInputTranscriptsRef = useRef(new Map<string, string>());
   const openAIProcessedToolCallsRef = useRef(new Set<string>());
   const realtimeBoardReferencesRef = useRef<SelectionRef[]>([]);
-  const realtimeTurnIdRef = useRef<string | null>(null);
+  const realtimeTurnIdentityRef = useRef<RealtimeTurnIdentity | null>(null);
   const codexLiveDelegationTurnIdsRef = useRef(new Map<string, string>());
   const currentSelectionRef = useRef<SelectionRef | null>(currentSelection);
   const realtimeLessonIdRef = useRef<string | null>(null);
@@ -241,19 +266,22 @@ export function useRealtimeVoice({
     }
   }, [currentSelection, currentSelections, voiceActive]);
 
-  function currentTurnId() {
-    if (!realtimeTurnIdRef.current) {
-      realtimeTurnIdRef.current = createClientSessionId("turn");
-    }
-    return realtimeTurnIdRef.current;
+  function currentTurnIdentity() {
+    const identity = resolveRealtimeTurnIdentity(realtimeTurnIdentityRef.current, "voice");
+    realtimeTurnIdentityRef.current = identity;
+    return identity;
   }
 
-  function beginRealtimeTurn() {
-    const turnId = createClientSessionId("turn");
-    realtimeTurnIdRef.current = turnId;
+  function currentTurnId() {
+    return currentTurnIdentity().turnId;
+  }
+
+  function beginRealtimeTurn(inputKind: RealtimeInputKind = "voice") {
+    const identity = resolveRealtimeTurnIdentity(null, inputKind);
+    realtimeTurnIdentityRef.current = identity;
     openAIAssistantTranscriptRef.current = "";
     openAIAssistantMessageIdRef.current = null;
-    return turnId;
+    return identity;
   }
 
   function delegationTurnId(delegationId: string) {
@@ -364,7 +392,7 @@ export function useRealtimeVoice({
     openAIInputTranscriptsRef.current.clear();
     openAIProcessedToolCallsRef.current.clear();
     realtimeBoardReferencesRef.current = [];
-    realtimeTurnIdRef.current = null;
+    realtimeTurnIdentityRef.current = null;
     codexLiveDelegationTurnIdsRef.current.clear();
     setCodexLiveTaskState({
       runningCount: 0,
@@ -427,8 +455,9 @@ export function useRealtimeVoice({
     if (!normalized) {
       return;
     }
-    const turnId = currentTurnId();
-    const messageId = `realtime:${turnId}:user`;
+    const turnIdentity = currentTurnIdentity();
+    const turnId = turnIdentity.turnId;
+    const messageId = turnIdentity.inputEventId;
     if (!openAIClientDelegationEnabledRef.current) {
       enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized, {
         clientEventId: messageId,
@@ -487,7 +516,7 @@ export function useRealtimeVoice({
       });
       googleOutputTranscriptRef.current = "";
     }
-    realtimeTurnIdRef.current = null;
+    realtimeTurnIdentityRef.current = null;
     openAIAssistantMessageIdRef.current = null;
   }
 
@@ -743,7 +772,7 @@ export function useRealtimeVoice({
                 }));
                 openAIAssistantTranscriptRef.current = "";
                 openAIAssistantMessageIdRef.current = null;
-                realtimeTurnIdRef.current = null;
+                realtimeTurnIdentityRef.current = null;
               }
               return;
             }
@@ -890,7 +919,9 @@ export function useRealtimeVoice({
               continue;
             }
             openAIProcessedToolCallsRef.current.add(functionCall.callId);
-            const turnId = currentTurnId();
+            const turnIdentity = currentTurnIdentity();
+            const turnId = turnIdentity.turnId;
+            const providerReference = payload.response_id ?? payload.item_id ?? functionCall.callId;
             const toolLabel = functionCall.name === "read_board_context" ? "正在定位并读取板书" : "正在交给 Chatbot 工作流处理";
             setVoiceStatusText(toolLabel);
             onToolStatusUpdate({ lessonId, turnId, label: toolLabel, status: "pending" });
@@ -916,6 +947,9 @@ export function useRealtimeVoice({
                     api.callRealtimeTool(lessonId, {
                       client_session_id: clientSessionId,
                       turn_id: turnId,
+                      input_event_id: turnIdentity.inputEventId,
+                      input_kind: turnIdentity.inputKind,
+                      provider_reference: providerReference,
                       call_id: `${functionCall.callId}_reference_${index + 1}`,
                       name: functionCall.name,
                       arguments: functionCall.arguments,
@@ -928,6 +962,9 @@ export function useRealtimeVoice({
                 toolResult = await api.callRealtimeTool(lessonId, {
                   client_session_id: clientSessionId,
                   turn_id: turnId,
+                  input_event_id: turnIdentity.inputEventId,
+                  input_kind: turnIdentity.inputKind,
+                  provider_reference: providerReference,
                   call_id: functionCall.callId,
                   name: functionCall.name,
                   arguments: functionCall.arguments,
@@ -1094,8 +1131,9 @@ export function useRealtimeVoice({
     } else if (!dataChannel || dataChannel.readyState !== "open") {
       return false;
     }
-    const turnId = beginRealtimeTurn();
-    const messageId = `realtime:${turnId}:user`;
+    const turnIdentity = beginRealtimeTurn("typed");
+    const turnId = turnIdentity.turnId;
+    const messageId = turnIdentity.inputEventId;
     onTranscriptUpdate({ lessonId, turnId, messageId, role: "user", text: normalized, final: true });
     if (!usesClientDelegation) {
       enqueueRealtimeLogEvent(lessonId, "user", "conversation.item.input_text", normalized, {

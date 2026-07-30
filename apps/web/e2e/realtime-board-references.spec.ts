@@ -4,6 +4,7 @@ import {
   addRealtimeBoardReference,
   mergeRealtimeBoardReferenceResults,
 } from "../src/lib/realtime-board-references";
+import { resolveRealtimeTurnIdentity } from "../src/hooks/course-studio/use-realtime-voice";
 import type { RealtimeToolCallResponse, SelectionRef } from "../src/types";
 
 function selection(excerpt: string, lessonId = "lesson_one"): SelectionRef {
@@ -100,4 +101,24 @@ test("merges resolved board ranges into one numbered model context", () => {
     expect.objectContaining({ reference_index: 2, content: "Second board content" }),
   ]);
   expect(merged.resolved_focus?.display_label).toBe("Second range");
+});
+
+test("keeps realtime turn and input event identities stable and independent", () => {
+  const generatedPrefixes: string[] = [];
+  const createId = (prefix: string) => {
+    generatedPrefixes.push(prefix);
+    return `${prefix}_${generatedPrefixes.length}`;
+  };
+
+  const first = resolveRealtimeTurnIdentity(null, "voice", createId);
+  const repeated = resolveRealtimeTurnIdentity(first, "typed", createId);
+
+  expect(first).toEqual({
+    turnId: "turn_1",
+    inputEventId: "input-event_2",
+    inputKind: "voice",
+  });
+  expect(first.inputEventId).not.toBe(first.turnId);
+  expect(repeated).toBe(first);
+  expect(generatedPrefixes).toEqual(["turn", "input-event"]);
 });
