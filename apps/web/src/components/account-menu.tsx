@@ -31,6 +31,8 @@ export function AccountMenu({
   const m = txt.accountMenu;
   const [user, setUser] = useState<UserView | null>(null);
   const [open, setOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -55,10 +57,23 @@ export function AccountMenu({
     };
   }, []);
 
-  function handleLogout() {
-    clearAuthToken();
-    setOpen(false);
-    router.replace("/login");
+  async function handleLogout() {
+    if (isSigningOut) {
+      return;
+    }
+    setIsSigningOut(true);
+    setSignOutError(null);
+    try {
+      await api.logout();
+      clearAuthToken();
+      setOpen(false);
+      router.replace("/login");
+      router.refresh();
+    } catch (error) {
+      setSignOutError(error instanceof Error ? error.message : null);
+    } finally {
+      setIsSigningOut(false);
+    }
   }
 
   const isGuest = user?.role === "guest";
@@ -196,13 +211,15 @@ export function AccountMenu({
             ) : null}
             <button
               type="button"
-              onClick={handleLogout}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
+              onClick={() => void handleLogout()}
+              disabled={isSigningOut}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-wait disabled:opacity-60"
               role="menuitem"
             >
               <LogOut className="h-4 w-4" />
               {isGuest ? m.signOutGuest : m.signOut}
             </button>
+            {signOutError ? <p role="alert" className="px-3 py-2 text-xs text-rose-700">{signOutError}</p> : null}
           </div>
         </div>
       ) : null}
