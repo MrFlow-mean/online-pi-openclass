@@ -428,6 +428,95 @@ def test_model_turn_gate_runs_without_workspace_or_selection_content(
     assert "broad topic" in str(routing_payload)
 
 
+def test_text_realtime_and_codex_live_share_one_transport_neutral_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_model = AIModelSelection(
+        provider="openai_codex",
+        model="test-model",
+        access_method="chatgpt_subscription",
+    )
+    captured_payloads: list[dict[str, object]] = []
+
+    class FakeAdapter:
+        def parse_structured(self, **kwargs):
+            captured_payloads.append(json.loads(kwargs["user_prompt"]))
+            return SimpleNamespace(
+                output_parsed=TurnDecision(
+                    intent="learning_need",
+                    relation_to_active="continue",
+                    reason="The same learning request has the same semantic route.",
+                ),
+                activity=[],
+            )
+
+    monkeypatch.setattr(
+        chat_turn_gate,
+        "resolve_text_model_selection",
+        lambda *_args, **_kwargs: selected_model,
+    )
+    monkeypatch.setattr(
+        chat_turn_gate,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+    common = {
+        "message": "Continue explaining the same approved topic.",
+        "conversation": [
+            ConversationTurn(role="assistant", content="Earlier context.")
+        ],
+        "text_model": selected_model,
+    }
+    requests = [
+        ChatRequest(
+            **common,
+            session_id="text_session",
+            turn_id="text_turn",
+            input_event_id="text_event",
+            channel="text",
+            input_kind="typed",
+        ),
+        ChatRequest(
+            **common,
+            session_id="realtime_session",
+            turn_id="realtime_turn",
+            input_event_id="realtime_event",
+            channel="realtime",
+            input_kind="voice",
+            provider_reference="realtime_provider_event",
+        ),
+        ChatRequest(
+            **common,
+            session_id="codex_live_session",
+            turn_id="codex_live_turn",
+            input_event_id="codex_live_event",
+            channel="realtime",
+            input_kind="voice",
+            provider_reference="codex_live_delegation",
+        ),
+    ]
+
+    results = [
+        chat_turn_gate.evaluate_turn_gate(
+            request,
+            lesson_id="lesson_transport_neutral",
+            user_id=TEST_USER_ID,
+        )
+        for request in requests
+    ]
+
+    assert captured_payloads[0] == captured_payloads[1] == captured_payloads[2]
+    assert "channel" not in captured_payloads[0]
+    assert "input_kind" not in captured_payloads[0]
+    assert "provider_reference" not in captured_payloads[0]
+    assert [result.decision for result in results] == [results[0].decision] * 3
+    assert [result.envelope.channel for result in results] == [
+        "text",
+        "realtime",
+        "realtime",
+    ]
+
+
 def test_explicit_document_control_cannot_be_downgraded_by_the_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

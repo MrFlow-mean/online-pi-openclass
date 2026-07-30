@@ -125,8 +125,6 @@ def build_routing_payload(envelope: TurnEnvelope) -> dict[str, object]:
         "conversation": [
             turn.model_dump(mode="json") for turn in envelope.conversation
         ],
-        "channel": envelope.channel,
-        "input_kind": envelope.input_kind,
         "explicit_action": envelope.explicit_action,
         "interaction_mode": envelope.interaction_mode,
         "board_generation_action": envelope.board_generation_action,
