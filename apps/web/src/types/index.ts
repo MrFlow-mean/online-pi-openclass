@@ -222,12 +222,16 @@ export type InitialLearningWorkMode = "knowledge_board" | "narrow_topic" | "prac
 export type InitialLearningGranularity = "single_knowledge_point" | "source_chapter" | "source_range" | "broad_topic" | "practice_artifact" | "unclear";
 export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
 export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
-export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
+export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "delete" | "interact" | "chat";
 export type BoardTaskConfirmationStatus = "none" | "awaiting" | "confirmed" | "declined";
 export type BoardTaskLocationStatus = "missing" | "selected" | "resolved" | "ambiguous" | "content_absent";
 export type BoardTaskLocationKind = "target_range" | "insertion_anchor" | "unspecified";
+export type BoardContentExtent = "sentence" | "paragraph" | "section" | "article" | "whole_board";
+export type BoardTopicRelation = "current_document" | "independent" | "unresolved";
+export type BoardDocumentDestination = "current_lesson" | "new_lesson" | "unresolved";
 
 export interface BoardTaskRequirementSheet {
+  task_id: string;
   board_workflow?: BoardWorkflow | null;
   location_kind?: BoardTaskLocationKind;
   target_hint: string;
@@ -235,6 +239,16 @@ export interface BoardTaskRequirementSheet {
   location_status: BoardTaskLocationStatus;
   requested_action?: BoardTaskRequestedAction | null;
   question_or_topic: string;
+  special_interaction_requirements?: string | null;
+  content_extent?: BoardContentExtent | null;
+  topic_relation: BoardTopicRelation;
+  document_destination: BoardDocumentDestination;
+  target_candidates: BoardFocusRef[];
+  target_resolution_reason: string;
+  base_commit_id: string;
+  base_document_hash: string;
+  mutation_plan?: Record<string, unknown> | null;
+  interaction_session?: Record<string, unknown> | null;
   missing_items: string[];
   progress: number;
   confirmation_status: BoardTaskConfirmationStatus;
@@ -1456,6 +1470,8 @@ export interface GuidedRequirementDiscovery {
 
 export interface ChatResponse {
   chatbot_message: string;
+  turn_decision?: TurnDecision | null;
+  decision_trace?: DecisionTrace | null;
   source_citations?: SourceCitation[];
   follow_up_suggestions?: string[];
   agent_activity?: AgentActivityEvent[];
@@ -1484,6 +1500,44 @@ export interface ChatResponse {
   auto_teaching_operation_status?: "none" | "succeeded" | "failed";
   auto_teaching_operation_failure_reason?: string | null;
   course_package: CoursePackage;
+}
+
+export type TurnIntent = "ordinary_chat" | "learning_need" | "unclear";
+export type TurnContinuation =
+  | "none"
+  | "learning_requirement"
+  | "board_task"
+  | "pending_write_offer"
+  | "teaching_sequence"
+  | "interaction_session";
+export type TurnRelationToActive =
+  | "none"
+  | "continue"
+  | "supplement"
+  | "replace"
+  | "new_task"
+  | "unresolved";
+
+export interface TurnDecision {
+  intent: TurnIntent;
+  continuation: TurnContinuation;
+  relation_to_active: TurnRelationToActive;
+  board_access: "forbidden" | "state_check_only";
+  reason: string;
+}
+
+export interface DecisionTrace {
+  intent_signals: string[];
+  matched_rules: string[];
+  selected_action: TurnIntent;
+  rejected_actions: TurnIntent[];
+  target_resolver: string;
+  sequence_mode: string;
+  role_executed: string;
+  board_access: "forbidden" | "state_check_only" | "bounded_board_role";
+  requirement_effect: "preserved" | "eligible" | "updated";
+  document_changed: boolean;
+  reason: string;
 }
 
 export interface RequirementUpdateStreamPayload {
