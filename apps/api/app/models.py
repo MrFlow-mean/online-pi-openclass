@@ -137,7 +137,17 @@ ChatInteractionMode = Literal["ask", "direct_edit"]
 FormulaInkAction = Literal["reference", "replace"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
+ChatChannel = Literal["text", "realtime"]
+ChatInputKind = Literal["typed", "voice"]
 TurnIntent = Literal["ordinary_chat", "learning_need", "unclear"]
+TurnExplicitAction = Literal[
+    "direct_edit",
+    "board_generation",
+    "teaching_continue",
+    "teaching_restart",
+    "formula_reference",
+    "formula_replace",
+]
 TurnContinuationKind = Literal[
     "none",
     "learning_requirement",
@@ -1877,6 +1887,12 @@ class SectionTeachingProgressView(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str | None = Field(default=None, min_length=1, max_length=160)
+    turn_id: str | None = Field(default=None, min_length=1, max_length=200)
+    input_event_id: str | None = Field(default=None, min_length=1, max_length=200)
+    channel: ChatChannel = "text"
+    input_kind: ChatInputKind = "typed"
+    provider_reference: str | None = Field(default=None, min_length=1, max_length=512)
     text_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
     selections: list[SelectionRef] = Field(default_factory=list, max_length=8)
@@ -1894,10 +1910,20 @@ class ChatRequest(BaseModel):
 
 
 class TurnEnvelope(BaseModel):
-    """Board-free facts available to the first decision of a chat turn."""
+    """Frozen transport contract for one user input event."""
 
+    lesson_id: str = Field(min_length=1)
+    session_id: str | None = None
+    turn_id: str | None = None
+    input_event_id: str | None = None
+    channel: ChatChannel = "text"
+    input_kind: ChatInputKind = "typed"
+    provider_reference: str | None = None
     message: str
     conversation: list[ConversationTurn] = Field(default_factory=list)
+    selected_model: AIModelSelection
+    references: list[SelectionRef] = Field(default_factory=list, max_length=8)
+    explicit_action: TurnExplicitAction | None = None
     interaction_mode: ChatInteractionMode = "ask"
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None

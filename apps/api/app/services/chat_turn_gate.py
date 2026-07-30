@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from app.models import (
+    AIModelSelection,
     AgentActivityEvent,
     BoardDecision,
     BoardTaskRequirementSheet,
@@ -16,6 +17,7 @@ from app.models import (
     Lesson,
     TurnDecision,
     TurnEnvelope,
+    TurnExplicitAction,
 )
 from app.services import workspace_state
 from app.services.ai_execution_adapter import AIExecutionAdapter, build_ai_execution_adapter
@@ -72,31 +74,77 @@ class TurnGateResult:
     activity: list[AgentActivityEvent] = field(default_factory=list)
 
 
-def build_turn_envelope(request: ChatRequest) -> TurnEnvelope:
-    selection_kind = request.selection.kind if request.selection is not None else None
+def build_turn_envelope(
+    request: ChatRequest,
+    *,
+    lesson_id: str,
+    selected_model: AIModelSelection,
+) -> TurnEnvelope:
+    references = request.selections or (
+        [request.selection] if request.selection is not None else []
+    )
+    frozen_references = [reference.model_copy(deep=True) for reference in references]
+    selection_kind = frozen_references[0].kind if frozen_references else None
     return TurnEnvelope(
+        lesson_id=lesson_id,
+        session_id=request.session_id,
+        turn_id=request.turn_id,
+        input_event_id=request.input_event_id,
+        channel=request.channel,
+        input_kind=request.input_kind,
+        provider_reference=request.provider_reference,
         message=request.message,
         conversation=request.conversation,
+        selected_model=selected_model,
+        references=frozen_references,
+        explicit_action=_explicit_action(request),
         interaction_mode=request.interaction_mode,
         board_generation_action=request.board_generation_action,
         teaching_action=request.teaching_action,
-        has_selection=request.selection is not None,
+        has_selection=bool(frozen_references),
         selection_kind=selection_kind,
-        has_multiple_selections=bool(request.selections),
+        has_multiple_selections=len(frozen_references) > 1,
         has_formula_ink=request.formula_ink is not None,
         has_attachments=bool(request.attachments),
         has_source_query_scope=request.source_query_scope is not None,
     )
 
 
+def build_routing_payload(envelope: TurnEnvelope) -> dict[str, object]:
+    """Return only facts allowed into the board-free Turn Router prompt."""
+
+    return {
+        "message": envelope.message,
+        "conversation": [
+            turn.model_dump(mode="json") for turn in envelope.conversation
+        ],
+        "channel": envelope.channel,
+        "input_kind": envelope.input_kind,
+        "explicit_action": envelope.explicit_action,
+        "interaction_mode": envelope.interaction_mode,
+        "board_generation_action": envelope.board_generation_action,
+        "teaching_action": envelope.teaching_action,
+        "reference_count": len(envelope.references),
+        "reference_kinds": [reference.kind for reference in envelope.references],
+        "has_formula_ink": envelope.has_formula_ink,
+        "has_attachments": envelope.has_attachments,
+        "has_source_query_scope": envelope.has_source_query_scope,
+    }
+
+
 def evaluate_turn_gate(
     request: ChatRequest,
     *,
+    lesson_id: str,
     user_id: str,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> TurnGateResult:
-    envelope = build_turn_envelope(request)
     selection = resolve_text_model_selection(request.text_model, user_id=user_id)
+    envelope = build_turn_envelope(
+        request,
+        lesson_id=lesson_id,
+        selected_model=selection,
+    )
     adapter = build_ai_execution_adapter(selection, owner_user_id=user_id)
     explicit_signals = _explicit_learning_signals(envelope)
     if explicit_signals:
@@ -111,7 +159,7 @@ def evaluate_turn_gate(
         response = adapter.parse_structured(
             system_prompt=TURN_DECISION_INSTRUCTIONS,
             user_prompt=json.dumps(
-                envelope.model_dump(mode="json"),
+                build_routing_payload(envelope),
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
@@ -181,7 +229,7 @@ def complete_non_learning_turn(
             else UNCLEAR_TURN_INSTRUCTIONS
         ),
         user_prompt=json.dumps(
-            gate.envelope.model_dump(mode="json"),
+            build_routing_payload(gate.envelope),
             ensure_ascii=False,
             separators=(",", ":"),
         ),
@@ -283,15 +331,31 @@ def complete_non_learning_turn(
 
 def _explicit_learning_signals(envelope: TurnEnvelope) -> list[str]:
     signals: list[str] = []
-    if envelope.interaction_mode == "direct_edit":
+    if envelope.explicit_action == "direct_edit":
         signals.append("direct_edit_mode")
-    if envelope.board_generation_action is not None:
+    if envelope.explicit_action == "board_generation":
         signals.append("board_generation_action")
-    if envelope.teaching_action is not None:
+    if envelope.explicit_action in {"teaching_continue", "teaching_restart"}:
         signals.append("teaching_action")
-    if envelope.has_formula_ink:
+    if envelope.explicit_action in {"formula_reference", "formula_replace"}:
         signals.append("formula_ink_action")
     return signals
+
+
+def _explicit_action(request: ChatRequest) -> TurnExplicitAction | None:
+    if request.interaction_mode == "direct_edit":
+        return "direct_edit"
+    if request.board_generation_action is not None:
+        return "board_generation"
+    if request.teaching_action == "continue":
+        return "teaching_continue"
+    if request.teaching_action == "restart":
+        return "teaching_restart"
+    if request.formula_ink is not None and request.formula_ink.action == "reference":
+        return "formula_reference"
+    if request.formula_ink is not None and request.formula_ink.action == "replace":
+        return "formula_replace"
+    return None
 
 
 def _merge_activity(*groups: list[AgentActivityEvent]) -> list[AgentActivityEvent]:

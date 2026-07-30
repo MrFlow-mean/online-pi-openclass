@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +27,13 @@ from app.services.rich_document import build_document
 
 TEST_USER_ID = "user_turn_gate"
 BOARD_SENTINEL = "BOARD_SENTINEL_MUST_NOT_REACH_THE_GATE"
+
+
+@pytest.fixture(autouse=True)
+def reset_idempotency_state():
+    chat_service._clear_idempotency_state_for_tests()
+    yield
+    chat_service._clear_idempotency_state_for_tests()
 
 
 @pytest.fixture
@@ -103,7 +113,15 @@ def _workflow_response(lesson_id: str) -> ChatResponse:
 
 
 def _gate_result(request: ChatRequest, intent: str, reply: str):
-    envelope = chat_turn_gate.build_turn_envelope(request)
+    envelope = chat_turn_gate.build_turn_envelope(
+        request,
+        lesson_id="lesson_gate",
+        selected_model=AIModelSelection(
+            provider="openai_codex",
+            model="test-model",
+            access_method="chatgpt_subscription",
+        ),
+    )
 
     class FakeAdapter:
         def complete_text(self, **kwargs):
@@ -131,20 +149,45 @@ def _gate_result(request: ChatRequest, intent: str, reply: str):
     )
 
 
-def test_turn_envelope_exposes_only_non_board_routing_signals() -> None:
+def test_turn_envelope_freezes_the_transport_contract() -> None:
     request = ChatRequest(
         message="Please handle this.",
+        session_id="session_1",
+        turn_id="turn_1",
+        input_event_id="event_1",
+        channel="realtime",
+        input_kind="voice",
+        provider_reference="provider_event_1",
+        interaction_mode="direct_edit",
         selection=SelectionRef(kind="board", excerpt="selected secret text"),
     )
 
-    envelope = chat_turn_gate.build_turn_envelope(request)
+    envelope = chat_turn_gate.build_turn_envelope(
+        request,
+        lesson_id="lesson_1",
+        selected_model=AIModelSelection(
+            provider="openai_codex",
+            model="test-model",
+            access_method="chatgpt_subscription",
+        ),
+    )
     payload = envelope.model_dump(mode="json")
 
+    assert payload["lesson_id"] == "lesson_1"
+    assert payload["session_id"] == "session_1"
+    assert payload["turn_id"] == "turn_1"
+    assert payload["input_event_id"] == "event_1"
+    assert payload["channel"] == "realtime"
+    assert payload["input_kind"] == "voice"
+    assert payload["provider_reference"] == "provider_event_1"
+    assert payload["selected_model"]["model"] == "test-model"
+    assert payload["explicit_action"] == "direct_edit"
     assert payload["message"] == request.message
     assert payload["has_selection"] is True
     assert payload["selection_kind"] == "board"
-    assert "selected secret text" not in str(payload)
-    assert "excerpt" not in payload
+    assert payload["references"][0]["excerpt"] == "selected secret text"
+    request.selection.excerpt = "mutated after envelope creation"
+    assert envelope.references[0].excerpt == "selected secret text"
 
 
 def test_model_turn_gate_runs_without_workspace_or_selection_content(
@@ -189,13 +232,20 @@ def test_model_turn_gate_runs_without_workspace_or_selection_content(
         ),
     )
 
-    result = chat_turn_gate.evaluate_turn_gate(request, user_id=TEST_USER_ID)
+    result = chat_turn_gate.evaluate_turn_gate(
+        request,
+        lesson_id="lesson_1",
+        user_id=TEST_USER_ID,
+    )
 
     assert result.decision.intent == "learning_need"
     assert result.trace.board_access == "state_check_only"
-    assert BOARD_SENTINEL not in str(captured["user_prompt"])
-    assert "selected secret text" not in str(captured["user_prompt"])
-    assert "broad topic" in str(captured["user_prompt"])
+    routing_payload = json.loads(str(captured["user_prompt"]))
+    assert routing_payload["reference_count"] == 1
+    assert routing_payload["reference_kinds"] == ["board"]
+    assert "references" not in routing_payload
+    assert "selected secret text" not in str(routing_payload)
+    assert "broad topic" in str(routing_payload)
 
 
 def test_explicit_document_control_cannot_be_downgraded_by_the_model(
@@ -226,6 +276,7 @@ def test_explicit_document_control_cannot_be_downgraded_by_the_model(
 
     result = chat_turn_gate.evaluate_turn_gate(
         ChatRequest(message="Do it.", interaction_mode="direct_edit"),
+        lesson_id="lesson_1",
         user_id=TEST_USER_ID,
     )
 
@@ -356,3 +407,159 @@ def test_learning_need_is_the_only_route_into_existing_workflow(
     assert response.turn_decision.intent == "learning_need"
     assert response.decision_trace is not None
     assert response.decision_trace.board_access == "state_check_only"
+
+
+def test_same_input_event_is_concurrently_executed_once_and_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    request = ChatRequest(
+        message="A single delivered event.",
+        session_id="session_once",
+        turn_id="turn_once",
+        input_event_id="event_once",
+    )
+    owner_started = Event()
+    release_owner = Event()
+    duplicate_execution = Event()
+    calls = 0
+
+    def fake_gate(gate_request, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            duplicate_execution.set()
+        owner_started.set()
+        assert release_owner.wait(timeout=2)
+        return _gate_result(gate_request, "ordinary_chat", "Executed once.")
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", fake_gate)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            chat_service.process_chat_on_lesson,
+            lesson.id,
+            request,
+            user_id=TEST_USER_ID,
+        )
+        assert owner_started.wait(timeout=2)
+        second = executor.submit(
+            chat_service.process_chat_on_lesson,
+            lesson.id,
+            request,
+            user_id=TEST_USER_ID,
+        )
+        assert duplicate_execution.wait(timeout=0.1) is False
+        release_owner.set()
+        first_response = first.result(timeout=2)
+        second_response = second.result(timeout=2)
+
+    assert calls == 1
+    assert first_response == second_response
+    saved = turn_gate_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit = current_head_commit(saved)
+    assert commit.metadata["chat_idempotency_key"] == "session_once:event_once"
+    assert commit.metadata["chat_session_id"] == "session_once"
+    assert commit.metadata["chat_input_event_id"] == "event_once"
+    assert commit.metadata["chat_turn_id"] == "turn_once"
+
+
+def test_same_text_in_different_input_events_is_not_deduplicated(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    calls: list[str] = []
+
+    def fake_gate(gate_request, **_kwargs):
+        calls.append(gate_request.input_event_id or "")
+        return _gate_result(gate_request, "ordinary_chat", "Fresh event reply.")
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", fake_gate)
+
+    for event_id in ("event_a", "event_b"):
+        chat_service.process_chat_on_lesson(
+            lesson.id,
+            ChatRequest(
+                message="Identical text.",
+                session_id="session_same_text",
+                turn_id=f"turn_{event_id}",
+                input_event_id=event_id,
+            ),
+            user_id=TEST_USER_ID,
+        )
+
+    assert calls == ["event_a", "event_b"]
+
+
+def test_reused_input_event_rejects_a_different_request(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    calls = 0
+
+    def fake_gate(gate_request, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _gate_result(gate_request, "ordinary_chat", "Original reply.")
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", fake_gate)
+    identity = {
+        "session_id": "session_collision",
+        "turn_id": "turn_collision",
+        "input_event_id": "event_collision",
+    }
+    chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Original request.", **identity),
+        user_id=TEST_USER_ID,
+    )
+
+    with pytest.raises(ValueError, match="reused for a different request"):
+        chat_service.process_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="Conflicting request.", **identity),
+            user_id=TEST_USER_ID,
+        )
+
+    assert calls == 1
+
+
+def test_failed_input_event_is_not_cached(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    request = ChatRequest(
+        message="Retry this event.",
+        session_id="session_retry",
+        input_event_id="event_retry",
+    )
+    calls = 0
+
+    def flaky_gate(gate_request, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary failure")
+        return _gate_result(gate_request, "ordinary_chat", "Retry succeeded.")
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", flaky_gate)
+
+    with pytest.raises(RuntimeError, match="temporary failure"):
+        chat_service.process_chat_on_lesson(
+            lesson.id,
+            request,
+            user_id=TEST_USER_ID,
+        )
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+
+    assert calls == 2
+    assert response.chatbot_message == "Retry succeeded."
