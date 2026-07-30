@@ -168,20 +168,28 @@ def resolve_text_model_selection(
         if (
             selection.provider == "openai_codex"
             and selected_model in CODEX_TEXT_PROXY_MODEL_IDS
-            and not codex_text_proxy_available_for_user(user_id)
         ):
-            raise RuntimeError(
-                "The current user is not allowed to use this Codex private proxy model"
-            )
+            if not codex_text_proxy_available_for_user(user_id):
+                raise RuntimeError(
+                    "The current user is not allowed to use this Codex platform proxy model"
+                )
+            if selection.access_method not in {None, "platform_credits"}:
+                raise RuntimeError(
+                    "Codex platform proxy models require platform credits access"
+                )
         if (
             selection.provider in {"openai_codex", "deepseek"}
             and text_model_provider_enabled(selection.provider)
             and selected_model
         ):
             access_method = selection.access_method or (
-                "chatgpt_subscription"
-                if selection.provider == "openai_codex"
-                else "platform_credits"
+                "platform_credits"
+                if selected_model in CODEX_TEXT_PROXY_MODEL_IDS
+                else (
+                    "chatgpt_subscription"
+                    if selection.provider == "openai_codex"
+                    else "platform_credits"
+                )
             )
             return selection.model_copy(
                 update={
@@ -250,7 +258,7 @@ def codex_realtime_user_allowed(user_id: str) -> bool:
         for item in raw_user_ids.replace(",", " ").split()
         if item
     }
-    return user_id in allowed_user_ids
+    return "*" in allowed_user_ids or user_id in allowed_user_ids
 
 
 def _configured_secret(name: str) -> bool:
@@ -473,7 +481,11 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="openai_codex",
             model=str(item["model"]),
-            access_method="chatgpt_subscription",
+            access_method=(
+                "platform_credits"
+                if item["model"] in CODEX_TEXT_PROXY_MODEL_IDS
+                else "chatgpt_subscription"
+            ),
             label=str(item["displayName"]),
             capability="text",
             enabled=(
