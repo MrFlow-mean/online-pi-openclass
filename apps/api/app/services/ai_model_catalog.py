@@ -17,24 +17,30 @@ from app.models import (
     AIReasoningEffortOption,
     AIServiceTierOption,
 )
+from app.services.billing_service import BillingConfig, credits_for_upstream_cost
+from app.services.codex_text_proxy import (
+    CODEX_TEXT_PROXY_MODEL_IDS,
+    CODEX_TEXT_PROXY_MODELS,
+    CODEX_TEXT_PROXY_REASONING_EFFORTS,
+    codex_text_proxy_available_for_user,
+    codex_text_proxy_user_allowed,
+)
 from app.services.deepseek_api import (
     DEEPSEEK_CURATED_MODELS,
     DEEPSEEK_INPUT_USD_PER_MILLION,
     deepseek_config,
-)
-from app.services.billing_service import BillingConfig, credits_for_upstream_cost
-from app.services.pi_agent_runtime import (
-    pi_credentials_available,
-    pi_personal_api_configured,
-    pi_runtime_available,
 )
 from app.services.openrouter_provisioning import (
     OpenRouterAPIError,
     OpenRouterClient,
     OpenRouterConfig,
 )
+from app.services.pi_agent_runtime import (
+    pi_credentials_available,
+    pi_personal_api_configured,
+    pi_runtime_available,
+)
 from app.services.workspace_state import DATABASE_PATH
-
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_CODEX_REALTIME_MODEL = "gpt-live-1-codex"
@@ -44,6 +50,7 @@ OPENROUTER_PRICE_CACHE_TTL_SECONDS = 15 * 60
 logger = logging.getLogger(__name__)
 _openrouter_price_cache: tuple[str, float, dict[str, Decimal]] | None = None
 PI_OPENAI_CODEX_MODELS = (
+    *CODEX_TEXT_PROXY_MODELS,
     ("gpt-5.5", "GPT 5.5"),
     ("gpt-5.4", "GPT 5.4"),
     ("gpt-5.4-mini", "GPT 5.4 Mini"),
@@ -159,6 +166,14 @@ def resolve_text_model_selection(
     if selection is not None:
         selected_model = selection.model.strip()
         if (
+            selection.provider == "openai_codex"
+            and selected_model in CODEX_TEXT_PROXY_MODEL_IDS
+            and not codex_text_proxy_available_for_user(user_id)
+        ):
+            raise RuntimeError(
+                "The current user is not allowed to use this Codex private proxy model"
+            )
+        if (
             selection.provider in {"openai_codex", "deepseek"}
             and text_model_provider_enabled(selection.provider)
             and selected_model
@@ -261,9 +276,17 @@ def _pi_text_models() -> tuple[dict[str, Any], ...]:
             "displayName": label,
             "supportedReasoningEfforts": [
                 {"reasoningEffort": effort}
-                for effort in PI_OPENAI_CODEX_REASONING_EFFORTS
+                for effort in (
+                    CODEX_TEXT_PROXY_REASONING_EFFORTS
+                    if model in CODEX_TEXT_PROXY_MODEL_IDS
+                    else PI_OPENAI_CODEX_REASONING_EFFORTS
+                )
             ],
-            "serviceTiers": [dict(tier) for tier in PI_OPENAI_CODEX_SERVICE_TIERS],
+            "serviceTiers": (
+                []
+                if model in CODEX_TEXT_PROXY_MODEL_IDS
+                else [dict(tier) for tier in PI_OPENAI_CODEX_SERVICE_TIERS]
+            ),
         }
         for model, label in PI_OPENAI_CODEX_MODELS
     )
@@ -414,6 +437,8 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     pi_openai_configured = pi_available and pi_credentials_available(
         owner_user_id=user_id
     )
+    codex_text_proxy_allowed = codex_text_proxy_user_allowed(user_id)
+    codex_text_proxy_configured = codex_text_proxy_available_for_user(user_id)
     personal_deepseek_configured = pi_available and pi_personal_api_configured(
         owner_user_id=user_id,
         provider="deepseek",
@@ -451,8 +476,16 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             access_method="chatgpt_subscription",
             label=str(item["displayName"]),
             capability="text",
-            enabled=pi_openai_configured,
-            configured=pi_openai_configured,
+            enabled=(
+                codex_text_proxy_configured
+                if item["model"] in CODEX_TEXT_PROXY_MODEL_IDS
+                else pi_openai_configured
+            ),
+            configured=(
+                codex_text_proxy_configured
+                if item["model"] in CODEX_TEXT_PROXY_MODEL_IDS
+                else pi_openai_configured
+            ),
             default=item["model"] == default_model_id,
             default_reasoning_effort=_optional_string(
                 item.get("defaultReasoningEffort")
@@ -467,6 +500,10 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         )
         for item in models
         if text_model_provider_enabled("openai_codex")
+        and (
+            item["model"] not in CODEX_TEXT_PROXY_MODEL_IDS
+            or codex_text_proxy_allowed
+        )
     ]
     if text_model_provider_enabled("deepseek"):
         deepseek_models = list(DEEPSEEK_CURATED_MODELS)

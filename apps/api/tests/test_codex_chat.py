@@ -2764,6 +2764,8 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
 ) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", TEST_USER_ID)
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "private-proxy-key")
     lesson = _seed_workspace(codex_store)
     calls: list[dict[str, object]] = []
 

@@ -22,6 +22,11 @@ from app.services.ai_logging import (
     current_ai_log_context,
 )
 from app.services.codex_app_server import CodexAppServerTextClient
+from app.services.codex_text_proxy import (
+    CODEX_TEXT_PROXY_MODEL_IDS,
+    CodexTextProxyClient,
+    codex_text_proxy_available_for_user,
+)
 from app.services.deepseek_api import DeepSeekTextClient
 from app.services.pi_agent_runtime import PiTextClient
 
@@ -955,6 +960,41 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         raise RuntimeError("The selected Pi runtime does not accept image inputs yet")
 
 
+class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
+    """Owner-only CLIProxyAPI transport behind the provider-neutral Pi contract."""
+
+    runtime_label = "Codex private proxy"
+    turn_id_prefix = "codexproxyturn"
+
+    def __init__(
+        self,
+        *,
+        owner_user_id: str,
+        model: str,
+        reasoning_effort: str | None = None,
+        service_tier: str | None = None,
+    ) -> None:
+        self.owner_user_id = owner_user_id
+        self.provider = "openai_codex"
+        self.model = model
+        self.access_method = "chatgpt_subscription"
+        self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
+        self._client = CodexTextProxyClient(
+            owner_user_id=owner_user_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
+        )
+
+    def _selected_model_audit(self) -> dict[str, Any]:
+        return {
+            **super()._selected_model_audit(),
+            "agent_backend": "private_proxy",
+            "transport": "cliproxyapi",
+        }
+
+
 def build_ai_execution_adapter(
     selection: AIModelSelection,
     *,
@@ -965,6 +1005,24 @@ def build_ai_execution_adapter(
     del board_runner, image_analysis_runner
     if selection.provider not in {"openai_codex", "deepseek"}:
         raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
+    if (
+        selection.provider == "openai_codex"
+        and selection.model in CODEX_TEXT_PROXY_MODEL_IDS
+    ):
+        if selection.access_method not in {None, "chatgpt_subscription"}:
+            raise RuntimeError(
+                "Codex private proxy models require ChatGPT subscription access"
+            )
+        if not codex_text_proxy_available_for_user(owner_user_id):
+            raise RuntimeError(
+                "The current user is not allowed to use this Codex private proxy model"
+            )
+        return CodexTextProxyAIExecutionAdapter(
+            owner_user_id=owner_user_id,
+            model=selection.model,
+            reasoning_effort=selection.reasoning_effort,
+            service_tier=selection.service_tier,
+        )
     # Runtime selection is server-owned. Cached clients and stored records may
     # still carry agent_backend="codex", but no text task routes back to Codex.
     return PiAIExecutionAdapter(
