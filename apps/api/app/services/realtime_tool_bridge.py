@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from app.models import (
     AgentActivityEvent,
+    AIModelSelection,
     ChatInputKind,
     ChatRequest,
     RealtimeToolCallRequest,
@@ -65,9 +67,14 @@ def execute_realtime_tool(
             provider_hint = _legacy_provider_turn_hint(request.arguments)
             from app.services.chat_service import process_chat_on_lesson
 
-            turn_id = request.turn_id or request.call_id
-            input_event_id = request.input_event_id or request.call_id
+            if request.turn_id is None or request.input_event_id is None:
+                raise ValueError(
+                    "Realtime workflow input is missing turn_id or input_event_id"
+                )
+            turn_id = request.turn_id
+            input_event_id = request.input_event_id
             provider_reference = request.provider_reference or request.call_id
+            frozen_references, frozen_text_model = _realtime_input_snapshot(request)
             workflow_run_id = new_id("workflow_run")
             commit_metadata: dict[str, object] = {
                 "chat_visibility": "hidden",
@@ -90,7 +97,9 @@ def execute_realtime_tool(
                     channel="realtime",
                     input_kind=request.input_kind,
                     provider_reference=provider_reference,
-                    selection=request.selection,
+                    text_model=frozen_text_model,
+                    selection=frozen_references[0] if frozen_references else None,
+                    selections=frozen_references,
                 ),
                 user_id=user_id,
                 commit_metadata=commit_metadata,
@@ -147,7 +156,8 @@ def execute_realtime_delegation(
     input_event_id: str | None = None,
     input_kind: ChatInputKind = "voice",
     provider_reference: str | None = None,
-    selection: SelectionRef | None = None,
+    selections: list[SelectionRef] | None = None,
+    text_model: AIModelSelection | None = None,
     on_delta: Callable[[str], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
@@ -160,18 +170,52 @@ def execute_realtime_delegation(
             status="error",
             model_output={"status": "error", "message": "委托内容为空"},
         )
-    effective_turn_id = (turn_id or "").strip() or new_id("realtime_turn")
-    effective_workflow_run_id = (
-        (workflow_run_id or "").strip() or new_id("workflow_run")
-    )
-    effective_input_event_id = (
-        (input_event_id or "").strip()
-        or delegation_id.strip()
-        or new_id("realtime_input")
-    )
+    required_identifiers = {
+        "turn_id": (turn_id or "").strip(),
+        "workflow_run_id": (workflow_run_id or "").strip(),
+        "input_event_id": (input_event_id or "").strip(),
+    }
+    missing_identifiers = [
+        name for name, value in required_identifiers.items() if not value
+    ]
+    if missing_identifiers:
+        return RealtimeToolCallResponse(
+            status="error",
+            model_output={
+                "status": "error",
+                "message": (
+                    "Codex Live delegation is missing frozen identifiers: "
+                    + ", ".join(missing_identifiers)
+                ),
+            },
+        )
+    if selections is None or text_model is None:
+        return RealtimeToolCallResponse(
+            status="error",
+            model_output={
+                "status": "error",
+                "message": (
+                    "Codex Live delegation is missing its frozen references "
+                    "or selected text model."
+                ),
+            },
+        )
+    effective_turn_id = required_identifiers["turn_id"]
+    effective_workflow_run_id = required_identifiers["workflow_run_id"]
+    effective_input_event_id = required_identifiers["input_event_id"]
     effective_provider_reference = (
         (provider_reference or "").strip() or delegation_id.strip() or None
     )
+    frozen_references = [
+        reference.model_copy(deep=True)
+        for reference in selections
+    ]
+    if len(frozen_references) > 8:
+        return RealtimeToolCallResponse(
+            status="error",
+            model_output={"status": "error", "message": "A realtime turn accepts at most 8 references."},
+        )
+    frozen_text_model = text_model.model_copy(deep=True) if text_model is not None else None
     try:
         from app.services.chat_service import process_chat_on_lesson
 
@@ -195,7 +239,9 @@ def execute_realtime_delegation(
             channel="realtime",
             input_kind=input_kind,
             provider_reference=effective_provider_reference,
-            selection=selection,
+            text_model=frozen_text_model,
+            selection=frozen_references[0] if frozen_references else None,
+            selections=frozen_references,
         )
         process_kwargs: dict[str, Any] = {
             "user_id": user_id,
@@ -250,6 +296,32 @@ def _legacy_provider_turn_hint(arguments: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, str) and value.strip():
             hint[key] = value.strip()
     return hint
+
+
+def _realtime_input_snapshot(
+    request: RealtimeToolCallRequest,
+) -> tuple[list[SelectionRef], AIModelSelection | None]:
+    """Validate the client-owned input snapshot carried inside legacy tool arguments."""
+
+    raw_snapshot = request.arguments.get("__openclass_turn_snapshot")
+    if raw_snapshot is None:
+        raise ValueError("Realtime workflow input is missing its frozen input snapshot")
+    if not isinstance(raw_snapshot, dict):
+        raise TypeError("Realtime input snapshot must be an object")
+    raw_references = raw_snapshot.get("references", [])
+    if not isinstance(raw_references, list):
+        raise TypeError("Realtime input snapshot references must be a list")
+    if len(raw_references) > 8:
+        raise ValueError("A realtime turn accepts at most 8 references")
+    references = [
+        SelectionRef.model_validate(reference).model_copy(deep=True)
+        for reference in raw_references
+    ]
+    raw_text_model = raw_snapshot.get("text_model")
+    if raw_text_model is None:
+        raise ValueError("Realtime input snapshot is missing the selected text model")
+    text_model = AIModelSelection.model_validate(raw_text_model).model_copy(deep=True)
+    return references, text_model
 
 
 def _chat_response_as_realtime_result(chat_response, *, lesson_id: str) -> RealtimeToolCallResponse:

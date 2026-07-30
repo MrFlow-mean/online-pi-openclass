@@ -289,6 +289,7 @@ export function CourseStudio() {
   const voice = useRealtimeVoice({
     activeLesson,
     latestAssistantMessageContent: latestAssistantMessage?.content ?? null,
+    selectedTextModel,
     selectedRealtimeModel,
     selectedRealtimeOption,
     selectedRealtimeTransport,

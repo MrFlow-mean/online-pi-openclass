@@ -49,6 +49,12 @@ export type RealtimeTurnIdentity = {
   inputKind: RealtimeInputKind;
 };
 
+export type RealtimeTurnSnapshot = {
+  identity: RealtimeTurnIdentity;
+  references: SelectionRef[];
+  textModel: AIModelSelection;
+};
+
 type RealtimeIdentityFactory = (prefix: string) => string;
 
 type OpenAIRealtimeEvent = {
@@ -143,6 +149,7 @@ function sendOpenAITurnDecisionRequest(dataChannel: RTCDataChannel) {
 type UseRealtimeVoiceOptions = {
   activeLesson: Lesson | null;
   latestAssistantMessageContent: string | null;
+  selectedTextModel: AIModelSelection;
   selectedRealtimeModel: AIModelSelection;
   selectedRealtimeOption: AIModelOption | null | undefined;
   selectedRealtimeTransport: string;
@@ -178,9 +185,25 @@ export function resolveRealtimeTurnIdentity(
   };
 }
 
+export function freezeRealtimeTurnSnapshot(
+  identity: RealtimeTurnIdentity,
+  references: SelectionRef[],
+  textModel: AIModelSelection
+): RealtimeTurnSnapshot {
+  if (references.length > 8) {
+    throw new Error("Realtime 回合最多允许 8 个冻结引用");
+  }
+  return {
+    identity: { ...identity },
+    references: references.map((reference) => structuredClone(reference)),
+    textModel: structuredClone(textModel),
+  };
+}
+
 export function useRealtimeVoice({
   activeLesson,
   latestAssistantMessageContent,
+  selectedTextModel,
   selectedRealtimeModel,
   selectedRealtimeOption,
   selectedRealtimeTransport,
@@ -219,9 +242,13 @@ export function useRealtimeVoice({
   const openAIProcessedToolCallsRef = useRef(new Set<string>());
   const realtimeBoardReferencesRef = useRef<SelectionRef[]>([]);
   const realtimeTurnIdentityRef = useRef<RealtimeTurnIdentity | null>(null);
+  const realtimeTurnSnapshotRef = useRef<RealtimeTurnSnapshot | null>(null);
   const codexLiveDelegationTurnIdsRef = useRef(new Map<string, string>());
+  const codexLiveSnapshotEventsRef = useRef(new Set<string>());
   const codexLiveTaskStateRef = useRef<CodexLiveTaskState>(createCodexLiveTaskState());
   const currentSelectionRef = useRef<SelectionRef | null>(currentSelection);
+  const currentSelectionsRef = useRef<SelectionRef[]>(currentSelections);
+  const selectedTextModelRef = useRef<AIModelSelection>(selectedTextModel);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
@@ -238,6 +265,8 @@ export function useRealtimeVoice({
 
   useEffect(() => {
     currentSelectionRef.current = currentSelection;
+    currentSelectionsRef.current = currentSelections;
+    selectedTextModelRef.current = selectedTextModel;
     const lessonId = realtimeLessonIdRef.current;
     if (!lessonId) {
       return;
@@ -262,7 +291,7 @@ export function useRealtimeVoice({
         selection: currentSelection,
       }));
     }
-  }, [currentSelection, currentSelections, voiceActive]);
+  }, [currentSelection, currentSelections, selectedTextModel, voiceActive]);
 
   function currentTurnIdentity() {
     const identity = resolveRealtimeTurnIdentity(realtimeTurnIdentityRef.current, "voice");
@@ -276,10 +305,44 @@ export function useRealtimeVoice({
 
   function beginRealtimeTurn(inputKind: RealtimeInputKind = "voice") {
     const identity = resolveRealtimeTurnIdentity(null, inputKind);
+    const references = currentSelectionsRef.current.length
+      ? currentSelectionsRef.current
+      : currentSelectionRef.current
+        ? [currentSelectionRef.current]
+        : [];
+    const snapshot = freezeRealtimeTurnSnapshot(
+      identity,
+      references,
+      selectedTextModelRef.current
+    );
     realtimeTurnIdentityRef.current = identity;
+    realtimeTurnSnapshotRef.current = snapshot;
     openAIAssistantTranscriptRef.current = "";
     openAIAssistantMessageIdRef.current = null;
-    return identity;
+    return snapshot;
+  }
+
+  function sendCodexLiveSnapshot(
+    socket: WebSocket | null,
+    snapshot: RealtimeTurnSnapshot | null
+  ) {
+    if (
+      !socket ||
+      !snapshot ||
+      socket.readyState !== WebSocket.OPEN ||
+      codexLiveSnapshotEventsRef.current.has(snapshot.identity.inputEventId)
+    ) {
+      return;
+    }
+    codexLiveSnapshotEventsRef.current.add(snapshot.identity.inputEventId);
+    socket.send(JSON.stringify({
+      type: "input_snapshot.update",
+      turn_id: snapshot.identity.turnId,
+      input_event_id: snapshot.identity.inputEventId,
+      input_kind: snapshot.identity.inputKind,
+      selections: snapshot.references,
+      text_model: snapshot.textModel,
+    }));
   }
 
   function delegationTurnId(delegationId: string) {
@@ -387,7 +450,9 @@ export function useRealtimeVoice({
     openAIProcessedToolCallsRef.current.clear();
     realtimeBoardReferencesRef.current = [];
     realtimeTurnIdentityRef.current = null;
+    realtimeTurnSnapshotRef.current = null;
     codexLiveDelegationTurnIdsRef.current.clear();
+    codexLiveSnapshotEventsRef.current.clear();
     replaceCodexLiveTaskState(createCodexLiveTaskState());
 
     if (realtimePeerRef.current) {
@@ -505,6 +570,7 @@ export function useRealtimeVoice({
       googleOutputTranscriptRef.current = "";
     }
     realtimeTurnIdentityRef.current = null;
+    realtimeTurnSnapshotRef.current = null;
     openAIAssistantMessageIdRef.current = null;
   }
 
@@ -713,6 +779,10 @@ export function useRealtimeVoice({
             }
             if (payload.type === "codex_live.transcript.delta" && payload.role && payload.text) {
               if (payload.role === "user") {
+                sendCodexLiveSnapshot(
+                  codexLiveSocketRef.current,
+                  realtimeTurnSnapshotRef.current
+                );
                 const transcriptKey = "codex-live-user";
                 const transcript = `${openAIInputTranscriptsRef.current.get(transcriptKey) ?? ""}${payload.text}`;
                 openAIInputTranscriptsRef.current.set(transcriptKey, transcript);
@@ -757,6 +827,7 @@ export function useRealtimeVoice({
                 openAIAssistantTranscriptRef.current = "";
                 openAIAssistantMessageIdRef.current = null;
                 realtimeTurnIdentityRef.current = null;
+                realtimeTurnSnapshotRef.current = null;
               }
               return;
             }
@@ -883,7 +954,8 @@ export function useRealtimeVoice({
             openAIResponseInProgressRef.current = false;
           }
           if (payload.type === "input_audio_buffer.speech_started") {
-            beginRealtimeTurn();
+            const snapshot = beginRealtimeTurn();
+            sendCodexLiveSnapshot(codexLiveSocketRef.current, snapshot);
             if (openAIResponseInProgressRef.current && dataChannel.readyState === "open") {
               dataChannel.send(JSON.stringify({ type: "response.cancel" }));
               openAIResponseInProgressRef.current = false;
@@ -902,6 +974,7 @@ export function useRealtimeVoice({
             }
             openAIProcessedToolCallsRef.current.add(functionCall.callId);
             const turnIdentity = currentTurnIdentity();
+            const turnSnapshot = realtimeTurnSnapshotRef.current;
             const turnId = turnIdentity.turnId;
             const providerReference = payload.response_id ?? payload.item_id ?? functionCall.callId;
             const toolLabel = functionCall.name === "read_board_context" ? "正在定位并读取板书" : "正在交给 Chatbot 工作流处理";
@@ -917,15 +990,34 @@ export function useRealtimeVoice({
               sendOpenAIFunctionOutput(dataChannel, functionCall.callId, { status: "error", message });
               continue;
             }
+            if (
+              !turnSnapshot ||
+              turnSnapshot.identity.inputEventId !== turnIdentity.inputEventId
+            ) {
+              const message = "Realtime 回合缺少提交时冻结的输入快照";
+              onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              sendOpenAIFunctionOutput(dataChannel, functionCall.callId, {
+                status: "error",
+                message,
+              });
+              continue;
+            }
             let toolResult: RealtimeToolCallResponse;
             try {
+              const frozenArguments = {
+                ...functionCall.arguments,
+                __openclass_turn_snapshot: {
+                  references: turnSnapshot.references,
+                  text_model: turnSnapshot.textModel,
+                },
+              };
               const useAccumulatedReferences =
                 functionCall.name === "read_board_context" &&
                 functionCall.arguments.mode === "current_selection" &&
-                realtimeBoardReferencesRef.current.length > 1;
+                turnSnapshot.references.length > 1;
               if (useAccumulatedReferences) {
                 const referenceResults = await Promise.all(
-                  realtimeBoardReferencesRef.current.map((selection, index) =>
+                  turnSnapshot.references.map((selection, index) =>
                     api.callRealtimeTool(lessonId, {
                       client_session_id: clientSessionId,
                       turn_id: turnId,
@@ -934,7 +1026,7 @@ export function useRealtimeVoice({
                       provider_reference: providerReference,
                       call_id: `${functionCall.callId}_reference_${index + 1}`,
                       name: functionCall.name,
-                      arguments: functionCall.arguments,
+                      arguments: frozenArguments,
                       selection,
                     })
                   )
@@ -949,8 +1041,8 @@ export function useRealtimeVoice({
                   provider_reference: providerReference,
                   call_id: functionCall.callId,
                   name: functionCall.name,
-                  arguments: functionCall.arguments,
-                  selection: currentSelectionRef.current,
+                  arguments: frozenArguments,
+                  selection: turnSnapshot.references[0] ?? null,
                 });
               }
             } catch (toolError) {
@@ -1113,7 +1205,18 @@ export function useRealtimeVoice({
     } else if (!dataChannel || dataChannel.readyState !== "open") {
       return false;
     }
-    const turnIdentity = beginRealtimeTurn("typed");
+    let turnSnapshot: RealtimeTurnSnapshot;
+    try {
+      turnSnapshot = beginRealtimeTurn("typed");
+    } catch (snapshotError) {
+      setError(
+        snapshotError instanceof Error
+          ? snapshotError.message
+          : "Realtime 回合输入快照无效"
+      );
+      return false;
+    }
+    const turnIdentity = turnSnapshot.identity;
     const turnId = turnIdentity.turnId;
     const messageId = turnIdentity.inputEventId;
     onTranscriptUpdate({ lessonId, turnId, messageId, role: "user", text: normalized, final: true });
@@ -1130,6 +1233,9 @@ export function useRealtimeVoice({
         client_session_id: realtimeClientSessionIdRef.current,
         turn_id: turnId,
         input_event_id: messageId,
+        input_kind: turnIdentity.inputKind,
+        selections: turnSnapshot.references,
+        text_model: turnSnapshot.textModel,
       }));
       setVoiceStatusText("Codex Live 正在处理文字消息");
       return true;

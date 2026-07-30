@@ -5,7 +5,7 @@ import json
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 from weakref import WeakKeyDictionary
@@ -13,7 +13,14 @@ from weakref import WeakKeyDictionary
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection, connect
 
-from app.models import ChatRequest, SelectionRef, TurnIntent, new_id
+from app.models import (
+    AIModelSelection,
+    ChatInputKind,
+    ChatRequest,
+    SelectionRef,
+    TurnIntent,
+    new_id,
+)
 from app.services import chat_service
 from app.services.ai_logging import ai_usage_logger
 from app.services.ai_model_catalog import OPENAI_CODEX_REALTIME_MODEL
@@ -34,6 +41,15 @@ _SESSION_TTL_SECONDS = 60 * 60
 _APPEND_MAX_BYTES = 500
 
 
+@dataclass(frozen=True)
+class CodexLiveInputSnapshot:
+    turn_id: str
+    input_event_id: str
+    input_kind: ChatInputKind
+    references: list[SelectionRef]
+    text_model: AIModelSelection
+
+
 @dataclass
 class CodexLiveSession:
     call_id: str
@@ -43,6 +59,7 @@ class CodexLiveSession:
     transport_session_id: str
     selection: SelectionRef | None
     created_at: float
+    pending_input_snapshots: list[CodexLiveInputSnapshot] = field(default_factory=list)
     claimed: bool = False
 
 
@@ -50,6 +67,8 @@ class CodexLiveSession:
 class _RoutedCodexLiveTask(CodexLiveTask):
     prepared_gate: TurnGateResult | None = None
     provider_intent_hint: str | None = None
+    selections: list[SelectionRef] = field(default_factory=list)
+    text_model: AIModelSelection | None = None
 
 
 _sessions: dict[str, CodexLiveSession] = {}
@@ -121,8 +140,55 @@ def release_codex_live_session(call_id: str) -> None:
         _sessions.pop(call_id, None)
 
 
-def _snapshot_selection(selection: SelectionRef | None) -> SelectionRef | None:
-    return selection.model_copy(deep=True) if selection is not None else None
+def _snapshot_references(
+    references: list[SelectionRef],
+) -> list[SelectionRef]:
+    if len(references) > 8:
+        raise ValueError("A Codex Live turn accepts at most 8 references")
+    return [reference.model_copy(deep=True) for reference in references]
+
+
+def _input_snapshot_from_payload(
+    payload: dict[str, Any],
+) -> CodexLiveInputSnapshot:
+    raw_references = payload.get("selections")
+    if raw_references is None:
+        raw_selection = payload.get("selection")
+        raw_references = [raw_selection] if raw_selection else []
+    if not isinstance(raw_references, list):
+        raise TypeError("Codex Live input snapshot selections must be a list")
+    if len(raw_references) > 8:
+        raise ValueError("A Codex Live turn accepts at most 8 references")
+    references = [
+        SelectionRef.model_validate(reference).model_copy(deep=True)
+        for reference in raw_references
+    ]
+    raw_text_model = payload.get("text_model")
+    if raw_text_model is None:
+        raise ValueError("Codex Live input snapshot is missing the selected text model")
+    turn_id = _nonempty_identifier(payload.get("turn_id"))
+    if turn_id is None:
+        raise ValueError("Codex Live input snapshot is missing turn_id")
+    input_event_id = _nonempty_identifier(payload.get("input_event_id"))
+    if input_event_id is None:
+        raise ValueError("Codex Live input snapshot is missing input_event_id")
+    input_kind = payload.get("input_kind")
+    if input_kind not in {"typed", "voice"}:
+        raise ValueError("Codex Live input snapshot has an invalid input_kind")
+    text_model = AIModelSelection.model_validate(raw_text_model).model_copy(deep=True)
+    return CodexLiveInputSnapshot(
+        turn_id=turn_id,
+        input_event_id=input_event_id,
+        input_kind=input_kind,
+        references=references,
+        text_model=text_model,
+    )
+
+
+def _take_pending_input_snapshot(
+    session: CodexLiveSession,
+) -> CodexLiveInputSnapshot | None:
+    return session.pending_input_snapshots.pop(0) if session.pending_input_snapshots else None
 
 
 def codex_live_sideband_url(call_id: str) -> str:
@@ -315,6 +381,11 @@ def _chat_request_for_task(
     session: CodexLiveSession,
     task: CodexLiveTask,
 ) -> ChatRequest:
+    references = _snapshot_references(
+        task.selections
+        if isinstance(task, _RoutedCodexLiveTask) and task.selections
+        else ([task.selection] if task.selection is not None else [])
+    )
     return ChatRequest(
         message=task.prompt,
         session_id=session.client_session_id,
@@ -323,7 +394,13 @@ def _chat_request_for_task(
         channel="realtime",
         input_kind=task.input_kind,
         provider_reference=task.provider_reference,
-        selection=task.selection,
+        text_model=(
+            task.text_model.model_copy(deep=True)
+            if isinstance(task, _RoutedCodexLiveTask) and task.text_model is not None
+            else None
+        ),
+        selection=references[0] if references else None,
+        selections=references,
     )
 
 
@@ -400,7 +477,12 @@ async def _execute_task(
         input_event_id=task.input_event_id,
         input_kind=task.input_kind,
         provider_reference=task.provider_reference,
-        selection=task.selection,
+        selections=(
+            task.selections if isinstance(task, _RoutedCodexLiveTask) else None
+        ),
+        text_model=(
+            task.text_model if isinstance(task, _RoutedCodexLiveTask) else None
+        ),
         on_delta=on_delta,
         on_agent_activity=on_agent_activity,
         is_cancelled=is_cancelled,
@@ -693,9 +775,55 @@ async def _handle_client_messages(
                     client_send_lock,
                     {"type": "codex_live.selection.error"},
                 )
+        elif payload.get("type") == "input_snapshot.update":
+            try:
+                snapshot = _input_snapshot_from_payload(
+                    payload,
+                )
+                existing = next(
+                    (
+                        item
+                        for item in session.pending_input_snapshots
+                        if item.input_event_id == snapshot.input_event_id
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    if existing != snapshot:
+                        raise ValueError(
+                            "Codex Live input_event_id was reused with another snapshot"
+                        )
+                    continue
+                if len(session.pending_input_snapshots) >= 8:
+                    raise ValueError("Codex Live has too many pending input snapshots")
+                session.pending_input_snapshots.append(snapshot)
+            except (TypeError, ValueError) as exc:
+                await _send_client_event(
+                    websocket,
+                    client_send_lock,
+                    {
+                        "type": "codex_live.input_snapshot.error",
+                        "message": str(exc),
+                    },
+                )
         elif payload.get("type") == "input_text":
             text = str(payload.get("text") or "").strip()
             if text:
+                try:
+                    input_snapshot = _input_snapshot_from_payload(
+                        payload,
+                    )
+                except (TypeError, ValueError) as exc:
+                    await _send_client_event(
+                        websocket,
+                        client_send_lock,
+                        {
+                            "type": "codex_live.workflow.error",
+                            "message": str(exc),
+                        },
+                    )
+                    continue
+                references = input_snapshot.references
                 task = _RoutedCodexLiveTask(
                     delegation_id=(
                         _nonempty_identifier(payload.get("delegation_id"))
@@ -703,24 +831,16 @@ async def _handle_client_messages(
                     ),
                     prompt=text,
                     provider_delegation=False,
-                    turn_id=(
-                        _nonempty_identifier(payload.get("turn_id"))
-                        or new_id("realtime_turn")
-                    ),
+                    turn_id=input_snapshot.turn_id,
                     workflow_run_id=new_id("workflow_run"),
-                    input_event_id=(
-                        _nonempty_identifier(payload.get("input_event_id"))
-                        or new_id("realtime_input")
-                    ),
-                    input_kind=(
-                        payload["input_kind"]
-                        if payload.get("input_kind") in {"typed", "voice"}
-                        else "typed"
-                    ),
+                    input_event_id=input_snapshot.input_event_id,
+                    input_kind=input_snapshot.input_kind,
                     provider_reference=_nonempty_identifier(
                         payload.get("provider_reference")
                     ),
-                    selection=_snapshot_selection(session.selection),
+                    selection=references[0] if references else None,
+                    selections=references,
+                    text_model=input_snapshot.text_model,
                     action="auto",
                     provider_intent_hint=_provider_intent_hint(payload),
                 )
@@ -1019,16 +1139,71 @@ async def _handle_upstream_messages(
                 },
             )
         elif kind == "delegation":
+            input_snapshot = _take_pending_input_snapshot(session)
+            if input_snapshot is None:
+                await _send_client_event(
+                    websocket,
+                    client_send_lock,
+                    {
+                        "type": "codex_live.workflow.error",
+                        "delegation_id": event["id"],
+                        "turn_id": event.get("turn_id"),
+                        "input_event_id": event.get("input_event_id"),
+                        "provider_reference": event.get("provider_reference") or event["id"],
+                        "message": (
+                            "Codex Live rejected the delegation because its frozen input "
+                            "snapshot was not received."
+                        ),
+                    },
+                )
+                raise RuntimeError(
+                    "Codex Live provider delegation arrived without a frozen input snapshot"
+                )
+            mismatched_identifiers = [
+                name
+                for name, provider_value, snapshot_value in (
+                    ("turn_id", event.get("turn_id"), input_snapshot.turn_id),
+                    (
+                        "input_event_id",
+                        event.get("input_event_id"),
+                        input_snapshot.input_event_id,
+                    ),
+                )
+                if provider_value is not None and provider_value != snapshot_value
+            ]
+            if mismatched_identifiers:
+                await _send_client_event(
+                    websocket,
+                    client_send_lock,
+                    {
+                        "type": "codex_live.workflow.error",
+                        "delegation_id": event["id"],
+                        "turn_id": event.get("turn_id"),
+                        "input_event_id": event.get("input_event_id"),
+                        "provider_reference": event.get("provider_reference") or event["id"],
+                        "message": (
+                            "Codex Live provider identifiers do not match the frozen "
+                            "input snapshot: "
+                            + ", ".join(mismatched_identifiers)
+                        ),
+                    },
+                )
+                raise RuntimeError(
+                    "Codex Live provider identifiers do not match the frozen input snapshot"
+                )
+            references = input_snapshot.references
             task = _RoutedCodexLiveTask(
                 delegation_id=event["id"],
                 prompt=event["prompt"],
                 provider_delegation=True,
-                turn_id=event.get("turn_id") or new_id("realtime_turn"),
+                turn_id=input_snapshot.turn_id,
                 workflow_run_id=new_id("workflow_run"),
-                input_event_id=event.get("input_event_id") or event["id"],
-                input_kind="voice",
+                input_event_id=input_snapshot.input_event_id,
+                input_kind=input_snapshot.input_kind,
                 provider_reference=event.get("provider_reference") or event["id"],
-                selection=_snapshot_selection(session.selection),
+                selection=references[0] if references else None,
+                selections=references,
+                text_model=input_snapshot.text_model,
                 action="auto",
                 provider_intent_hint=event.get("provider_intent_hint"),
             )

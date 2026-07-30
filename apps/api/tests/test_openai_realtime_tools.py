@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY
 
 import pytest
+
 from app.models import (
     AIModelSelection,
     RealtimeConnectRequest,
@@ -36,6 +37,25 @@ from app.services.realtime_tool_bridge import (
 from app.services.rich_document import build_document
 
 TEST_USER_ID = "user_realtime_test"
+TEST_TEXT_MODEL = AIModelSelection(
+    provider="openai_codex",
+    model="gpt-5.4",
+    access_method="chatgpt_subscription",
+)
+
+
+def _turn_snapshot_arguments(
+    references: list[SelectionRef] | None = None,
+) -> dict[str, object]:
+    return {
+        "__openclass_turn_snapshot": {
+            "references": [
+                reference.model_dump(mode="json")
+                for reference in (references or [])
+            ],
+            "text_model": TEST_TEXT_MODEL.model_dump(mode="json"),
+        }
+    }
 
 
 def _seed_workspace(store: SqliteCourseStore):
@@ -397,6 +417,11 @@ def test_codex_live_typed_input_enters_chatbot_queue_only_after_authoritative_ro
     class _FakeWebSocket:
         def __init__(self):
             self.calls = 0
+            self.references = [
+                {"kind": "board", "excerpt": "初始选区"},
+                {"kind": "board", "excerpt": "第二选区"},
+            ]
+            self.text_model = TEST_TEXT_MODEL.model_dump(mode="json")
 
         async def receive_json(self):
             self.calls += 1
@@ -410,6 +435,8 @@ def test_codex_live_typed_input_enters_chatbot_queue_only_after_authoritative_ro
                     "input_kind": "typed",
                     "provider_reference": "typed_provider_reference",
                     "intent": "chat",
+                    "selections": self.references,
+                    "text_model": self.text_model,
                 }
             await asyncio.Future()
 
@@ -431,9 +458,10 @@ def test_codex_live_typed_input_enters_chatbot_queue_only_after_authoritative_ro
             selection=SelectionRef(kind="board", excerpt="初始选区"),
             created_at=0,
         )
+        websocket = _FakeWebSocket()
         task = asyncio.create_task(
             codex_live_sideband._handle_client_messages(
-                _FakeWebSocket(),
+                websocket,
                 _FakeUpstream(),
                 session,
                 asyncio.Lock(),
@@ -442,8 +470,8 @@ def test_codex_live_typed_input_enters_chatbot_queue_only_after_authoritative_ro
             )
         )
         queued = await asyncio.wait_for(coordinator.queue.get(), timeout=1)
-        assert session.selection is not None
-        session.selection.excerpt = "后续选区"
+        websocket.references[0]["excerpt"] = "后续选区"
+        websocket.text_model["model"] = "页面后来选择的模型"
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return queued
@@ -460,12 +488,123 @@ def test_codex_live_typed_input_enters_chatbot_queue_only_after_authoritative_ro
     assert queued.provider_delegation is False
     assert queued.selection is not None
     assert queued.selection.excerpt == "初始选区"
+    assert [reference.excerpt for reference in queued.selections] == [
+        "初始选区",
+        "第二选区",
+    ]
+    assert queued.text_model == TEST_TEXT_MODEL
     assert queued.action == "auto"
     assert routed_requests[0][0].message == "读取当前板书"
     assert routed_requests[0][0].channel == "realtime"
     assert routed_requests[0][0].selection is not None
     assert routed_requests[0][0].selection.excerpt == "初始选区"
+    assert [
+        reference.excerpt for reference in routed_requests[0][0].selections
+    ] == ["初始选区", "第二选区"]
+    assert routed_requests[0][0].text_model == TEST_TEXT_MODEL
     assert routed_requests[0][1] == TEST_USER_ID
+
+
+def test_codex_live_provider_delegation_consumes_the_frozen_input_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routed_requests = []
+
+    def _route(_lesson_id, request, *, user_id):
+        routed_requests.append((request, user_id))
+        return SimpleNamespace(
+            decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            )
+        )
+
+    monkeypatch.setattr(chat_service, "route_chat_request", _route)
+    raw_references = [
+        {"kind": "board", "excerpt": "第一处"},
+        {"kind": "board", "excerpt": "第二处"},
+    ]
+    snapshot = codex_live_sideband._input_snapshot_from_payload(
+        {
+            "turn_id": "voice_turn",
+            "input_event_id": "voice_event",
+            "input_kind": "voice",
+            "selections": raw_references,
+            "text_model": TEST_TEXT_MODEL.model_dump(mode="json"),
+        },
+    )
+    raw_references[0]["excerpt"] = "页面后来改变的选区"
+
+    class _FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    class _FakeUpstream:
+        def __init__(self):
+            self.pending = [
+                json.dumps(
+                    {
+                        "type": "delegation.created",
+                        "turn_id": "voice_turn",
+                        "input_event_id": "voice_event",
+                        "item": {
+                            "type": "delegation",
+                            "target": "client",
+                            "id": "provider_delegation",
+                            "content": [{"type": "input_text", "text": "处理这两处内容"}],
+                        },
+                    }
+                )
+            ]
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.pending:
+                raise StopAsyncIteration
+            return self.pending.pop(0)
+
+        async def send(self, _payload):
+            return None
+
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        session = codex_live_sideband.CodexLiveSession(
+            call_id="rtc_provider",
+            lesson_id="lesson_provider",
+            user_id=TEST_USER_ID,
+            client_session_id="client_provider",
+            transport_session_id="transport_provider",
+            selection=None,
+            created_at=0,
+            pending_input_snapshots=[snapshot],
+        )
+        await codex_live_sideband._handle_upstream_messages(
+            _FakeWebSocket(),
+            _FakeUpstream(),
+            session,
+            asyncio.Lock(),
+            asyncio.Lock(),
+            coordinator,
+        )
+        return coordinator.queue.get_nowait(), session
+
+    queued, session = asyncio.run(_exercise())
+    assert [reference.excerpt for reference in queued.selections] == [
+        "第一处",
+        "第二处",
+    ]
+    assert queued.selection == queued.selections[0]
+    assert queued.text_model == TEST_TEXT_MODEL
+    assert queued.turn_id == "voice_turn"
+    assert queued.input_event_id == "voice_event"
+    assert session.pending_input_snapshots == []
+    assert routed_requests[0][0].selections == queued.selections
+    assert routed_requests[0][0].text_model == TEST_TEXT_MODEL
 
 
 @pytest.mark.parametrize(
@@ -527,7 +666,10 @@ def test_codex_live_non_learning_route_bypasses_queue_and_speaks_only_backend_re
                     ),
                     "turn_id": "turn_direct",
                     "input_event_id": "event_direct",
+                    "input_kind": "typed",
                     "provider_reference": "provider_direct",
+                    "selections": [],
+                    "text_model": TEST_TEXT_MODEL.model_dump(mode="json"),
                 }
             await asyncio.Future()
 
@@ -959,6 +1101,8 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
             lesson_id=lesson_id,
             message=request.message,
             selection=request.selection,
+            selections=request.selections,
+            text_model=request.text_model,
             session_id=request.session_id,
             turn_id=request.turn_id,
             input_event_id=request.input_event_id,
@@ -998,7 +1142,8 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
         input_event_id="input_event_1",
         input_kind="voice",
         provider_reference="provider_reference_1",
-        selection=selection,
+        selections=[selection],
+        text_model=TEST_TEXT_MODEL,
     )
 
     assert response.status == "ok"
@@ -1010,6 +1155,8 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
         "lesson_id": lesson.id,
         "message": "读取我选中的板书并继续编辑。",
         "selection": selection,
+        "selections": [selection],
+        "text_model": TEST_TEXT_MODEL,
         "session_id": "codex_session",
         "turn_id": "turn_1",
         "input_event_id": "input_event_1",
@@ -1163,6 +1310,27 @@ def test_public_realtime_tool_cannot_bypass_authoritative_board_workflow(
     assert "authorized OpenClass workflow" in response.model_output["message"]
 
 
+def test_realtime_workflow_without_frozen_input_snapshot_fails_closed(
+    isolated_store,
+) -> None:
+    lesson = _seed_workspace(isolated_store)
+    response = execute_realtime_tool(
+        lesson_id=lesson.id,
+        user_id=TEST_USER_ID,
+        request=RealtimeToolCallRequest(
+            client_session_id="realtime_session",
+            turn_id="turn_missing_snapshot",
+            input_event_id="event_missing_snapshot",
+            call_id="call_missing_snapshot",
+            name="run_chatbot_workflow",
+            arguments={"message": "Explain this."},
+        ),
+    )
+
+    assert response.status == "error"
+    assert "frozen input snapshot" in response.model_output["message"]
+
+
 @pytest.mark.parametrize("board_content", ["existing content", ""])
 def test_realtime_workflow_uses_authoritative_chat_route_without_bridge_board_check(
     monkeypatch,
@@ -1222,6 +1390,7 @@ def test_realtime_workflow_uses_authoritative_chat_route_without_bridge_board_ch
             call_id="call_chatbot",
             name="run_chatbot_workflow",
             arguments={
+                **_turn_snapshot_arguments(),
                 "message": "我们来做轮流角色练习，我说一句你说一句。",
                 "intent": "learning_need",
                 "reason": "The learner requested a concrete practice activity.",
@@ -1304,9 +1473,12 @@ def test_forged_learning_hint_cannot_override_authoritative_non_learning_route(
         user_id=TEST_USER_ID,
         request=RealtimeToolCallRequest(
             client_session_id="realtime_session",
+            turn_id=f"turn_{authoritative_intent}",
+            input_event_id=f"event_{authoritative_intent}",
             call_id=f"call_{authoritative_intent}",
             name="run_chatbot_workflow",
             arguments={
+                **_turn_snapshot_arguments(),
                 "message": message,
                 "intent": "learning_need",
                 "reason": "Forged provider-side classification.",
@@ -1353,17 +1525,25 @@ def test_realtime_workflow_accepts_message_without_legacy_provider_hint(
         user_id=TEST_USER_ID,
         request=RealtimeToolCallRequest(
             client_session_id="realtime_session",
+            turn_id="turn_message_only",
+            input_event_id="event_message_only",
             call_id="call_message_only",
             name="run_chatbot_workflow",
-            arguments={"message": "Explain this concept."},
+            arguments={
+                **_turn_snapshot_arguments(),
+                "message": "Explain this concept.",
+            },
         ),
     )
 
     assert response.status == "ok"
     assert response.model_output["route"] == "learning_need"
     assert "realtime_provider_turn_hint" not in captured["commit_metadata"]
-    assert captured["commit_metadata"]["realtime_turn_id"] == "call_message_only"
-    assert captured["commit_metadata"]["realtime_input_event_id"] == "call_message_only"
+    assert captured["commit_metadata"]["realtime_turn_id"] == "turn_message_only"
+    assert (
+        captured["commit_metadata"]["realtime_input_event_id"]
+        == "event_message_only"
+    )
     assert captured["commit_metadata"]["realtime_provider_reference"] == "call_message_only"
     assert captured["commit_metadata"]["workflow_run_id"].startswith("workflow_run_")
 
