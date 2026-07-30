@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import unicodedata
+from collections.abc import Sequence
 from difflib import SequenceMatcher
+from itertools import pairwise
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -14,7 +18,7 @@ from app.services.board_segment_index import (
     segment_text_hash,
 )
 from app.services.history import current_head_commit
-
+from app.services.rich_document import document_to_markdown
 
 TargetResolutionStatus = Literal["resolved", "target_not_resolved"]
 TargetResolutionReason = Literal[
@@ -62,6 +66,7 @@ class FocusResolver:
         *,
         target_text: str = "",
         selection: SelectionRef | None = None,
+        content_extent: str | None = None,
     ) -> TargetResolution:
         index = build_board_segment_index(lesson.board_document)
         segments = [segment for segment in index.segments if compact_segment_text(segment.text)]
@@ -69,7 +74,12 @@ class FocusResolver:
             return self._unresolved("board_empty")
 
         if selection is not None:
-            return self._resolve_selection(lesson, segments, selection)
+            return self._resolve_selection(
+                lesson,
+                segments,
+                selection,
+                content_extent=content_extent,
+            )
 
         target = compact_segment_text(target_text, limit=500)
         if not target:
@@ -86,6 +96,8 @@ class FocusResolver:
                 heading_matches[0],
                 confidence=0.99,
                 reason="resolved_by_heading",
+                segments=segments,
+                content_extent=content_extent,
             )
         if len(heading_matches) > 1:
             return self._unresolved(
@@ -102,6 +114,8 @@ class FocusResolver:
                     ordinal_matches[0],
                     confidence=0.96,
                     reason="resolved_by_ordinal",
+                    segments=segments,
+                    content_extent=content_extent,
                 )
             if len(ordinal_matches) > 1:
                 return self._unresolved(
@@ -133,6 +147,100 @@ class FocusResolver:
             best_segment,
             confidence=best_score,
             reason="resolved_by_text_clue",
+            segments=segments,
+            content_extent=content_extent,
+        )
+
+    def resolve_many(
+        self,
+        lesson: Lesson,
+        *,
+        selections: Sequence[SelectionRef],
+        content_extent: str | None = None,
+    ) -> TargetResolution:
+        """Resolve one frozen board range from ordered adjacent selections."""
+
+        frozen = [selection.model_copy(deep=True) for selection in selections]
+        if not frozen:
+            return self._unresolved("target_missing")
+        if len(frozen) == 1:
+            return self.resolve(
+                lesson,
+                selection=frozen[0],
+                content_extent=content_extent,
+            )
+
+        index = build_board_segment_index(lesson.board_document)
+        segments = [segment for segment in index.segments if compact_segment_text(segment.text)]
+        results = [self.resolve(lesson, selection=selection) for selection in frozen]
+        resolved = [result.focus for result in results if result.status == "resolved" and result.focus]
+        if len(resolved) != len(frozen):
+            return self._unresolved(
+                "ambiguous_candidates",
+                candidates=_collect_candidates(results),
+            )
+        if any(selection.location_kind != "target_range" for selection in frozen):
+            return self._unresolved(
+                "ambiguous_candidates",
+                candidates=[focus.model_copy(deep=True) for focus in resolved[:5]],
+            )
+
+        positions = [focus.order_start for focus in resolved]
+        if any(position is None for position in positions):
+            return self._unresolved("ambiguous_candidates")
+        ordered_positions = [int(position) for position in positions if position is not None]
+        if any(
+            current != previous + 1
+            for previous, current in pairwise(ordered_positions)
+        ):
+            return self._unresolved(
+                "ambiguous_candidates",
+                candidates=[focus.model_copy(deep=True) for focus in resolved[:5]],
+            )
+
+        first_order = ordered_positions[0]
+        last_order = ordered_positions[-1]
+        if first_order < 0 or last_order >= len(segments):
+            return self._unresolved("selection_segment_missing")
+        source_segments = segments[first_order : last_order + 1]
+        if [segment.segment_id for segment in source_segments] != [
+            focus.segment_id for focus in resolved
+        ]:
+            return self._unresolved("ambiguous_candidates")
+
+        markdown = document_to_markdown(lesson.board_document)
+        first_span = _segment_markdown_span(markdown, segments, source_segments[0])
+        last_span = _segment_markdown_span(markdown, segments, source_segments[-1])
+        if first_span is None or last_span is None:
+            return self._unresolved("selection_text_mismatch")
+        first_offset = _unique_exact_offset(
+            source_segments[0].text,
+            frozen[0].excerpt,
+        )
+        last_offset = _unique_exact_offset(
+            source_segments[-1].text,
+            frozen[-1].excerpt,
+        )
+        if first_offset is None or last_offset is None:
+            return self._unresolved("selection_text_mismatch")
+        range_start = first_span[0] + first_offset
+        range_end = last_span[0] + last_offset + len(frozen[-1].excerpt)
+        excerpt = markdown[range_start:range_end]
+        if not excerpt:
+            return self._unresolved("selection_text_mismatch")
+
+        return TargetResolution(
+            status="resolved",
+            machine_reason="resolved_by_selection",
+            focus=self._focus_ref(
+                lesson,
+                source_segments[0],
+                confidence=min(focus.confidence for focus in resolved),
+                reason="resolved_by_selection",
+                excerpt_override=excerpt,
+                source_segments=source_segments,
+                freeze_range_hash=True,
+            ),
         )
 
     def _resolve_selection(
@@ -140,6 +248,8 @@ class FocusResolver:
         lesson: Lesson,
         segments: list[BoardSegment],
         selection: SelectionRef,
+        *,
+        content_extent: str | None = None,
     ) -> TargetResolution:
         document = lesson.board_document
         if selection.kind != "board":
@@ -191,6 +301,8 @@ class FocusResolver:
                 confidence=1.0 if selection.text_hash else 0.99,
                 reason="resolved_by_selection",
                 selection=selection,
+                segments=segments,
+                content_extent=content_extent,
             )
 
         if selection.location_kind == "insertion_anchor":
@@ -234,6 +346,8 @@ class FocusResolver:
             confidence=0.98 if selection.text_hash else 0.94,
             reason="resolved_by_selection",
             selection=selection,
+            segments=segments,
+            content_extent=content_extent,
         )
 
     def _text_score(self, target: str, segment: BoardSegment) -> float:
@@ -269,7 +383,36 @@ class FocusResolver:
         confidence: float,
         reason: TargetResolutionReason,
         selection: SelectionRef | None = None,
+        segments: list[BoardSegment] | None = None,
+        content_extent: str | None = None,
     ) -> TargetResolution:
+        source_segments: list[BoardSegment] | None = None
+        excerpt_override = (
+            selection.excerpt
+            if selection is not None
+            and selection.location_kind == "target_range"
+            and selection.excerpt
+            else None
+        )
+        freeze_range_hash = False
+        if content_extent == "section" and segment.kind == "heading" and segments:
+            source_segments = _section_segments(segments, segment)
+            covers_whole_board = (
+                bool(source_segments)
+                and source_segments[0].order_index == 0
+                and len(source_segments) == len(segments)
+            )
+            if not covers_whole_board:
+                excerpt_override = _section_markdown_excerpt(
+                    lesson,
+                    segments,
+                    source_segments,
+                )
+                if not excerpt_override:
+                    return self._unresolved("selection_text_mismatch")
+                freeze_range_hash = True
+            else:
+                source_segments = None
         return TargetResolution(
             status="resolved",
             machine_reason=reason,
@@ -278,13 +421,7 @@ class FocusResolver:
                 segment,
                 confidence=confidence,
                 reason=reason,
-                excerpt_override=(
-                    selection.excerpt
-                    if selection is not None
-                    and selection.location_kind == "target_range"
-                    and selection.excerpt
-                    else None
-                ),
+                excerpt_override=excerpt_override,
                 before_text=(
                     selection.before_text[-240:]
                     if selection is not None
@@ -297,6 +434,8 @@ class FocusResolver:
                     and selection.location_kind == "insertion_anchor"
                     else ""
                 ),
+                source_segments=source_segments,
+                freeze_range_hash=freeze_range_hash,
             ),
         )
 
@@ -334,11 +473,19 @@ class FocusResolver:
         excerpt_override: str | None = None,
         before_text: str = "",
         after_text: str = "",
+        source_segments: Sequence[BoardSegment] | None = None,
+        freeze_range_hash: bool = False,
     ) -> BoardFocusRef:
         # compact_segment_text appends a three-character ellipsis after its slice.
         excerpt = excerpt_override or compact_segment_text(segment.text, limit=318)
         heading_path = [compact_segment_text(item, limit=118) for item in segment.heading_path[-5:]]
         label = heading_path[-1] if heading_path else f"{segment.kind}:{segment.order_index + 1}"
+        frozen_segments = list(source_segments or [segment])
+        text_hash = (
+            focus_range_text_hash(frozen_segments, excerpt)
+            if freeze_range_hash
+            else segment.text_hash
+        )
         return BoardFocusRef(
             source="board",
             lesson_id=lesson.id,
@@ -349,15 +496,15 @@ class FocusResolver:
             excerpt=excerpt,
             before_text=before_text,
             after_text=after_text,
-            text_hash=segment.text_hash,
+            text_hash=text_hash,
             excerpt_hash=segment_text_hash(excerpt),
             confidence=max(0.0, min(float(confidence), 1.0)),
             reason=reason,
             display_label=compact_segment_text(label, limit=118),
             match_id=f"focus_{segment.text_hash}_{segment.order_index}",
-            source_segment_ids=[segment.segment_id],
-            order_start=segment.order_index,
-            order_end=segment.order_index,
+            source_segment_ids=[item.segment_id for item in frozen_segments],
+            order_start=frozen_segments[0].order_index,
+            order_end=frozen_segments[-1].order_index,
             score_breakdown={"deterministic_score": max(0.0, min(float(confidence), 1.0))},
         )
 
@@ -367,13 +514,44 @@ def resolve_board_focus(
     *,
     target_text: str = "",
     selection: SelectionRef | None = None,
+    content_extent: str | None = None,
     confidence_threshold: float = 0.72,
     candidate_margin: float = 0.12,
 ) -> TargetResolution:
     return FocusResolver(
         confidence_threshold=confidence_threshold,
         candidate_margin=candidate_margin,
-    ).resolve(lesson, target_text=target_text, selection=selection)
+    ).resolve(
+        lesson,
+        target_text=target_text,
+        selection=selection,
+        content_extent=content_extent,
+    )
+
+
+def focus_range_text_hash(
+    segments: Sequence[BoardSegment],
+    excerpt: str,
+) -> str:
+    payload = {
+        "segments": [
+            {
+                "segment_id": segment.segment_id,
+                "order_index": segment.order_index,
+                "text_hash": segment.text_hash,
+            }
+            for segment in segments
+        ],
+        "excerpt": excerpt,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _normalize(value: str) -> str:
@@ -509,3 +687,137 @@ def _character_grams(value: str) -> set[str]:
     if len(value) == 1:
         return {value}
     return {value[index : index + 2] for index in range(len(value) - 1)}
+
+
+def _section_segments(
+    segments: Sequence[BoardSegment],
+    heading: BoardSegment,
+) -> list[BoardSegment]:
+    try:
+        start = next(
+            index
+            for index, segment in enumerate(segments)
+            if segment.segment_id == heading.segment_id
+        )
+    except StopIteration:
+        return []
+    heading_path = list(heading.heading_path)
+    selected: list[BoardSegment] = []
+    for segment in segments[start:]:
+        if (
+            selected
+            and segment.kind == "heading"
+            and list(segment.heading_path[: len(heading_path)]) != heading_path
+        ):
+            break
+        selected.append(segment)
+    return selected
+
+
+def _section_markdown_excerpt(
+    lesson: Lesson,
+    all_segments: Sequence[BoardSegment],
+    source_segments: Sequence[BoardSegment],
+) -> str:
+    if not source_segments:
+        return ""
+    markdown = document_to_markdown(lesson.board_document)
+    first = _segment_markdown_span(markdown, all_segments, source_segments[0])
+    if first is None:
+        return ""
+    start = first[2]
+    next_order = source_segments[-1].order_index + 1
+    if next_order < len(all_segments):
+        following = _segment_markdown_span(
+            markdown,
+            all_segments,
+            all_segments[next_order],
+        )
+        if following is None:
+            return ""
+        end = following[2]
+    else:
+        end = len(markdown)
+    return markdown[start:end].rstrip("\n")
+
+
+def _segment_markdown_span(
+    markdown: str,
+    segments: Sequence[BoardSegment],
+    target: BoardSegment,
+) -> tuple[int, int, int, int] | None:
+    peers = [
+        segment
+        for segment in segments
+        if segment.kind == target.kind and segment.text == target.text
+    ]
+    candidates = [
+        start
+        for start in _all_occurrences(markdown, target.text)
+        if _matches_markdown_block(markdown, start, target)
+    ]
+    if len(candidates) != len(peers):
+        return None
+    target_ordinal = next(
+        (
+            index
+            for index, segment in enumerate(peers)
+            if segment.segment_id == target.segment_id
+        ),
+        None,
+    )
+    if target_ordinal is None or target_ordinal >= len(candidates):
+        return None
+    text_start = candidates[target_ordinal]
+    text_end = text_start + len(target.text)
+    block_start = markdown.rfind("\n", 0, text_start) + 1
+    next_newline = markdown.find("\n", text_end)
+    block_end = len(markdown) if next_newline < 0 else next_newline
+    return text_start, text_end, block_start, block_end
+
+
+def _matches_markdown_block(markdown: str, start: int, segment: BoardSegment) -> bool:
+    line_start = markdown.rfind("\n", 0, start) + 1
+    line_end = markdown.find("\n", start + len(segment.text))
+    if line_end < 0:
+        line_end = len(markdown)
+    line = markdown[line_start:line_end]
+    if segment.kind == "heading":
+        return bool(re.fullmatch(r"#{1,6}\s+" + re.escape(segment.text), line))
+    if segment.kind == "list":
+        return bool(
+            re.fullmatch(
+                r"(?:[-+*]|\d+\.)\s+" + re.escape(segment.text),
+                line,
+            )
+        )
+    if segment.kind == "paragraph":
+        return line == segment.text
+    return segment.text in line
+
+
+def _all_occurrences(value: str, needle: str) -> list[int]:
+    if not needle:
+        return []
+    starts: list[int] = []
+    offset = 0
+    while True:
+        found = value.find(needle, offset)
+        if found < 0:
+            return starts
+        starts.append(found)
+        offset = found + len(needle)
+
+
+def _unique_exact_offset(value: str, needle: str) -> int | None:
+    matches = _all_occurrences(value, needle)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _collect_candidates(results: Sequence[TargetResolution]) -> list[BoardFocusRef]:
+    candidates: dict[str, BoardFocusRef] = {}
+    for result in results:
+        for focus in [*([result.focus] if result.focus else []), *result.candidates]:
+            key = focus.segment_id or focus.match_id or focus.excerpt
+            candidates.setdefault(key, focus.model_copy(deep=True))
+    return list(candidates.values())[:5]

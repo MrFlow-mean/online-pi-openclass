@@ -164,7 +164,12 @@ def process_existing_board_workflow(
     draft = _apply_explicit_controls(draft, manager_input.explicit_controls)
     decision = task_manager._finalize_decision(draft)
     activity = list(getattr(manager_response, "activity", []))
-    resolution = _resolve_target(lesson, request, decision.target_hint)
+    resolution = _resolve_target(
+        lesson,
+        request,
+        decision.target_hint,
+        content_extent=decision.extent,
+    )
     task = _build_task_sheet(
         lesson,
         decision,
@@ -500,28 +505,21 @@ def _resolve_target(
     lesson: Lesson,
     request: ChatRequest,
     target_hint: str,
+    *,
+    content_extent: str | None = None,
 ) -> TargetResolution:
     resolver = FocusResolver()
     selections = [item for item in _frozen_references(request) if item.kind == "board"]
     if not selections:
-        return resolver.resolve(lesson, target_text=target_hint)
-    results = [resolver.resolve(lesson, selection=item) for item in selections]
-    resolved = [item.focus for item in results if item.status == "resolved" and item.focus]
-    unique = {item.segment_id: item for item in resolved}
-    if len(results) == len(resolved) and len(unique) == 1:
-        return TargetResolution(
-            status="resolved",
-            machine_reason="resolved_by_selection",
-            focus=next(iter(unique.values())),
+        return resolver.resolve(
+            lesson,
+            target_text=target_hint,
+            content_extent=content_extent,
         )
-    candidates: dict[str, BoardFocusRef] = {}
-    for result in results:
-        for focus in [*([result.focus] if result.focus else []), *result.candidates]:
-            candidates.setdefault(focus.segment_id or focus.match_id or focus.excerpt, focus)
-    return TargetResolution(
-        status="target_not_resolved",
-        machine_reason="ambiguous_candidates",
-        candidates=list(candidates.values())[:5],
+    return resolver.resolve_many(
+        lesson,
+        selections=selections,
+        content_extent=content_extent,
     )
 
 

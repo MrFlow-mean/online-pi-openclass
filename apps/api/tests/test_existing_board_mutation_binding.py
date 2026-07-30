@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import pytest
-
 from app.models import BoardDocument, BoardFocusRef
-from app.services.board_segment_index import build_board_segment_index, segment_text_hash
+from app.services.board_segment_index import (
+    build_board_segment_index,
+    segment_text_hash,
+)
 from app.services.existing_board import mutation_binding as binding_module
+from app.services.existing_board.focus_resolver import resolve_board_focus
 from app.services.existing_board.mutation_binding import (
     ConfirmedWriteAnchor,
     bind_and_execute_board_mutation,
@@ -15,6 +18,7 @@ from app.services.existing_board.mutation_planner import (
     MutationPlannerBinding,
     MutationPlannerOperationDraft,
 )
+from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document, document_to_markdown
 
 
@@ -45,6 +49,20 @@ def _focus(document: BoardDocument, text: str, *, occurrence: int = 0) -> BoardF
         excerpt_hash=segment_text_hash(segment.text),
         confidence=1.0,
     )
+
+
+def _section_focus(document: BoardDocument, heading: str) -> BoardFocusRef:
+    lesson = create_empty_lesson("Binding fixture")
+    lesson.id = "lesson_binding_fixture"
+    lesson.board_document = document.model_copy(deep=True)
+    result = resolve_board_focus(
+        lesson,
+        target_text=heading,
+        content_extent="section",
+    )
+    assert result.status == "resolved"
+    assert result.focus is not None
+    return result.focus
 
 
 def _operation(
@@ -419,3 +437,105 @@ def test_confirmed_delete_includes_only_the_adjacent_markdown_separator() -> Non
     assert document_to_markdown(result.document) == "# Section\n\nOutside content."
     assert result.execution_audit is not None
     assert result.execution_audit.authorized_scopes[0].start == len("# Section\n\n")
+
+
+def test_cross_segment_section_edit_replaces_only_the_frozen_range() -> None:
+    document = _document(
+        "# Root\n\n## Target\n\nOld one.\n\n### Detail\n\nOld two."
+        "\n\n## Outside\n\nKeep outside."
+    )
+    focus = _section_focus(document, "Target")
+    draft = _draft(
+        document,
+        [
+            _operation(
+                "edit_section",
+                "edit",
+                focus,
+                position="replace",
+                content="## Replacement\n\nNew bounded section.",
+            )
+        ],
+        extent="section",
+    )
+
+    result = bind_and_execute_board_mutation(
+        draft=draft,
+        document=document,
+        current_commit_id="commit_current",
+        resolved_focus=focus,
+    )
+
+    assert result.status == "applied"
+    assert document_to_markdown(result.document) == (
+        "# Root\n\n## Replacement\n\nNew bounded section."
+        "\n\n## Outside\n\nKeep outside."
+    )
+
+
+def test_cross_segment_section_delete_does_not_remove_the_next_section() -> None:
+    document = _document(
+        "# Root\n\n## Target\n\nDelete one.\n\nDelete two."
+        "\n\n## Outside\n\nKeep outside."
+    )
+    focus = _section_focus(document, "Target")
+    draft = _draft(
+        document,
+        [
+            _operation(
+                "delete_section",
+                "delete",
+                focus,
+                position="replace",
+                content="",
+            )
+        ],
+        extent="section",
+        requires_confirmation=True,
+        confirmation_status="confirmed",
+    )
+
+    result = bind_and_execute_board_mutation(
+        draft=draft,
+        document=document,
+        current_commit_id="commit_current",
+        resolved_focus=focus,
+    )
+
+    assert result.status == "applied"
+    assert document_to_markdown(result.document) == (
+        "# Root\n\n## Outside\n\nKeep outside."
+    )
+
+
+def test_tampered_frozen_segment_order_is_rejected_before_execution() -> None:
+    document = _document("# Root\n\n## Target\n\nFirst.\n\nSecond.\n\n## Outside")
+    focus = _section_focus(document, "Target")
+    tampered = focus.model_copy(
+        update={"source_segment_ids": list(reversed(focus.source_segment_ids))}
+    )
+    draft = _draft(
+        document,
+        [
+            _operation(
+                "edit_section",
+                "edit",
+                tampered,
+                position="replace",
+                content="## Replacement",
+            )
+        ],
+        extent="section",
+    )
+
+    result = bind_and_execute_board_mutation(
+        draft=draft,
+        document=document,
+        current_commit_id="commit_current",
+        resolved_focus=tampered,
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == "focus_source_segment_order_mismatch"
+    assert result.document_changed is False
+    assert document_to_markdown(result.document) == document_to_markdown(document)

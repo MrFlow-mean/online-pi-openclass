@@ -12,6 +12,7 @@ from app.services.board_segment_index import (
     build_board_segment_index,
     segment_text_hash,
 )
+from app.services.existing_board.focus_resolver import focus_range_text_hash
 from app.services.existing_board.mutation_plan import (
     BoardInsertionAnchor,
     BoardMutationAudit,
@@ -28,7 +29,6 @@ from app.services.existing_board.mutation_planner import (
     MutationPlannerOperationDraft,
 )
 from app.services.rich_document import document_to_markdown
-
 
 BindingExecutionStatus = Literal["applied", "rejected"]
 WriteAnchorPosition = Literal["before", "after", "parent_start", "parent_end"]
@@ -204,8 +204,24 @@ def _bind_operation(
     segment = segment_by_id.get(binding.segment_id)
     if segment is None:
         return None, "binding_segment_missing"
-    if binding.text_hash != segment.text_hash:
+    range_binding = (
+        resolved_focus is not None
+        and binding.text_hash == resolved_focus.text_hash
+        and _focus_declares_range(resolved_focus, segment)
+    )
+    if binding.text_hash != segment.text_hash and not range_binding:
         return None, "binding_segment_hash_mismatch"
+
+    if resolved_focus is not None:
+        focus_error = _validate_focus(
+            binding,
+            segment,
+            resolved_focus,
+            markdown=markdown,
+            segments=segments,
+        )
+        if focus_error:
+            return None, focus_error
 
     span, span_error = _resolve_segment_span(markdown, segments, segment)
     if span_error:
@@ -217,6 +233,7 @@ def _bind_operation(
             operation,
             draft=draft,
             markdown=markdown,
+            segments=segments,
             segment=segment,
             span=span,
             resolved_focus=resolved_focus,
@@ -236,6 +253,7 @@ def _bind_target_operation(
     *,
     draft: BoardMutationPlanDraft,
     markdown: str,
+    segments: list[BoardSegment],
     segment: BoardSegment,
     span: _SegmentMarkdownSpan,
     resolved_focus: BoardFocusRef | None,
@@ -243,19 +261,27 @@ def _bind_target_operation(
     binding = operation.binding
     if binding.kind != "target_range" or binding.position != "replace":
         return None, "target_binding_required"
-    focus_error = _validate_focus(binding, segment, resolved_focus)
-    if focus_error:
-        return None, focus_error
     assert resolved_focus is not None
 
     excerpt = resolved_focus.excerpt.strip()
-    local_matches = _all_occurrences(segment.text, excerpt)
-    if len(local_matches) != 1:
-        return None, "focus_excerpt_not_unique_in_segment"
-    start = span.text_start + local_matches[0]
-    end = start + len(excerpt)
-    if markdown[start:end] != excerpt:
-        return None, "focus_excerpt_markdown_mismatch"
+    frozen_segments, range_error = _frozen_focus_segments(
+        resolved_focus,
+        segments=segments,
+        anchor_segment=segment,
+    )
+    if range_error:
+        return None, range_error
+    assert frozen_segments is not None
+    resolved_range, range_error = _resolve_focus_markdown_range(
+        markdown,
+        segments=segments,
+        frozen_segments=frozen_segments,
+        excerpt=excerpt,
+    )
+    if range_error:
+        return None, range_error
+    assert resolved_range is not None
+    start, end = resolved_range
 
     if draft.extent == "whole_board":
         if len(draft.operations) != 1 or excerpt != markdown or start != 0 or end != len(markdown):
@@ -349,7 +375,14 @@ def _bind_write_operation(
     )
 
 
-def _validate_focus(binding, segment: BoardSegment, focus: BoardFocusRef | None) -> str | None:
+def _validate_focus(
+    binding,
+    segment: BoardSegment,
+    focus: BoardFocusRef | None,
+    *,
+    markdown: str,
+    segments: list[BoardSegment],
+) -> str | None:
     if focus is None:
         return "resolved_focus_required"
     if focus.source != "board":
@@ -366,7 +399,10 @@ def _validate_focus(binding, segment: BoardSegment, focus: BoardFocusRef | None)
         binding.text_hash,
     ):
         return "focus_identity_mismatch"
-    if focus.text_hash != segment.text_hash:
+    if focus.text_hash != segment.text_hash and not _focus_declares_range(
+        focus,
+        segment,
+    ):
         return "focus_segment_hash_mismatch"
     excerpt = focus.excerpt.strip()
     valid_excerpt_hashes = {
@@ -381,9 +417,110 @@ def _validate_focus(binding, segment: BoardSegment, focus: BoardFocusRef | None)
         return "focus_excerpt_hash_mismatch"
     if list(binding.parent_heading_path) != list(focus.heading_path):
         return "focus_parent_path_mismatch"
-    if excerpt not in segment.text:
-        return "focus_excerpt_not_in_segment"
+    frozen_segments, range_error = _frozen_focus_segments(
+        focus,
+        segments=segments,
+        anchor_segment=segment,
+    )
+    if range_error:
+        return range_error
+    assert frozen_segments is not None
+    expected_text_hash = (
+        focus_range_text_hash(frozen_segments, excerpt)
+        if _focus_declares_range(focus, segment)
+        else segment.text_hash
+    )
+    if focus.text_hash != expected_text_hash or binding.text_hash != expected_text_hash:
+        return "focus_range_hash_mismatch"
+    _resolved_range, range_error = _resolve_focus_markdown_range(
+        markdown,
+        segments=segments,
+        frozen_segments=frozen_segments,
+        excerpt=excerpt,
+    )
+    if range_error:
+        return range_error
     return None
+
+
+def _focus_declares_range(focus: BoardFocusRef, anchor: BoardSegment) -> bool:
+    source_ids = list(focus.source_segment_ids)
+    return (
+        len(source_ids) > 1
+        or (source_ids and source_ids != [anchor.segment_id])
+        or focus.order_start not in {None, anchor.order_index}
+        or focus.order_end not in {None, anchor.order_index}
+        or focus.text_hash != anchor.text_hash
+    )
+
+
+def _frozen_focus_segments(
+    focus: BoardFocusRef,
+    *,
+    segments: list[BoardSegment],
+    anchor_segment: BoardSegment,
+) -> tuple[list[BoardSegment] | None, str | None]:
+    source_ids = list(focus.source_segment_ids or [anchor_segment.segment_id])
+    order_start = (
+        anchor_segment.order_index if focus.order_start is None else focus.order_start
+    )
+    order_end = anchor_segment.order_index if focus.order_end is None else focus.order_end
+    if (
+        order_start < 0
+        or order_end < order_start
+        or order_end >= len(segments)
+        or len(source_ids) != order_end - order_start + 1
+    ):
+        return None, "focus_source_segment_order_mismatch"
+    frozen_segments = segments[order_start : order_end + 1]
+    if [candidate.segment_id for candidate in frozen_segments] != source_ids:
+        return None, "focus_source_segment_order_mismatch"
+    if not frozen_segments or frozen_segments[0].segment_id != anchor_segment.segment_id:
+        return None, "focus_source_segment_order_mismatch"
+    return frozen_segments, None
+
+
+def _resolve_focus_markdown_range(
+    markdown: str,
+    *,
+    segments: list[BoardSegment],
+    frozen_segments: list[BoardSegment],
+    excerpt: str,
+) -> tuple[tuple[int, int] | None, str | None]:
+    if not excerpt:
+        return None, "focus_excerpt_not_in_segment"
+    first_span, first_error = _resolve_segment_span(
+        markdown,
+        segments,
+        frozen_segments[0],
+    )
+    if first_error:
+        return None, first_error
+    assert first_span is not None
+    next_order = frozen_segments[-1].order_index + 1
+    if next_order < len(segments):
+        next_span, next_error = _resolve_segment_span(
+            markdown,
+            segments,
+            segments[next_order],
+        )
+        if next_error:
+            return None, next_error
+        assert next_span is not None
+        authorized_end = next_span.block_start
+    else:
+        authorized_end = len(markdown)
+    candidates = []
+    for start in _all_occurrences(markdown, excerpt):
+        end = start + len(excerpt)
+        if (
+            first_span.block_start <= start <= first_span.block_end
+            and end <= authorized_end
+        ):
+            candidates.append((start, end))
+    if len(candidates) != 1:
+        return None, "focus_excerpt_markdown_mismatch"
+    return candidates[0], None
 
 
 def _resolve_segment_span(

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from app.models import SelectionRef
-from app.services.board_segment_index import build_board_segment_index, segment_text_hash
-from app.services.existing_board.focus_resolver import FocusResolver, resolve_board_focus
+from app.services.board_segment_index import (
+    build_board_segment_index,
+    segment_text_hash,
+)
+from app.services.existing_board.focus_resolver import (
+    FocusResolver,
+    resolve_board_focus,
+)
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document
@@ -295,3 +301,87 @@ def test_resolution_output_never_contains_the_full_board_or_adjacent_secret() ->
     assert secret not in serialized
     assert result.focus.before_text == ""
     assert result.focus.after_text == ""
+
+
+def test_section_extent_freezes_the_complete_heading_subtree_only() -> None:
+    lesson = _lesson(
+        "# Root\n\n## Target\n\nFirst body.\n\n### Detail\n\nNested body."
+        "\n\n## Outside\n\nSECRET_OUTSIDE_SECTION"
+    )
+    index = build_board_segment_index(lesson.board_document)
+
+    result = resolve_board_focus(
+        lesson,
+        target_text="Target",
+        content_extent="section",
+    )
+
+    assert result.status == "resolved"
+    assert result.focus is not None
+    assert result.focus.excerpt == (
+        "## Target\n\nFirst body.\n\n### Detail\n\nNested body."
+    )
+    assert result.focus.source_segment_ids == [
+        segment.segment_id for segment in index.segments[1:5]
+    ]
+    assert result.focus.order_start == 1
+    assert result.focus.order_end == 4
+    assert "SECRET_OUTSIDE_SECTION" not in result.model_dump_json()
+
+
+def test_adjacent_frozen_board_selections_merge_into_one_ordered_range() -> None:
+    lesson = _lesson("# Root\n\nAlpha selected.\n\nMiddle selected.\n\nOmega outside.")
+    segments = build_board_segment_index(lesson.board_document).segments
+    selections = [
+        SelectionRef(
+            kind="board",
+            location_kind="target_range",
+            excerpt=segment.text,
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+            segment_id=segment.segment_id,
+            text_hash=segment.text_hash,
+        )
+        for segment in segments[1:3]
+    ]
+
+    result = FocusResolver().resolve_many(lesson, selections=selections)
+
+    assert result.status == "resolved"
+    assert result.focus is not None
+    assert result.focus.excerpt == "Alpha selected.\n\nMiddle selected."
+    assert result.focus.source_segment_ids == [
+        segments[1].segment_id,
+        segments[2].segment_id,
+    ]
+    assert result.focus.order_start == 1
+    assert result.focus.order_end == 2
+
+
+def test_non_adjacent_or_reversed_frozen_selections_fail_closed() -> None:
+    lesson = _lesson("# Root\n\nAlpha.\n\nBeta.\n\nGamma.")
+    segments = build_board_segment_index(lesson.board_document).segments
+
+    def selection(segment_index: int) -> SelectionRef:
+        segment = segments[segment_index]
+        return SelectionRef(
+            kind="board",
+            location_kind="target_range",
+            excerpt=segment.text,
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+            segment_id=segment.segment_id,
+            text_hash=segment.text_hash,
+        )
+
+    for selections in (
+        [selection(1), selection(3)],
+        [selection(2), selection(1)],
+    ):
+        result = FocusResolver().resolve_many(lesson, selections=selections)
+
+        assert result.status == "target_not_resolved"
+        assert result.machine_reason == "ambiguous_candidates"
+        assert result.focus is None
