@@ -137,6 +137,17 @@ ChatInteractionMode = Literal["ask", "direct_edit"]
 FormulaInkAction = Literal["reference", "replace"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
+TurnIntent = Literal["ordinary_chat", "learning_need", "unclear"]
+TurnContinuationKind = Literal[
+    "none",
+    "learning_requirement",
+    "board_task",
+    "pending_write_offer",
+    "teaching_sequence",
+    "interaction_session",
+]
+TurnBoardAccess = Literal["forbidden", "state_check_only", "bounded_board_role"]
+TurnRequirementEffect = Literal["preserved", "eligible", "updated"]
 BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
 LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
@@ -1875,11 +1886,47 @@ class ChatRequest(BaseModel):
     interaction_mode: ChatInteractionMode = "ask"
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
-    post_generation_action: PostGenerationAction = "auto_explain"
+    post_generation_action: PostGenerationAction = "stop_after_generation"
     chat_edit_source_commit_id: str | None = None
     chat_edit_base_commit_id: str | None = None
     chat_edit_original_message: str | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
+
+
+class TurnEnvelope(BaseModel):
+    """Board-free facts available to the first decision of a chat turn."""
+
+    message: str
+    conversation: list[ConversationTurn] = Field(default_factory=list)
+    interaction_mode: ChatInteractionMode = "ask"
+    board_generation_action: BoardGenerationAction | None = None
+    teaching_action: TeachingAction | None = None
+    has_selection: bool = False
+    selection_kind: SelectionKind | None = None
+    has_multiple_selections: bool = False
+    has_formula_ink: bool = False
+    has_attachments: bool = False
+    has_source_query_scope: bool = False
+
+
+class TurnDecision(BaseModel):
+    intent: TurnIntent
+    continuation: TurnContinuationKind = "none"
+    reason: str
+
+
+class DecisionTrace(BaseModel):
+    intent_signals: list[str] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    selected_action: TurnIntent
+    rejected_actions: list[TurnIntent] = Field(default_factory=list)
+    target_resolver: str = "none"
+    sequence_mode: str = "single_turn"
+    role_executed: str
+    board_access: TurnBoardAccess
+    requirement_effect: TurnRequirementEffect
+    document_changed: bool = False
+    reason: str
 
 
 class LessonView(BaseModel):
@@ -2296,6 +2343,8 @@ class AdminOverview(BaseModel):
 
 class ChatResponse(BaseModel):
     chatbot_message: str
+    turn_decision: TurnDecision | None = None
+    decision_trace: DecisionTrace | None = None
     source_citations: list[SourceCitation] = Field(default_factory=list)
     follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
     agent_activity: list[AgentActivityEvent] = Field(default_factory=list)

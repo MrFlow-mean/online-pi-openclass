@@ -1851,7 +1851,10 @@ def test_generation_auto_explains_first_section_then_continues_or_restarts(
 
     generated = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="Generate and teach this topic."),
+        ChatRequest(
+            message="Generate and teach this topic.",
+            post_generation_action="auto_explain",
+        ),
         user_id=TEST_USER_ID,
     )
 
@@ -1935,7 +1938,10 @@ def test_auto_explanation_failure_preserves_generated_board(
 
     response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="Generate and teach this topic."),
+        ChatRequest(
+            message="Generate and teach this topic.",
+            post_generation_action="auto_explain",
+        ),
         user_id=TEST_USER_ID,
     )
 
