@@ -29,7 +29,9 @@ import { LearningClarityCard } from "@/components/learning-clarity-card";
 import { api } from "@/lib/api";
 import { boardWorkflowLabel } from "@/lib/learning-requirement-display";
 import {
+  codexLiveTaskHasVisibleActivity,
   codexLiveTaskIsLoading,
+  codexLiveTaskSummary,
   type CodexLiveTaskAction,
   type CodexLiveTaskState,
 } from "@/hooks/course-studio/codex-live-task-ui";
@@ -343,14 +345,14 @@ function CodexLiveTaskQueuePanel({
   state: CodexLiveTaskState;
   onResolve: (delegationId: string, action: CodexLiveTaskAction) => boolean;
 }) {
-  if (!state.runningCount && !state.queuedCount && !state.pendingCount && !state.responsePendingCount) {
+  const summary = codexLiveTaskSummary(state);
+  if (!codexLiveTaskHasVisibleActivity(state)) {
     return null;
   }
   const actionLabels: Array<[CodexLiveTaskAction, string]> = [
     ["supplement", "补充当前任务"],
     ["replace", "替换当前任务"],
     ["queue", "排到下一项"],
-    ["chat", "只作为对话"],
     ["dismiss", "忽略"],
   ];
   return (
@@ -358,8 +360,8 @@ function CodexLiveTaskQueuePanel({
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-semibold text-sky-950">Codex Live 任务</p>
         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-700">
-          {state.runningCount || state.responsePendingCount ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-          运行 {state.runningCount} · 回答 {state.responsePendingCount} · 排队 {state.queuedCount} · 待确认 {state.pendingCount}
+          {summary.runningCount ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+          运行 {summary.runningCount} · 排队 {summary.queuedCount} · 待确认 {summary.pendingCount}
         </span>
       </div>
       {state.pendingTasks.map((task) => (
@@ -768,10 +770,7 @@ export function CourseStudioChatSidebar({
         <p
           className={clsx(
             "mb-2 rounded-lg px-2 py-1.5 text-center text-xs leading-5",
-            codexLiveTaskState.runningCount ||
-              codexLiveTaskState.queuedCount ||
-              codexLiveTaskState.pendingCount ||
-              codexLiveTaskState.responsePendingCount
+            codexLiveTaskHasVisibleActivity(codexLiveTaskState)
               ? "bg-sky-50 font-medium text-sky-800"
               : "text-gray-500"
           )}

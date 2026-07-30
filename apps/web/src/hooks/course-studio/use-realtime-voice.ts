@@ -17,7 +17,10 @@ import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
 import { addRealtimeBoardReference, mergeRealtimeBoardReferenceResults } from "@/lib/realtime-board-references";
 import {
+  applyCodexLiveTaskEvent,
+  createCodexLiveTaskState,
   handleCodexLiveTaskEvent,
+  resolveCodexLivePendingTask,
   type CodexLiveBridgeEvent,
   type CodexLiveTaskAction,
   type CodexLiveTaskState,
@@ -217,6 +220,7 @@ export function useRealtimeVoice({
   const realtimeBoardReferencesRef = useRef<SelectionRef[]>([]);
   const realtimeTurnIdentityRef = useRef<RealtimeTurnIdentity | null>(null);
   const codexLiveDelegationTurnIdsRef = useRef(new Map<string, string>());
+  const codexLiveTaskStateRef = useRef<CodexLiveTaskState>(createCodexLiveTaskState());
   const currentSelectionRef = useRef<SelectionRef | null>(currentSelection);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
@@ -230,13 +234,7 @@ export function useRealtimeVoice({
 
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接实时语音 Chatbot");
-  const [codexLiveTaskState, setCodexLiveTaskState] = useState<CodexLiveTaskState>({
-    runningCount: 0,
-    queuedCount: 0,
-    pendingCount: 0,
-    responsePendingCount: 0,
-    pendingTasks: [],
-  });
+  const [codexLiveTaskState, setCodexLiveTaskState] = useState<CodexLiveTaskState>(createCodexLiveTaskState);
 
   useEffect(() => {
     currentSelectionRef.current = currentSelection;
@@ -294,20 +292,16 @@ export function useRealtimeVoice({
     return turnId;
   }
 
-  function updateCodexLiveQueueState(payload: CodexLiveBridgeEvent) {
-    setCodexLiveTaskState((current) => ({
-      ...current,
-      runningCount: payload.running_count ?? current.runningCount,
-      queuedCount: payload.queued_count ?? current.queuedCount,
-      pendingCount: payload.pending_count ?? current.pendingCount,
-    }));
+  function replaceCodexLiveTaskState(nextState: CodexLiveTaskState) {
+    codexLiveTaskStateRef.current = nextState;
+    setCodexLiveTaskState(nextState);
+    return nextState;
   }
 
-  function removeCodexLivePendingTask(delegationId: string) {
-    setCodexLiveTaskState((current) => ({
-      ...current,
-      pendingTasks: current.pendingTasks.filter((task) => task.delegationId !== delegationId),
-    }));
+  function applyCodexLiveBridgeEvent(payload: CodexLiveBridgeEvent) {
+    return replaceCodexLiveTaskState(
+      applyCodexLiveTaskEvent(codexLiveTaskStateRef.current, payload)
+    );
   }
 
   function currentAssistantMessageId() {
@@ -394,13 +388,7 @@ export function useRealtimeVoice({
     realtimeBoardReferencesRef.current = [];
     realtimeTurnIdentityRef.current = null;
     codexLiveDelegationTurnIdsRef.current.clear();
-    setCodexLiveTaskState({
-      runningCount: 0,
-      queuedCount: 0,
-      pendingCount: 0,
-      responsePendingCount: 0,
-      pendingTasks: [],
-    });
+    replaceCodexLiveTaskState(createCodexLiveTaskState());
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -766,10 +754,6 @@ export function useRealtimeVoice({
                   text: transcript,
                   final: true,
                 });
-                setCodexLiveTaskState((current) => ({
-                  ...current,
-                  responsePendingCount: Math.max(0, current.responsePendingCount - 1),
-                }));
                 openAIAssistantTranscriptRef.current = "";
                 openAIAssistantMessageIdRef.current = null;
                 realtimeTurnIdentityRef.current = null;
@@ -778,9 +762,7 @@ export function useRealtimeVoice({
             }
             if (handleCodexLiveTaskEvent(payload, {
               lessonId,
-              setTaskState: setCodexLiveTaskState,
-              updateQueueState: updateCodexLiveQueueState,
-              removePendingTask: removeCodexLivePendingTask,
+              applyTaskEvent: applyCodexLiveBridgeEvent,
               delegationTurnId,
               onToolStatusUpdate,
               onToolResult,
@@ -1176,13 +1158,13 @@ export function useRealtimeVoice({
       return false;
     }
     socket.send(JSON.stringify({ type: "delegation.resolve", delegation_id: delegationId, action }));
-    removeCodexLivePendingTask(delegationId);
+    replaceCodexLiveTaskState(
+      resolveCodexLivePendingTask(codexLiveTaskStateRef.current, delegationId, action)
+    );
     setVoiceStatusText(
       action === "dismiss"
         ? "已忽略这段话"
-        : action === "chat"
-          ? "正在作为普通对话处理"
-          : "正在更新任务安排"
+        : "正在更新任务安排"
     );
     return true;
   }
