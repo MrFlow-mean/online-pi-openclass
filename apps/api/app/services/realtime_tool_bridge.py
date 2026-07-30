@@ -13,7 +13,7 @@ from app.models import (
     SelectionRef,
     new_id,
 )
-from app.services.ai_logging import ai_usage_logger
+from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.chat_turn_gate import TurnGateResult
 
 
@@ -31,7 +31,10 @@ def realtime_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "message": {"type": "string", "description": "The learner's exact current utterance."},
+                    "message": {
+                        "type": "string",
+                        "description": "The learner's exact current utterance.",
+                    },
                     "intent": {
                         "type": "string",
                         "enum": ["ordinary_chat", "learning_need", "unclear"],
@@ -87,23 +90,34 @@ def execute_realtime_tool(
             }
             if provider_hint:
                 commit_metadata["realtime_provider_turn_hint"] = provider_hint
-            chat_response = process_chat_on_lesson(
-                lesson_id,
-                ChatRequest(
-                    message=message,
-                    session_id=request.client_session_id,
-                    turn_id=turn_id,
-                    input_event_id=input_event_id,
-                    channel="realtime",
-                    input_kind=request.input_kind,
-                    provider_reference=provider_reference,
-                    text_model=frozen_text_model,
-                    selection=frozen_references[0] if frozen_references else None,
-                    selections=frozen_references,
-                ),
+            with ai_log_context(
+                lesson_id=lesson_id,
                 user_id=user_id,
-                commit_metadata=commit_metadata,
-            )
+                session_id=request.client_session_id,
+                turn_id=turn_id,
+                workflow_run_id=workflow_run_id,
+                input_event_id=input_event_id,
+                channel="realtime",
+                input_kind=request.input_kind,
+                provider_reference=provider_reference,
+            ):
+                chat_response = process_chat_on_lesson(
+                    lesson_id,
+                    ChatRequest(
+                        message=message,
+                        session_id=request.client_session_id,
+                        turn_id=turn_id,
+                        input_event_id=input_event_id,
+                        channel="realtime",
+                        input_kind=request.input_kind,
+                        provider_reference=provider_reference,
+                        text_model=frozen_text_model,
+                        selection=frozen_references[0] if frozen_references else None,
+                        selections=frozen_references,
+                    ),
+                    user_id=user_id,
+                    commit_metadata=commit_metadata,
+                )
             response = _chat_response_as_realtime_result(
                 chat_response,
                 lesson_id=lesson_id,
@@ -206,16 +220,18 @@ def execute_realtime_delegation(
     effective_provider_reference = (
         (provider_reference or "").strip() or delegation_id.strip() or None
     )
-    frozen_references = [
-        reference.model_copy(deep=True)
-        for reference in selections
-    ]
+    frozen_references = [reference.model_copy(deep=True) for reference in selections]
     if len(frozen_references) > 8:
         return RealtimeToolCallResponse(
             status="error",
-            model_output={"status": "error", "message": "A realtime turn accepts at most 8 references."},
+            model_output={
+                "status": "error",
+                "message": "A realtime turn accepts at most 8 references.",
+            },
         )
-    frozen_text_model = text_model.model_copy(deep=True) if text_model is not None else None
+    frozen_text_model = (
+        text_model.model_copy(deep=True) if text_model is not None else None
+    )
     try:
         from app.services.chat_service import process_chat_on_lesson
 
@@ -252,11 +268,23 @@ def execute_realtime_delegation(
         }
         if prepared_gate is not None:
             process_kwargs["prepared_gate"] = prepared_gate
-        chat_response = process_chat_on_lesson(
-            lesson_id,
-            request,
-            **process_kwargs,
-        )
+        with ai_log_context(
+            lesson_id=lesson_id,
+            user_id=user_id,
+            session_id=client_session_id,
+            turn_id=effective_turn_id,
+            workflow_run_id=effective_workflow_run_id,
+            delegation_id=delegation_id.strip() or None,
+            input_event_id=effective_input_event_id,
+            channel="realtime",
+            input_kind=input_kind,
+            provider_reference=effective_provider_reference,
+        ):
+            chat_response = process_chat_on_lesson(
+                lesson_id,
+                request,
+                **process_kwargs,
+            )
         response = _chat_response_as_realtime_result(
             chat_response,
             lesson_id=lesson_id,
@@ -324,10 +352,14 @@ def _realtime_input_snapshot(
     return references, text_model
 
 
-def _chat_response_as_realtime_result(chat_response, *, lesson_id: str) -> RealtimeToolCallResponse:
+def _chat_response_as_realtime_result(
+    chat_response, *, lesson_id: str
+) -> RealtimeToolCallResponse:
     decision = getattr(chat_response, "turn_decision", None)
     if decision is None:
-        raise ValueError("Chatbot workflow response is missing its authoritative TurnDecision")
+        raise ValueError(
+            "Chatbot workflow response is missing its authoritative TurnDecision"
+        )
     trace = getattr(chat_response, "decision_trace", None)
     model_output: dict[str, Any] = {
         "status": "ok",
@@ -352,13 +384,21 @@ def _chat_response_as_realtime_result(chat_response, *, lesson_id: str) -> Realt
 
 
 def _latest_resolved_focus(course_package, lesson_id: str):
-    lesson = next((item for item in course_package.lessons if item.id == lesson_id), None)
+    lesson = next(
+        (item for item in course_package.lessons if item.id == lesson_id), None
+    )
     if lesson is None:
         return None
     branch = lesson.history_graph.branches.get(lesson.history_graph.current_branch)
     commit_id = branch.head_commit_id if branch else None
-    commit = next((item for item in lesson.history_graph.commits if item.id == commit_id), None)
-    raw_focus = commit.metadata.get("resolved_focus") if commit and isinstance(commit.metadata, dict) else None
+    commit = next(
+        (item for item in lesson.history_graph.commits if item.id == commit_id), None
+    )
+    raw_focus = (
+        commit.metadata.get("resolved_focus")
+        if commit and isinstance(commit.metadata, dict)
+        else None
+    )
     if not isinstance(raw_focus, dict):
         return None
     from app.models import BoardFocusRef

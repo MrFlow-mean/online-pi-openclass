@@ -1613,7 +1613,7 @@ def test_blank_board_generation_payload_carries_article_extent(
         observed["pi"] = payload["content_extent"]
         return ai_execution_adapter.TextExecutionResult(output_text="# Pi board")
 
-    monkeypatch.setattr(pi_adapter, "complete_text", complete_pi_payload)
+    monkeypatch.setattr(pi_adapter, "_complete_text_unlogged", complete_pi_payload)
     pi_adapter.generate_board(request, is_cancelled=None, on_activity=None)
 
     assert observed == {
