@@ -2642,7 +2642,7 @@ class RealtimeToolCallRequest(BaseModel):
     client_session_id: str = Field(min_length=1, max_length=160)
     turn_id: str | None = Field(default=None, max_length=200)
     input_event_id: str | None = Field(default=None, min_length=1, max_length=200)
-    input_kind: ChatInputKind = "voice"
+    input_kind: ChatInputKind
     provider_reference: str | None = Field(
         default=None,
         min_length=1,

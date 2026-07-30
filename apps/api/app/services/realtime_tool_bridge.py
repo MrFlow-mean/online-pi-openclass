@@ -168,7 +168,7 @@ def execute_realtime_delegation(
     turn_id: str | None = None,
     workflow_run_id: str | None = None,
     input_event_id: str | None = None,
-    input_kind: ChatInputKind = "voice",
+    input_kind: ChatInputKind | None = None,
     provider_reference: str | None = None,
     selections: list[SelectionRef] | None = None,
     text_model: AIModelSelection | None = None,
@@ -183,6 +183,14 @@ def execute_realtime_delegation(
         return RealtimeToolCallResponse(
             status="error",
             model_output={"status": "error", "message": "委托内容为空"},
+        )
+    if input_kind not in {"typed", "voice"}:
+        return RealtimeToolCallResponse(
+            status="error",
+            model_output={
+                "status": "error",
+                "message": "Codex Live delegation is missing a valid frozen input_kind.",
+            },
         )
     required_identifiers = {
         "turn_id": (turn_id or "").strip(),

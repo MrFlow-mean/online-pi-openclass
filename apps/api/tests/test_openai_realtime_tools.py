@@ -1304,6 +1304,34 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
     }
 
 
+def test_realtime_inputs_require_an_explicit_frozen_input_kind() -> None:
+    with pytest.raises(ValueError, match="input_kind"):
+        RealtimeToolCallRequest.model_validate(
+            {
+                "client_session_id": "realtime_session",
+                "call_id": "call_missing_input_kind",
+                "name": "run_chatbot_workflow",
+                "arguments": {"message": "Continue."},
+            }
+        )
+
+    response = execute_realtime_delegation(
+        lesson_id="lesson_input_kind",
+        user_id=TEST_USER_ID,
+        message="Continue.",
+        client_session_id="codex_session",
+        delegation_id="delegation_input_kind",
+        turn_id="turn_input_kind",
+        workflow_run_id="workflow_input_kind",
+        input_event_id="event_input_kind",
+        selections=[],
+        text_model=TEST_TEXT_MODEL,
+    )
+
+    assert response.status == "error"
+    assert "input_kind" in response.model_output["message"]
+
+
 def test_codex_live_falls_back_to_supported_avas_voice(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_VOICE", "marin")
 
@@ -1424,6 +1452,7 @@ def test_public_realtime_tool_cannot_bypass_authoritative_board_workflow(
         user_id=TEST_USER_ID,
         request=RealtimeToolCallRequest(
             client_session_id="realtime_session",
+            input_kind="voice",
             call_id="call_read",
             name="read_board_context",
             arguments={"mode": "target", "target": "第五小节 例题", "max_chars": 1200},
@@ -1447,6 +1476,7 @@ def test_realtime_workflow_without_frozen_input_snapshot_fails_closed(
             client_session_id="realtime_session",
             turn_id="turn_missing_snapshot",
             input_event_id="event_missing_snapshot",
+            input_kind="voice",
             call_id="call_missing_snapshot",
             name="run_chatbot_workflow",
             arguments={"message": "Explain this."},
@@ -1601,6 +1631,7 @@ def test_forged_learning_hint_cannot_override_authoritative_non_learning_route(
             client_session_id="realtime_session",
             turn_id=f"turn_{authoritative_intent}",
             input_event_id=f"event_{authoritative_intent}",
+            input_kind="voice",
             call_id=f"call_{authoritative_intent}",
             name="run_chatbot_workflow",
             arguments={
@@ -1653,6 +1684,7 @@ def test_realtime_workflow_accepts_message_without_legacy_provider_hint(
             client_session_id="realtime_session",
             turn_id="turn_message_only",
             input_event_id="event_message_only",
+            input_kind="voice",
             call_id="call_message_only",
             name="run_chatbot_workflow",
             arguments={
