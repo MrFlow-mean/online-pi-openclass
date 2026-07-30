@@ -31,6 +31,7 @@ TargetResolutionReason = Literal[
     "selection_segment_missing",
     "selection_stale_hash",
     "selection_text_mismatch",
+    "selection_text_too_large",
     "ambiguous_candidates",
     "below_confidence_threshold",
     "target_not_found",
@@ -152,6 +153,8 @@ class FocusResolver:
             and selection.source_commit_id != current_head_commit(lesson).id
         ):
             return self._unresolved("selection_stale_version")
+        if selection.location_kind == "target_range" and len(selection.excerpt) > 1_200:
+            return self._unresolved("selection_text_too_large")
 
         if selection.segment_id:
             segment = next(
@@ -165,7 +168,19 @@ class FocusResolver:
                     "selection_stale_hash",
                     candidates=self._candidate_refs(lesson, [segment], confidence=0.0),
                 )
-            if selection.excerpt and not _selection_excerpt_matches(selection.excerpt, segment.text):
+            if (
+                selection.location_kind == "insertion_anchor"
+                and not _anchor_context_matches(selection, segment.text)
+            ):
+                return self._unresolved(
+                    "selection_text_mismatch",
+                    candidates=self._candidate_refs(lesson, [segment], confidence=0.0),
+                )
+            if (
+                selection.location_kind != "insertion_anchor"
+                and selection.excerpt
+                and not _selection_excerpt_matches(selection.excerpt, segment.text)
+            ):
                 return self._unresolved(
                     "selection_text_mismatch",
                     candidates=self._candidate_refs(lesson, [segment], confidence=0.0),
@@ -175,9 +190,18 @@ class FocusResolver:
                 segment,
                 confidence=1.0 if selection.text_hash else 0.99,
                 reason="resolved_by_selection",
+                selection=selection,
             )
 
-        if selection.text_hash:
+        if selection.location_kind == "insertion_anchor":
+            matches = [
+                segment
+                for segment in segments
+                if _anchor_context_matches(selection, segment.text)
+            ]
+            if not matches:
+                return self._unresolved("selection_text_mismatch")
+        elif selection.text_hash:
             matches = [
                 segment
                 for segment in segments
@@ -209,6 +233,7 @@ class FocusResolver:
             matches[0],
             confidence=0.98 if selection.text_hash else 0.94,
             reason="resolved_by_selection",
+            selection=selection,
         )
 
     def _text_score(self, target: str, segment: BoardSegment) -> float:
@@ -243,11 +268,36 @@ class FocusResolver:
         *,
         confidence: float,
         reason: TargetResolutionReason,
+        selection: SelectionRef | None = None,
     ) -> TargetResolution:
         return TargetResolution(
             status="resolved",
             machine_reason=reason,
-            focus=self._focus_ref(lesson, segment, confidence=confidence, reason=reason),
+            focus=self._focus_ref(
+                lesson,
+                segment,
+                confidence=confidence,
+                reason=reason,
+                excerpt_override=(
+                    selection.excerpt
+                    if selection is not None
+                    and selection.location_kind == "target_range"
+                    and selection.excerpt
+                    else None
+                ),
+                before_text=(
+                    selection.before_text[-240:]
+                    if selection is not None
+                    and selection.location_kind == "insertion_anchor"
+                    else ""
+                ),
+                after_text=(
+                    selection.after_text[:240]
+                    if selection is not None
+                    and selection.location_kind == "insertion_anchor"
+                    else ""
+                ),
+            ),
         )
 
     def _unresolved(
@@ -281,9 +331,12 @@ class FocusResolver:
         *,
         confidence: float,
         reason: str,
+        excerpt_override: str | None = None,
+        before_text: str = "",
+        after_text: str = "",
     ) -> BoardFocusRef:
         # compact_segment_text appends a three-character ellipsis after its slice.
-        excerpt = compact_segment_text(segment.text, limit=318)
+        excerpt = excerpt_override or compact_segment_text(segment.text, limit=318)
         heading_path = [compact_segment_text(item, limit=118) for item in segment.heading_path[-5:]]
         label = heading_path[-1] if heading_path else f"{segment.kind}:{segment.order_index + 1}"
         return BoardFocusRef(
@@ -294,6 +347,8 @@ class FocusResolver:
             kind=segment.kind,
             heading_path=heading_path,
             excerpt=excerpt,
+            before_text=before_text,
+            after_text=after_text,
             text_hash=segment.text_hash,
             excerpt_hash=segment_text_hash(excerpt),
             confidence=max(0.0, min(float(confidence), 1.0)),
@@ -332,6 +387,22 @@ def _selection_excerpt_matches(excerpt: str, segment_text: str) -> bool:
     if not selected or not current:
         return False
     return selected == current or selected in current
+
+
+def _anchor_context_matches(selection: SelectionRef, segment_text: str) -> bool:
+    current = _normalize(segment_text)
+    if not current:
+        return False
+    before = _normalize(selection.before_text)
+    after = _normalize(selection.after_text)
+    if before or after:
+        before_needle = before[-80:]
+        after_needle = after[:80]
+        return (
+            (not before_needle or before_needle in current)
+            and (not after_needle or after_needle in current)
+        )
+    return _selection_excerpt_matches(selection.excerpt, segment_text)
 
 
 def _selection_hash_matches(selection: SelectionRef, segment: BoardSegment) -> bool:

@@ -136,6 +136,71 @@ def test_selection_from_the_current_board_commit_can_resolve() -> None:
     assert result.machine_reason == "resolved_by_selection"
 
 
+def test_target_range_preserves_the_exact_frozen_selection_excerpt() -> None:
+    lesson = _lesson("# Root\n\nPrefix exact selected phrase suffix.")
+
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            location_kind="target_range",
+            excerpt="exact selected phrase",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+        ),
+    )
+
+    assert result.status == "resolved"
+    assert result.focus is not None
+    assert result.focus.excerpt == "exact selected phrase"
+    assert result.focus.excerpt_hash == segment_text_hash("exact selected phrase")
+
+
+def test_cursor_anchor_resolves_from_frozen_before_and_after_context() -> None:
+    lesson = _lesson("# Root\n\nAlpha before cursor after omega.\n\nUnrelated paragraph.")
+
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            location_kind="insertion_anchor",
+            excerpt="before cursor | after omega",
+            before_text="Alpha before cursor",
+            after_text="after omega.",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+        ),
+    )
+
+    assert result.status == "resolved"
+    assert result.focus is not None
+    assert result.focus.before_text == "Alpha before cursor"
+    assert result.focus.after_text == "after omega."
+
+
+def test_cursor_anchor_with_duplicate_context_returns_candidates() -> None:
+    lesson = _lesson("# Root\n\nSame anchor text.\n\nSame anchor text.")
+
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            location_kind="insertion_anchor",
+            excerpt="Same anchor",
+            before_text="Same anchor",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+        ),
+    )
+
+    assert result.status == "target_not_resolved"
+    assert result.machine_reason == "ambiguous_candidates"
+    assert len(result.candidates) == 2
+
+
 def test_unique_heading_and_structural_ordinal_resolve_deterministically() -> None:
     lesson = _lesson(
         "# Root\n\n## Preparation\n\nFirst body\n\n## Execution\n\nSecond body"
