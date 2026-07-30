@@ -29,6 +29,9 @@ The image applies `openclass-theme.css` through Answer's supported custom CSS
 surface after each database upgrade. The theme keeps Answer's forum behavior and
 responsive layout while matching the warm OpenClass visual system. Set
 `OPENCLASS_ANSWER_THEME_ENABLED=false` to keep Answer's stock appearance.
+New questions may be published without tags by default. Set
+`OPENCLASS_ANSWER_MIN_TAGS` to an integer from `0` to `5` to change the minimum;
+`0` keeps tags available while making them optional.
 The entrypoint also places an explicit theme stylesheet link in Answer's
 server-rendered document head so OAuth login and authenticated navigation keep
 the same appearance as the public community page.

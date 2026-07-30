@@ -4,6 +4,31 @@ set -eu
 /usr/bin/answer init
 /usr/bin/answer upgrade
 
+openclass_answer_min_tags="${OPENCLASS_ANSWER_MIN_TAGS:-0}"
+case "$openclass_answer_min_tags" in
+  0|1|2|3|4|5) ;;
+  *)
+    echo "OPENCLASS_ANSWER_MIN_TAGS must be an integer from 0 to 5" >&2
+    exit 1
+    ;;
+esac
+
+sqlite3 /data/answer.db \
+  -cmd ".parameter init" \
+  -cmd ".parameter set @openclass_answer_min_tags \"$openclass_answer_min_tags\"" <<'SQL'
+BEGIN IMMEDIATE;
+UPDATE site_info
+SET content = json_set(
+      content,
+      '$.min_tags',
+      CAST(@openclass_answer_min_tags AS INTEGER)
+    ),
+    updated_at = datetime('now')
+WHERE type = 'questions';
+COMMIT;
+SQL
+rm -f /data/cache/cache.db
+
 case "${OPENCLASS_ANSWER_THEME_ENABLED:-true}" in
   true|TRUE|1|yes|YES)
     openclass_home_url="${OPENCLASS_HOME_URL:-http://127.0.0.1:3000/home}"
