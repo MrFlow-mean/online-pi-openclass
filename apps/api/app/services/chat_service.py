@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
 from threading import Lock
+from time import monotonic, sleep
+from uuid import uuid4
 
 from app.models import (
     AgentActivityEvent,
@@ -22,6 +25,7 @@ from app.services.chat_turn_gate import (
     evaluate_turn_gate,
 )
 from app.services.codex_chat import process_codex_chat_on_lesson
+from app.services.existing_board.interaction_session import InteractionSession
 from app.services.existing_board.interaction_workflow import (
     ExistingBoardInteractionReroute,
 )
@@ -30,6 +34,8 @@ from app.services.history import bind_commit_metadata
 from app.services.lesson_title import maybe_generate_lesson_title
 
 _IDEMPOTENCY_CACHE_LIMIT = 256
+_PERSISTED_IDEMPOTENCY_WAIT_SECONDS = 30.0
+_PERSISTED_IDEMPOTENCY_POLL_SECONDS = 0.02
 _idempotency_lock = Lock()
 _idempotency_cache: OrderedDict[
     tuple[str, str, str],
@@ -91,7 +97,28 @@ def process_chat_on_lesson(
             owns_execution = False
     if not owns_execution:
         return _copy_response(future.result())
+    claim_id = f"chat_claim_{uuid4().hex}"
+    persistent_claim_owned = False
     try:
+        claim_status, persisted_response = _claim_or_wait_for_persisted_response(
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            claim_id=claim_id,
+        )
+        if claim_status == "completed":
+            if persisted_response is None:
+                raise RuntimeError("The persisted chat response is missing.")
+            frozen_response = ChatResponse.model_validate(persisted_response)
+            with _idempotency_lock:
+                _idempotency_inflight.pop(idempotency_key, None)
+                _remember_idempotent_response(
+                    idempotency_key,
+                    fingerprint,
+                    frozen_response,
+                )
+                future.set_result(frozen_response)
+            return _copy_response(frozen_response)
+        persistent_claim_owned = True
         response = _process_chat_on_lesson_once(
             lesson_id,
             request,
@@ -107,17 +134,46 @@ def process_chat_on_lesson(
             prepared_gate=prepared_gate,
         )
     except BaseException as exc:
+        final_exception = exc
+        if persistent_claim_owned:
+            try:
+                workspace_state.release_chat_input_event(
+                    user_id=idempotency_key[0],
+                    session_id=idempotency_key[1],
+                    input_event_id=idempotency_key[2],
+                    fingerprint=fingerprint,
+                    claim_id=claim_id,
+                )
+            except (RuntimeError, ValueError, sqlite3.Error) as release_exc:
+                final_exception = release_exc
+        with _idempotency_lock:
+            _idempotency_inflight.pop(idempotency_key, None)
+            future.set_exception(final_exception)
+        if final_exception is not exc:
+            raise final_exception from exc
+        raise
+    try:
+        frozen_response = _copy_response(response)
+        workspace_state.complete_chat_input_event(
+            user_id=idempotency_key[0],
+            session_id=idempotency_key[1],
+            input_event_id=idempotency_key[2],
+            fingerprint=fingerprint,
+            claim_id=claim_id,
+            response=frozen_response.model_dump(mode="json"),
+        )
+    except BaseException as exc:
         with _idempotency_lock:
             _idempotency_inflight.pop(idempotency_key, None)
             future.set_exception(exc)
         raise
-    frozen_response = _copy_response(response)
     with _idempotency_lock:
         _idempotency_inflight.pop(idempotency_key, None)
-        _idempotency_cache[idempotency_key] = (fingerprint, frozen_response)
-        _idempotency_cache.move_to_end(idempotency_key)
-        while len(_idempotency_cache) > _IDEMPOTENCY_CACHE_LIMIT:
-            _idempotency_cache.popitem(last=False)
+        _remember_idempotent_response(
+            idempotency_key,
+            fingerprint,
+            frozen_response,
+        )
         future.set_result(frozen_response)
     return _copy_response(frozen_response)
 
@@ -140,6 +196,14 @@ def _process_chat_on_lesson_once(
         user_id=user_id,
         on_agent_activity=on_agent_activity,
     )
+    active_interaction = gate.decision.continuation == "interaction_session"
+    if prepared_gate is not None and not active_interaction:
+        active_interaction = _active_interaction_owns_turn(
+            lesson_id,
+            user_id=user_id,
+        )
+        if active_interaction:
+            gate = _gate_for_active_interaction(gate)
     with bind_commit_metadata({**(commit_metadata or {}), **_chat_edit_metadata(request)}):
         if gate.decision.intent in {"ordinary_chat", "unclear"}:
             return complete_non_learning_turn(
@@ -151,10 +215,8 @@ def _process_chat_on_lesson_once(
                 on_agent_activity=on_agent_activity,
                 is_cancelled=is_cancelled,
             )
-        if _should_use_bounded_existing_board_workflow(
-            lesson_id,
-            request,
-            user_id=user_id,
+        if active_interaction or _should_use_bounded_existing_board_workflow(
+            lesson_id, request, user_id=user_id
         ):
             try:
                 response = process_existing_board_workflow(
@@ -212,12 +274,15 @@ def route_chat_request(
 ) -> TurnGateResult:
     """Run the same authoritative, board-free Turn Router used by every chat transport."""
 
-    return evaluate_turn_gate(
+    gate = evaluate_turn_gate(
         request,
         lesson_id=lesson_id,
         user_id=user_id,
         on_agent_activity=on_agent_activity,
     )
+    if _active_interaction_owns_turn(lesson_id, user_id=user_id):
+        return _gate_for_active_interaction(gate)
+    return gate
 
 
 def _require_matching_prepared_gate(
@@ -266,6 +331,78 @@ def _should_use_bounded_existing_board_workflow(
         *request.selections,
     ]
     return all(reference.kind != "source" for reference in references)
+
+
+def _active_interaction_owns_turn(
+    lesson_id: str,
+    *,
+    user_id: str,
+) -> bool:
+    runtime_state = workspace_state.load_lesson_runtime_state_for_user(
+        user_id,
+        lesson_id,
+    )
+    if runtime_state is None:
+        return False
+    task = runtime_state.runtime_snapshot.board_task_requirements
+    if (
+        task is None
+        or task.requested_action != "interact"
+        or task.interaction_session is None
+    ):
+        return False
+    session = InteractionSession.model_validate(task.interaction_session)
+    return (
+        session.current_state == "active"
+        and session.source_board_task_id == task.task_id
+    )
+
+
+def _gate_for_active_interaction(gate: TurnGateResult) -> TurnGateResult:
+    reason = (
+        "A persisted active interaction session owns this input until it exits "
+        "or classifies the input as a new task."
+    )
+    return TurnGateResult(
+        envelope=gate.envelope,
+        decision=gate.decision.model_copy(
+            update={
+                "intent": "learning_need",
+                "continuation": "interaction_session",
+                "relation_to_active": "continue",
+                "board_access": "state_check_only",
+                "reason": reason,
+            }
+        ),
+        trace=gate.trace.model_copy(
+            update={
+                "intent_signals": list(
+                    dict.fromkeys(
+                        [
+                            *gate.trace.intent_signals,
+                            "active_interaction_session",
+                        ]
+                    )
+                ),
+                "matched_rules": list(
+                    dict.fromkeys(
+                        [
+                            *gate.trace.matched_rules,
+                            "active_interaction_session_ownership",
+                        ]
+                    )
+                ),
+                "selected_action": "learning_need",
+                "rejected_actions": ["ordinary_chat", "unclear"],
+                "sequence_mode": "interaction_session",
+                "board_access": "state_check_only",
+                "requirement_effect": "eligible",
+                "reason": reason,
+            }
+        ),
+        adapter=gate.adapter,
+        activity=gate.activity,
+    )
 
 
 def _merge_decision_trace(
@@ -322,6 +459,39 @@ def _chat_idempotency_metadata(request: ChatRequest) -> dict[str, object]:
 def _require_matching_fingerprint(expected: str, actual: str) -> None:
     if expected != actual:
         raise ValueError("The chat input event id was reused for a different request.")
+
+
+def _claim_or_wait_for_persisted_response(
+    *,
+    idempotency_key: tuple[str, str, str],
+    fingerprint: str,
+    claim_id: str,
+) -> tuple[str, dict[str, object] | None]:
+    deadline = monotonic() + _PERSISTED_IDEMPOTENCY_WAIT_SECONDS
+    while True:
+        status, response = workspace_state.claim_chat_input_event(
+            user_id=idempotency_key[0],
+            session_id=idempotency_key[1],
+            input_event_id=idempotency_key[2],
+            fingerprint=fingerprint,
+            claim_id=claim_id,
+        )
+        if status != "waiting":
+            return status, response
+        if monotonic() >= deadline:
+            raise TimeoutError("The original chat input event is still running.")
+        sleep(_PERSISTED_IDEMPOTENCY_POLL_SECONDS)
+
+
+def _remember_idempotent_response(
+    idempotency_key: tuple[str, str, str],
+    fingerprint: str,
+    response: ChatResponse,
+) -> None:
+    _idempotency_cache[idempotency_key] = (fingerprint, response)
+    _idempotency_cache.move_to_end(idempotency_key)
+    while len(_idempotency_cache) > _IDEMPOTENCY_CACHE_LIMIT:
+        _idempotency_cache.popitem(last=False)
 
 
 def _copy_response(response: ChatResponse) -> ChatResponse:

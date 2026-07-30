@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
 from app.models import (
     AIModelSelection,
     BoardDecision,
+    BoardFocusRef,
     BoardTaskRequirementSheet,
     ChatRequest,
     ChatResponse,
@@ -19,6 +20,10 @@ from app.models import (
 )
 from app.services import chat_service, chat_turn_gate, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.existing_board.interaction_session import (
+    InteractionRule,
+    InteractionSession,
+)
 from app.services.existing_board.interaction_workflow import (
     ExistingBoardInteractionReroute,
 )
@@ -580,6 +585,95 @@ def test_same_input_event_is_concurrently_executed_once_and_recorded(
     assert commit.metadata["chat_turn_id"] == "turn_once"
 
 
+def test_sqlite_input_event_claim_is_atomic_across_store_instances(
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    second_store = SqliteCourseStore(turn_gate_store.path, legacy_json_path=None)
+    barrier = Barrier(2)
+
+    def claim(store: SqliteCourseStore, claim_id: str):
+        barrier.wait(timeout=2)
+        return store.claim_chat_input_event(
+            owner_user_id=TEST_USER_ID,
+            session_id="session_atomic",
+            input_event_id="event_atomic",
+            fingerprint="fingerprint_atomic",
+            claim_id=claim_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(claim, turn_gate_store, "claim_a")
+        second = executor.submit(claim, second_store, "claim_b")
+        results = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert sorted(status for status, _response in results) == ["owned", "waiting"]
+    owner_index = next(
+        index for index, (status, _response) in enumerate(results) if status == "owned"
+    )
+    owner_store = (turn_gate_store, second_store)[owner_index]
+    owner_claim = ("claim_a", "claim_b")[owner_index]
+    owner_store.complete_chat_input_event(
+        owner_user_id=TEST_USER_ID,
+        session_id="session_atomic",
+        input_event_id="event_atomic",
+        fingerprint="fingerprint_atomic",
+        claim_id=owner_claim,
+        response={"chatbot_message": "Persisted once."},
+    )
+
+    status, response = second_store.claim_chat_input_event(
+        owner_user_id=TEST_USER_ID,
+        session_id="session_atomic",
+        input_event_id="event_atomic",
+        fingerprint="fingerprint_atomic",
+        claim_id="claim_after_completion",
+    )
+
+    assert status == "completed"
+    assert response == {"chatbot_message": "Persisted once."}
+
+
+def test_completed_input_event_survives_local_cache_clear_and_store_recreation(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    request = ChatRequest(
+        message="Persist this delivered event.",
+        session_id="session_persisted",
+        turn_id="turn_persisted",
+        input_event_id="event_persisted",
+    )
+    calls = 0
+
+    def fake_gate(gate_request, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _gate_result(gate_request, "ordinary_chat", "Persistent reply.")
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", fake_gate)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+    chat_service._clear_idempotency_state_for_tests()
+    monkeypatch.setattr(
+        workspace_state,
+        "STORE",
+        SqliteCourseStore(turn_gate_store.path, legacy_json_path=None),
+    )
+    duplicate = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+
+    assert calls == 1
+    assert duplicate == first
+
+
 def test_same_text_in_different_input_events_is_not_deduplicated(
     monkeypatch: pytest.MonkeyPatch,
     turn_gate_store: SqliteCourseStore,
@@ -631,6 +725,12 @@ def test_reused_input_event_rejects_a_different_request(
         ChatRequest(message="Original request.", **identity),
         user_id=TEST_USER_ID,
     )
+    chat_service._clear_idempotency_state_for_tests()
+    monkeypatch.setattr(
+        workspace_state,
+        "STORE",
+        SqliteCourseStore(turn_gate_store.path, legacy_json_path=None),
+    )
 
     with pytest.raises(ValueError, match="reused for a different request"):
         chat_service.process_chat_on_lesson(
@@ -678,6 +778,151 @@ def test_failed_input_event_is_not_cached(
 
     assert calls == 2
     assert response.chatbot_message == "Retry succeeded."
+
+
+def test_active_interaction_session_preempts_non_learning_short_circuit_without_board_read(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    seeded_lesson = _seed_workspace(turn_gate_store)
+    workspace = turn_gate_store.load_for_user(TEST_USER_ID)
+    _package, lesson = workspace_state.find_lesson_package(workspace, seeded_lesson.id)
+    target = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id="segment_interaction",
+        excerpt="Approved interaction target.",
+        text_hash="interaction_target_hash",
+        confidence=1.0,
+    )
+    task = BoardTaskRequirementSheet(
+        target_hint="Approved interaction target.",
+        target_location=target,
+        location_kind="target_range",
+        location_status="resolved",
+        requested_action="interact",
+        question_or_topic="Continue the active interaction.",
+        special_interaction_requirements="Follow the active interaction rule.",
+    )
+    interaction_session = InteractionSession(
+        session_id="interaction_active",
+        source_board_task_id=task.task_id,
+        source_board_task_run_id="interaction_run",
+        source_board_task_version_id="interaction_version",
+        target=target,
+        interaction_rule=InteractionRule(
+            rule_text="Continue under the active interaction contract.",
+            interaction_goal="Complete the bounded interaction.",
+            compliant_input_description="Input belongs to the active interaction.",
+            assistant_behavior_instruction="Perform the next interaction step only.",
+        ),
+    )
+
+    def persist_task(label: str) -> None:
+        lesson.board_task_requirements = task
+        commit_operations(
+            lesson,
+            operations=[],
+            label=label,
+            message="Persist interaction routing state.",
+            metadata={
+                "active_board_task_sheet_after": task.model_dump(mode="json"),
+                "board_task_phase": "ready",
+            },
+        )
+        turn_gate_store.save_for_user(TEST_USER_ID, workspace)
+
+    task.requested_action = "explain"
+    task.interaction_session = interaction_session.model_dump(mode="json")
+    persist_task("Ignore interaction state on a non-interaction task")
+    assert (
+        chat_service._active_interaction_owns_turn(
+            lesson.id,
+            user_id=TEST_USER_ID,
+        )
+        is False
+    )
+
+    task.requested_action = "interact"
+    task.interaction_session = interaction_session.model_copy(
+        update={"source_board_task_id": "stale_board_task"}
+    ).model_dump(mode="json")
+    persist_task("Ignore an interaction session bound to another task")
+    assert (
+        chat_service._active_interaction_owns_turn(
+            lesson.id,
+            user_id=TEST_USER_ID,
+        )
+        is False
+    )
+
+    task.interaction_session = interaction_session.model_dump(mode="json")
+    persist_task("Activate interaction")
+    assert (
+        chat_service._active_interaction_owns_turn(
+            lesson.id,
+            user_id=TEST_USER_ID,
+        )
+        is True
+    )
+
+    request = ChatRequest(
+        message="Input that the top router misclassifies as ordinary.",
+        session_id="session_active_interaction",
+        input_event_id="event_active_interaction",
+    )
+    workflow_entered = False
+    full_workspace_reads: list[str] = []
+    real_load = workspace_state.load_workspace_for_user
+
+    def tracked_full_load(user_id: str):
+        full_workspace_reads.append(user_id)
+        assert workflow_entered is True
+        return real_load(user_id)
+
+    def fake_workflow(lesson_id, workflow_request, **_kwargs):
+        nonlocal workflow_entered
+        workflow_entered = True
+        assert workflow_request is request
+        return _workflow_response(lesson_id)
+
+    monkeypatch.setattr(
+        chat_service,
+        "evaluate_turn_gate",
+        lambda *_args, **_kwargs: _gate_result(
+            request,
+            "ordinary_chat",
+            "This reply must not bypass the interaction.",
+        ),
+    )
+    monkeypatch.setattr(workspace_state, "load_workspace_for_user", tracked_full_load)
+    monkeypatch.setattr(
+        chat_service,
+        "process_existing_board_workflow",
+        fake_workflow,
+    )
+    monkeypatch.setattr(
+        chat_service,
+        "maybe_generate_lesson_title",
+        lambda _lesson_id, _request, response, *, user_id: response,
+    )
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+
+    assert workflow_entered is True
+    assert full_workspace_reads
+    assert response.chatbot_message == "Existing learning workflow ran."
+    assert response.turn_decision is not None
+    assert response.turn_decision.intent == "learning_need"
+    assert response.turn_decision.continuation == "interaction_session"
+    assert response.turn_decision.relation_to_active == "continue"
+    assert response.decision_trace is not None
+    assert "active_interaction_session_ownership" in response.decision_trace.matched_rules
 
 
 def test_interaction_new_task_reroutes_the_original_input_once(

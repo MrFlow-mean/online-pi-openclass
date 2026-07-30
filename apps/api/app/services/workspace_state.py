@@ -19,8 +19,12 @@ from app.models import (
     WorkspaceStateView,
 )
 from app.services.blank_board_intake import active_requirement_from_history
-from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
-from app.services.course_store import SqliteCourseStore
+from app.services.config import DATA_DIR, ROOT_DIR, load_root_dotenv
+from app.services.course_store import (
+    ChatInputEventClaimStatus,
+    LessonRuntimeState,
+    SqliteCourseStore,
+)
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_summary import lesson_content_summary
 
@@ -73,6 +77,66 @@ def load_workspace_for_user(user_id: str) -> WorkspaceState:
 
 def load_workspace_for_user_with_revision(user_id: str) -> tuple[WorkspaceState, int]:
     return get_store().load_for_user_with_revision(user_id)
+
+
+def load_lesson_runtime_state_for_user(
+    user_id: str,
+    lesson_id: str,
+) -> LessonRuntimeState | None:
+    return get_store().load_lesson_runtime_state_for_user(user_id, lesson_id)
+
+
+def claim_chat_input_event(
+    *,
+    user_id: str,
+    session_id: str,
+    input_event_id: str,
+    fingerprint: str,
+    claim_id: str,
+) -> tuple[ChatInputEventClaimStatus, dict[str, object] | None]:
+    return get_store().claim_chat_input_event(
+        owner_user_id=user_id,
+        session_id=session_id,
+        input_event_id=input_event_id,
+        fingerprint=fingerprint,
+        claim_id=claim_id,
+    )
+
+
+def complete_chat_input_event(
+    *,
+    user_id: str,
+    session_id: str,
+    input_event_id: str,
+    fingerprint: str,
+    claim_id: str,
+    response: dict[str, object],
+) -> None:
+    get_store().complete_chat_input_event(
+        owner_user_id=user_id,
+        session_id=session_id,
+        input_event_id=input_event_id,
+        fingerprint=fingerprint,
+        claim_id=claim_id,
+        response=response,
+    )
+
+
+def release_chat_input_event(
+    *,
+    user_id: str,
+    session_id: str,
+    input_event_id: str,
+    fingerprint: str,
+    claim_id: str,
+) -> None:
+    get_store().release_chat_input_event(
+        owner_user_id=user_id,
+        session_id=session_id,
+        input_event_id=input_event_id,
+        fingerprint=fingerprint,
+        claim_id=claim_id,
+    )
 
 
 def save_workspace_for_user_if_revision(

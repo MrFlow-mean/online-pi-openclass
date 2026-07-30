@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Literal
 
 from app.models import (
     BoardDocument,
@@ -25,9 +28,9 @@ from app.models import (
     LessonRuntimeSnapshot,
     LibraryChapter,
     PublicationReview,
+    PublicCourseSearchResult,
     PublishedCoursePackageVersion,
     PublishedLessonVersion,
-    PublicCourseSearchResult,
     ResourceLibraryItem,
     ResourcePageStructure,
     ResourceSourceUnit,
@@ -44,6 +47,18 @@ from app.services.published_courses import (
 from app.services.rich_document import upgrade_markdown_like_document
 
 SCHEMA_VERSION = 16
+_CHAT_INPUT_EVENT_RETENTION_PER_USER = 512
+
+ChatInputEventClaimStatus = Literal["owned", "waiting", "completed"]
+
+
+@dataclass(frozen=True)
+class LessonRuntimeState:
+    lesson_id: str
+    current_branch: str
+    head_commit_id: str
+    runtime_snapshot: LessonRuntimeSnapshot
+    commit_metadata: dict[str, Any]
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -54,6 +69,25 @@ def _active_package_setting_key(owner_user_id: str | None) -> str:
 
 def _workspace_revision_setting_key(owner_user_id: str) -> str:
     return f"workspace_revision:{owner_user_id}"
+
+
+def _chat_input_event_user_prefix(owner_user_id: str) -> str:
+    user_hash = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()
+    return f"chat_input_event:{user_hash}:"
+
+
+def _chat_input_event_setting_key(
+    owner_user_id: str,
+    session_id: str,
+    input_event_id: str,
+) -> str:
+    identity = json.dumps(
+        [owner_user_id, session_id, input_event_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    event_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"{_chat_input_event_user_prefix(owner_user_id)}{event_hash}"
 
 
 def _escaped_like_pattern(value: str) -> str:
@@ -814,6 +848,204 @@ class SqliteCourseStore:
                         self._read_workspace(conn, owner_user_id=owner_user_id),
                         self._workspace_revision(conn, owner_user_id),
                     )
+
+    def load_lesson_runtime_state_for_user(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> LessonRuntimeState | None:
+        """Read the active runtime snapshot without selecting the board document."""
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT lessons.id, lessons.current_branch,
+                       lesson_branches.head_commit_id,
+                       lesson_commits.runtime_snapshot_json,
+                       lesson_commits.metadata_json
+                FROM lessons
+                JOIN course_packages
+                  ON course_packages.id = lessons.package_id
+                JOIN lesson_branches
+                  ON lesson_branches.lesson_id = lessons.id
+                 AND lesson_branches.name = lessons.current_branch
+                JOIN lesson_commits
+                  ON lesson_commits.id = lesson_branches.head_commit_id
+                WHERE lessons.id = ?
+                  AND course_packages.owner_user_id = ?
+                """,
+                (lesson_id, owner_user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            metadata = _loads(row["metadata_json"], {})
+            runtime = (
+                LessonRuntimeSnapshot.model_validate(
+                    _loads(row["runtime_snapshot_json"], {})
+                )
+                if row["runtime_snapshot_json"]
+                else _runtime_snapshot_from_legacy_metadata(metadata)
+            )
+            return LessonRuntimeState(
+                lesson_id=str(row["id"]),
+                current_branch=str(row["current_branch"]),
+                head_commit_id=str(row["head_commit_id"]),
+                runtime_snapshot=runtime,
+                commit_metadata=dict(metadata),
+            )
+
+    def claim_chat_input_event(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        input_event_id: str,
+        fingerprint: str,
+        claim_id: str,
+    ) -> tuple[ChatInputEventClaimStatus, dict[str, Any] | None]:
+        """Atomically own, wait for, or reuse one persisted chat input event."""
+
+        setting_key = _chat_input_event_setting_key(
+            owner_user_id,
+            session_id,
+            input_event_id,
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                raw_record = _setting(conn, setting_key)
+                if raw_record is None:
+                    conn.execute(
+                        "INSERT INTO workspace_settings(key, value) VALUES (?, ?)",
+                        (
+                            setting_key,
+                            _dumps(
+                                {
+                                    "version": 1,
+                                    "state": "running",
+                                    "fingerprint": fingerprint,
+                                    "claim_id": claim_id,
+                                    "claimed_at": _store_timestamp(),
+                                }
+                            ),
+                        ),
+                    )
+                    conn.commit()
+                    return "owned", None
+
+                record = _chat_input_event_record(raw_record)
+                _require_chat_input_fingerprint(record, fingerprint)
+                state = record.get("state")
+                if state == "running":
+                    conn.commit()
+                    return "waiting", None
+                if state == "completed":
+                    response = record.get("response")
+                    if not isinstance(response, dict):
+                        raise RuntimeError(
+                            "The persisted chat input event response is invalid."
+                        )
+                    conn.commit()
+                    return "completed", dict(response)
+                raise RuntimeError("The persisted chat input event state is invalid.")
+            except Exception:
+                conn.rollback()
+                raise
+
+    def complete_chat_input_event(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        input_event_id: str,
+        fingerprint: str,
+        claim_id: str,
+        response: dict[str, Any],
+    ) -> None:
+        setting_key = _chat_input_event_setting_key(
+            owner_user_id,
+            session_id,
+            input_event_id,
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                raw_record = _setting(conn, setting_key)
+                if raw_record is None:
+                    raise RuntimeError("The persisted chat input event claim is missing.")
+                record = _chat_input_event_record(raw_record)
+                _require_chat_input_fingerprint(record, fingerprint)
+                if record.get("state") == "completed":
+                    conn.commit()
+                    return
+                if (
+                    record.get("state") != "running"
+                    or record.get("claim_id") != claim_id
+                ):
+                    raise RuntimeError(
+                        "The persisted chat input event claim is no longer owned."
+                    )
+                conn.execute(
+                    "UPDATE workspace_settings SET value = ? WHERE key = ?",
+                    (
+                        _dumps(
+                            {
+                                "version": 1,
+                                "state": "completed",
+                                "fingerprint": fingerprint,
+                                "completed_at": _store_timestamp(),
+                                "response": response,
+                            }
+                        ),
+                        setting_key,
+                    ),
+                )
+                _prune_completed_chat_input_events(
+                    conn,
+                    owner_user_id=owner_user_id,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def release_chat_input_event(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        input_event_id: str,
+        fingerprint: str,
+        claim_id: str,
+    ) -> None:
+        """Release only the caller's failed running claim so a retry can own it."""
+
+        setting_key = _chat_input_event_setting_key(
+            owner_user_id,
+            session_id,
+            input_event_id,
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                raw_record = _setting(conn, setting_key)
+                if raw_record is None:
+                    conn.commit()
+                    return
+                record = _chat_input_event_record(raw_record)
+                _require_chat_input_fingerprint(record, fingerprint)
+                if (
+                    record.get("state") == "running"
+                    and record.get("claim_id") == claim_id
+                ):
+                    conn.execute(
+                        "DELETE FROM workspace_settings WHERE key = ?",
+                        (setting_key,),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def save_for_user(self, owner_user_id: str, workspace: WorkspaceState) -> None:
         with self._lock:
@@ -2430,6 +2662,51 @@ def _setting(conn: sqlite3.Connection, key: str) -> str | None:
     if row is None or row["value"] == "":
         return None
     return row["value"]
+
+
+def _chat_input_event_record(raw_record: str) -> dict[str, Any]:
+    record = _loads(raw_record, {})
+    if not isinstance(record, dict) or record.get("version") != 1:
+        raise RuntimeError("The persisted chat input event record is invalid.")
+    return record
+
+
+def _require_chat_input_fingerprint(
+    record: dict[str, Any],
+    fingerprint: str,
+) -> None:
+    if record.get("fingerprint") != fingerprint:
+        raise ValueError("The chat input event id was reused for a different request.")
+
+
+def _store_timestamp() -> str:
+    return datetime.now().astimezone().isoformat()
+
+
+def _prune_completed_chat_input_events(
+    conn: sqlite3.Connection,
+    *,
+    owner_user_id: str,
+) -> None:
+    prefix = _chat_input_event_user_prefix(owner_user_id)
+    rows = conn.execute(
+        "SELECT key, value FROM workspace_settings WHERE key LIKE ?",
+        (f"{prefix}%",),
+    ).fetchall()
+    completed: list[tuple[str, str]] = []
+    for row in rows:
+        try:
+            record = _chat_input_event_record(row["value"])
+        except (RuntimeError, json.JSONDecodeError, TypeError):
+            continue
+        if record.get("state") == "completed":
+            completed.append((str(record.get("completed_at") or ""), str(row["key"])))
+    completed.sort(reverse=True)
+    for _completed_at, setting_key in completed[_CHAT_INPUT_EVENT_RETENTION_PER_USER:]:
+        conn.execute(
+            "DELETE FROM workspace_settings WHERE key = ?",
+            (setting_key,),
+        )
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
