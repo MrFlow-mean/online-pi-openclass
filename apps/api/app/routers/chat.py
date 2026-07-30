@@ -149,6 +149,10 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         chat_delta_emitted = True
 
     def emit_requirement_update(payload: dict[str, object]) -> None:
+        if "board_task_sheet" in payload:
+            state.last_phase = "board_task"
+            emit("board_task_update", payload)
+            return
         state.last_phase = "learning_requirement"
         emit("requirement_update", payload)
 

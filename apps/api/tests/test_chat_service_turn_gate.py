@@ -101,6 +101,17 @@ def _workflow_response(lesson_id: str) -> ChatResponse:
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     return ChatResponse(
         chatbot_message="Existing learning workflow ran.",
+        decision_trace=DecisionTrace(
+            intent_signals=["board_task:explain"],
+            matched_rules=["existing_board_bounded_workflow"],
+            selected_action="learning_need",
+            target_resolver="FocusResolver",
+            role_executed="chatbot",
+            board_access="bounded_board_role",
+            requirement_effect="updated",
+            document_changed=False,
+            reason="Existing-board workflow test result.",
+        ),
         learning_requirement_sheet=build_requirements(lesson.title),
         learning_clarification=_neutral_clarification(),
         board_decision=BoardDecision(action="no_change", reason="Test workflow"),
@@ -382,17 +393,39 @@ def test_learning_need_is_the_only_route_into_existing_workflow(
         ),
     )
 
-    def fake_workflow(lesson_id, _request, *, user_id, **_kwargs):
+    def fake_existing_workflow(
+        lesson_id,
+        _request,
+        *,
+        user_id,
+        adapter,
+        selected_model,
+        **_kwargs,
+    ):
         assert user_id == TEST_USER_ID
+        assert adapter is not None
+        assert selected_model.model == "test-model"
         workflow_calls.append(lesson_id)
         return _workflow_response(lesson_id)
+
+    def unexpected_legacy_workflow(*_args, **_kwargs):
+        raise AssertionError("A normal non-empty board task must use the bounded workflow")
 
     def fake_title(lesson_id, _request, response, *, user_id):
         assert user_id == TEST_USER_ID
         title_calls.append(lesson_id)
         return response
 
-    monkeypatch.setattr(chat_service, "process_codex_chat_on_lesson", fake_workflow)
+    monkeypatch.setattr(
+        chat_service,
+        "process_existing_board_workflow",
+        fake_existing_workflow,
+    )
+    monkeypatch.setattr(
+        chat_service,
+        "process_codex_chat_on_lesson",
+        unexpected_legacy_workflow,
+    )
     monkeypatch.setattr(chat_service, "maybe_generate_lesson_title", fake_title)
 
     response = chat_service.process_chat_on_lesson(
@@ -406,7 +439,12 @@ def test_learning_need_is_the_only_route_into_existing_workflow(
     assert response.turn_decision is not None
     assert response.turn_decision.intent == "learning_need"
     assert response.decision_trace is not None
-    assert response.decision_trace.board_access == "state_check_only"
+    assert response.decision_trace.board_access == "bounded_board_role"
+    assert response.decision_trace.role_executed == "chatbot"
+    assert response.decision_trace.intent_signals == [
+        "model_classification",
+        "board_task:explain",
+    ]
 
 
 def test_same_input_event_is_concurrently_executed_once_and_recorded(

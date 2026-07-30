@@ -242,6 +242,37 @@ def test_chat_stream_emits_live_activity_updates_and_avoids_duplicate_final_even
     ].index("final")
 
 
+def test_chat_stream_routes_board_task_updates_to_their_own_event(monkeypatch) -> None:
+    def process_with_structured_updates(*args, **kwargs) -> ChatResponse:
+        kwargs["on_requirement_update"]({"requirement_phase": "collecting"})
+        kwargs["on_requirement_update"](
+            {
+                "board_task_sheet": {"requested_action": "explain"},
+                "board_task_phase": "ready",
+            }
+        )
+        return _chat_response("lesson_stream_test", chatbot_message="请确认目标。")
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_structured_updates)
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="讲解这一段"),
+            user_id="user_stream_test",
+        )
+    )
+
+    requirement_payload = next(
+        payload for event, payload in events if event == "requirement_update"
+    )
+    board_task_payload = next(
+        payload for event, payload in events if event == "board_task_update"
+    )
+    assert requirement_payload["requirement_phase"] == "collecting"
+    assert board_task_payload["board_task_phase"] == "ready"
+
+
 def test_chat_stream_preserves_live_model_delta_chunks(monkeypatch) -> None:
     sleep_calls: list[float] = []
 

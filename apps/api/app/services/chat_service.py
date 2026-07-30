@@ -12,10 +12,13 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ConversationTurn,
+    DecisionTrace,
     SelectionRef,
 )
+from app.services import workspace_state
 from app.services.chat_turn_gate import complete_non_learning_turn, evaluate_turn_gate
 from app.services.codex_chat import process_codex_chat_on_lesson
+from app.services.existing_board.workflow import process_existing_board_workflow
 from app.services.history import bind_commit_metadata
 from app.services.lesson_title import maybe_generate_lesson_title
 
@@ -132,23 +135,81 @@ def _process_chat_on_lesson_once(
                 on_agent_activity=on_agent_activity,
                 is_cancelled=is_cancelled,
             )
-        response = process_codex_chat_on_lesson(
+        if _should_use_bounded_existing_board_workflow(
             lesson_id,
             request,
             user_id=user_id,
-            on_delta=on_delta,
-            on_requirement_update=on_requirement_update,
-            on_agent_activity=on_agent_activity,
-            is_cancelled=is_cancelled,
-        )
+        ):
+            response = process_existing_board_workflow(
+                lesson_id,
+                request,
+                user_id=user_id,
+                adapter=gate.adapter,
+                selected_model=gate.envelope.selected_model,
+                on_delta=on_delta,
+                on_board_task_update=on_requirement_update,
+                on_agent_activity=on_agent_activity,
+                is_cancelled=is_cancelled,
+            )
+        else:
+            response = process_codex_chat_on_lesson(
+                lesson_id,
+                request,
+                user_id=user_id,
+                on_delta=on_delta,
+                on_requirement_update=on_requirement_update,
+                on_agent_activity=on_agent_activity,
+                is_cancelled=is_cancelled,
+            )
     response.turn_decision = gate.decision
-    response.decision_trace = gate.trace.model_copy(update={"role_executed": "workflow"})
+    response.decision_trace = _merge_decision_trace(gate.trace, response.decision_trace)
     response.agent_activity = _merge_activity(gate.activity, response.agent_activity)
     return maybe_generate_lesson_title(
         lesson_id,
         request,
         response,
         user_id=user_id,
+    )
+
+
+def _should_use_bounded_existing_board_workflow(
+    lesson_id: str,
+    request: ChatRequest,
+    *,
+    user_id: str,
+) -> bool:
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    if not lesson.board_document.content_text.strip():
+        return False
+    if request.formula_ink is not None or request.attachments:
+        return False
+    if request.source_query_scope is not None:
+        return False
+    if request.teaching_action is not None or request.board_generation_action is not None:
+        return False
+    references = [
+        *([request.selection] if request.selection is not None else []),
+        *request.selections,
+    ]
+    return all(reference.kind != "source" for reference in references)
+
+
+def _merge_decision_trace(
+    gate_trace: DecisionTrace,
+    workflow_trace: DecisionTrace | None,
+) -> DecisionTrace:
+    if workflow_trace is None:
+        return gate_trace.model_copy(update={"role_executed": "workflow"})
+    return workflow_trace.model_copy(
+        update={
+            "intent_signals": list(
+                dict.fromkeys([*gate_trace.intent_signals, *workflow_trace.intent_signals])
+            ),
+            "matched_rules": list(
+                dict.fromkeys([*gate_trace.matched_rules, *workflow_trace.matched_rules])
+            ),
+        }
     )
 
 
