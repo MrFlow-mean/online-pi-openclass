@@ -38,6 +38,7 @@ import type {
   AIModelOption,
   AIModelSelection,
   BoardDecision,
+  BoardFocusRef,
   BoardTaskRequirementSheet,
   ChatAttachmentRef,
   ChatInteractionMode,
@@ -57,7 +58,23 @@ const BOARD_TASK_ACTION_LABELS: Partial<Record<NonNullable<BoardTaskRequirementS
   write: "写入",
   edit: "修改",
   explain: "讲解",
+  delete: "删除",
+  interact: "互动",
   chat: "互动",
+};
+
+const BOARD_EXTENT_LABELS: Record<NonNullable<BoardTaskRequirementSheet["content_extent"]>, string> = {
+  sentence: "句子",
+  paragraph: "段落",
+  section: "小节",
+  article: "文章",
+  whole_board: "整篇板书",
+};
+
+const BOARD_DESTINATION_LABELS: Record<BoardTaskRequirementSheet["document_destination"], string> = {
+  current_lesson: "当前 lesson",
+  new_lesson: "新 lesson",
+  unresolved: "待确认",
 };
 
 function boardTaskActionLabel(action: BoardTaskRequirementSheet["requested_action"]) {
@@ -117,6 +134,7 @@ function CurrentNeedCard({
   currentNeedPending,
   isChatBusy,
   lesson,
+  onSelectBoardCandidate,
   targetCommitId,
 }: {
   activeBoardTask: BoardTaskRequirementSheet | null;
@@ -126,6 +144,7 @@ function CurrentNeedCard({
   currentNeedPending: boolean;
   isChatBusy: boolean;
   lesson: Lesson;
+  onSelectBoardCandidate: (task: BoardTaskRequirementSheet, candidate: BoardFocusRef) => void;
   targetCommitId: string | null;
 }) {
   if (currentNeedPending) {
@@ -206,7 +225,29 @@ function CurrentNeedCard({
           <p>位置：{boardTaskLocationLabel(activeBoardTask)}</p>
           <p>动作：{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
           <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>
+          <p>篇幅：{activeBoardTask.content_extent ? BOARD_EXTENT_LABELS[activeBoardTask.content_extent] : "待确认"}</p>
+          <p>归属：{BOARD_DESTINATION_LABELS[activeBoardTask.document_destination]}</p>
+          {activeBoardTask.special_interaction_requirements && activeBoardTask.special_interaction_requirements !== "none" ? (
+            <p>互动要求：{activeBoardTask.special_interaction_requirements}</p>
+          ) : null}
         </div>
+        {activeBoardTask.target_candidates.length ? (
+          <div className="mt-3 grid gap-2">
+            <p className="text-xs font-semibold text-sky-900">请选择要处理的位置：</p>
+            {activeBoardTask.target_candidates.map((candidate) => (
+              <button
+                key={candidate.match_id ?? candidate.segment_id ?? candidate.excerpt}
+                type="button"
+                disabled={isChatBusy}
+                onClick={() => onSelectBoardCandidate(activeBoardTask, candidate)}
+                className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-left text-xs leading-5 text-sky-950 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="font-semibold">{candidate.display_label || candidate.heading_path.at(-1) || "候选位置"}</span>
+                {candidate.excerpt ? <span className="mt-1 block line-clamp-2 text-sky-800">{candidate.excerpt}</span> : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {activeBoardTask.confirmation_status === "awaiting" ? (
           <p className="mt-3 text-xs leading-6 text-sky-900">等待你确认是否先扩写板书。</p>
         ) : null}
@@ -514,6 +555,24 @@ export function CourseStudioChatSidebar({
             currentNeedPending={!isPreviewMode && currentNeedPending}
             isChatBusy={isChatBusy}
             lesson={activeLesson}
+            onSelectBoardCandidate={(task, candidate) =>
+              onApplySelection(
+                {
+                  kind: "board",
+                  location_kind: task.location_kind,
+                  lesson_id: candidate.lesson_id,
+                  source_commit_id: task.base_commit_id || null,
+                  document_id: candidate.document_id,
+                  segment_id: candidate.segment_id,
+                  heading_path: candidate.heading_path,
+                  excerpt: candidate.excerpt,
+                  before_text: "",
+                  after_text: "",
+                  text_hash: candidate.text_hash,
+                },
+                null
+              )
+            }
             targetCommitId={targetCommitId}
           />
           <div className="space-y-5">
