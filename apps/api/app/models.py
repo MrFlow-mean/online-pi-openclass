@@ -156,6 +156,15 @@ TurnContinuationKind = Literal[
     "teaching_sequence",
     "interaction_session",
 ]
+TurnRelationToActive = Literal[
+    "none",
+    "continue",
+    "supplement",
+    "replace",
+    "new_task",
+    "unresolved",
+]
+TurnDecisionBoardAccess = Literal["forbidden", "state_check_only"]
 TurnBoardAccess = Literal["forbidden", "state_check_only", "bounded_board_role"]
 TurnRequirementEffect = Literal["preserved", "eligible", "updated"]
 BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
@@ -186,11 +195,30 @@ BoardTaskChangeKind = Literal[
     "archived",
     "execution_failed",
 ]
-BoardTaskRequestedAction = Literal["write", "edit", "explain", "chat"]
+BoardTaskRequestedAction = Literal[
+    "write",
+    "edit",
+    "explain",
+    "delete",
+    "interact",
+    "chat",
+]
 BoardTaskConfirmationStatus = Literal["none", "awaiting", "confirmed", "declined"]
-BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location", "await_write_confirmation"]
+BoardTaskRoute = Literal[
+    "write",
+    "edit",
+    "explain",
+    "delete",
+    "interact",
+    "chat",
+    "clarify_location",
+    "await_write_confirmation",
+]
 BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
 BoardTaskLocationKind = Literal["target_range", "insertion_anchor", "unspecified"]
+BoardContentExtent = Literal["sentence", "paragraph", "section", "article", "whole_board"]
+BoardTopicRelation = Literal["current_document", "independent", "unresolved"]
+BoardDocumentDestination = Literal["current_lesson", "new_lesson", "unresolved"]
 BoardDocumentOperationStatus = Literal["none", "succeeded", "failed"]
 LearningRequirementOperationStatus = Literal["none", "succeeded", "failed"]
 BoardPatchContentFormat = Literal["markdown", "plain_text"]
@@ -479,6 +507,7 @@ class LearningRequirementSheet(BaseModel):
 
 
 class BoardTaskRequirementSheet(BaseModel):
+    task_id: str = Field(default_factory=lambda: new_id("boardtask"))
     board_workflow: BoardWorkflow = "act_on_existing_board"
     location_kind: BoardTaskLocationKind = "unspecified"
     target_hint: str = ""
@@ -486,6 +515,16 @@ class BoardTaskRequirementSheet(BaseModel):
     location_status: BoardTaskLocationStatus = "missing"
     requested_action: BoardTaskRequestedAction | None = None
     question_or_topic: str = ""
+    special_interaction_requirements: str | None = None
+    content_extent: BoardContentExtent | None = None
+    topic_relation: BoardTopicRelation = "unresolved"
+    document_destination: BoardDocumentDestination = "unresolved"
+    target_candidates: list[BoardFocusRef] = Field(default_factory=list, max_length=5)
+    target_resolution_reason: str = ""
+    base_commit_id: str = ""
+    base_document_hash: str = ""
+    mutation_plan: dict[str, Any] | None = None
+    interaction_session: dict[str, Any] | None = None
     missing_items: list[str] = Field(default_factory=list)
     progress: int = Field(default=0, ge=0, le=100)
     confirmation_status: BoardTaskConfirmationStatus = "none"
@@ -1939,6 +1978,8 @@ class TurnEnvelope(BaseModel):
 class TurnDecision(BaseModel):
     intent: TurnIntent
     continuation: TurnContinuationKind = "none"
+    relation_to_active: TurnRelationToActive = "none"
+    board_access: TurnDecisionBoardAccess = "forbidden"
     reason: str
 
 
