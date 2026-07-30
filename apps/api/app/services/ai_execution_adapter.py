@@ -961,9 +961,9 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
 
 
 class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
-    """Shared CLIProxyAPI transport behind the provider-neutral Pi contract."""
+    """Owner-only CLIProxyAPI transport behind the provider-neutral Pi contract."""
 
-    runtime_label = "Codex platform proxy"
+    runtime_label = "Codex private proxy"
     turn_id_prefix = "codexproxyturn"
 
     def __init__(
@@ -977,7 +977,7 @@ class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
         self.owner_user_id = owner_user_id
         self.provider = "openai_codex"
         self.model = model
-        self.access_method = "platform_credits"
+        self.access_method = "chatgpt_subscription"
         self.reasoning_effort = reasoning_effort
         self.service_tier = service_tier
         self._client = CodexTextProxyClient(
@@ -990,7 +990,7 @@ class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
     def _selected_model_audit(self) -> dict[str, Any]:
         return {
             **super()._selected_model_audit(),
-            "agent_backend": "platform_proxy",
+            "agent_backend": "private_proxy",
             "transport": "cliproxyapi",
         }
 
@@ -1009,13 +1009,13 @@ def build_ai_execution_adapter(
         selection.provider == "openai_codex"
         and selection.model in CODEX_TEXT_PROXY_MODEL_IDS
     ):
-        if selection.access_method not in {None, "platform_credits"}:
+        if selection.access_method not in {None, "chatgpt_subscription"}:
             raise RuntimeError(
-                "Codex platform proxy models require platform credits access"
+                "Codex private proxy models require ChatGPT subscription access"
             )
         if not codex_text_proxy_available_for_user(owner_user_id):
             raise RuntimeError(
-                "The current user is not allowed to use this Codex platform proxy model"
+                "The current user is not allowed to use this Codex private proxy model"
             )
         return CodexTextProxyAIExecutionAdapter(
             owner_user_id=owner_user_id,

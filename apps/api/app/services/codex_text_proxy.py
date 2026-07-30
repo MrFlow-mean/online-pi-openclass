@@ -22,9 +22,9 @@ from app.services.structured_output import (
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 
 CODEX_TEXT_PROXY_MODELS: tuple[tuple[str, str], ...] = (
-    ("gpt-5.6-sol", "GPT 5.6 Sol · OpenClass Codex"),
-    ("gpt-5.6-terra", "GPT 5.6 Terra · OpenClass Codex"),
-    ("gpt-5.6-luna", "GPT 5.6 Luna · OpenClass Codex"),
+    ("gpt-5.6-sol", "GPT 5.6 Sol · 私有 Codex"),
+    ("gpt-5.6-terra", "GPT 5.6 Terra · 私有 Codex"),
+    ("gpt-5.6-luna", "GPT 5.6 Luna · 私有 Codex"),
 )
 CODEX_TEXT_PROXY_MODEL_IDS = frozenset(
     model for model, _label in CODEX_TEXT_PROXY_MODELS
@@ -134,11 +134,9 @@ def codex_text_proxy_config() -> CodexTextProxyConfig:
 
 
 def codex_text_proxy_user_allowed(user_id: str) -> bool:
-    raw_user_ids = os.getenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS")
-    if raw_user_ids is None:
-        raw_user_ids = os.getenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS") or ""
+    raw_user_ids = os.getenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS") or ""
     allowed_user_ids = {item for item in raw_user_ids.replace(",", " ").split() if item}
-    return "*" in allowed_user_ids or user_id in allowed_user_ids
+    return user_id in allowed_user_ids
 
 
 def codex_text_proxy_available_for_user(user_id: str) -> bool:
@@ -172,7 +170,7 @@ def _response_output_text(payload: dict[str, Any]) -> str:
                 parts.append(text)
     output_text = "".join(parts).strip()
     if not output_text:
-        raise RuntimeError("Codex platform proxy returned no text output")
+        raise RuntimeError("Codex private proxy returned no text output")
     return output_text
 
 
@@ -182,7 +180,7 @@ def _schema_name(schema: type[BaseModel]) -> str:
 
 
 class CodexTextProxyClient:
-    """OpenAI-compatible platform text client backed by CLIProxyAPI."""
+    """Owner-only OpenAI-compatible text client backed by CLIProxyAPI."""
 
     def __init__(
         self,
@@ -195,14 +193,14 @@ class CodexTextProxyClient:
         client: httpx.Client | None = None,
     ) -> None:
         if model not in CODEX_TEXT_PROXY_MODEL_IDS:
-            raise RuntimeError(f"Unsupported Codex platform proxy model: {model}")
+            raise RuntimeError(f"Unsupported Codex private proxy model: {model}")
         if not codex_text_proxy_user_allowed(owner_user_id):
             raise RuntimeError(
-                "The current user is not allowed to use the Codex platform proxy"
+                "The current user is not allowed to use the Codex private proxy"
             )
         self.config = config or codex_text_proxy_config()
         if not self.config.configured:
-            raise RuntimeError("Codex platform text proxy is not configured")
+            raise RuntimeError("Codex private text proxy is not configured")
         self.owner_user_id = owner_user_id
         self.model = model
         self.reasoning_effort = reasoning_effort
@@ -216,7 +214,7 @@ class CodexTextProxyClient:
         for image_url in image_inputs:
             if not image_url.lower().startswith("data:image/"):
                 raise RuntimeError(
-                    "Codex platform proxy accepts only embedded image inputs"
+                    "Codex private proxy accepts only embedded image inputs"
                 )
             content.append(
                 {
@@ -240,16 +238,16 @@ class CodexTextProxyClient:
         text_format: dict[str, Any] | None = None,
     ) -> str:
         if is_cancelled is not None and is_cancelled():
-            raise RuntimeError("Codex platform proxy request was cancelled")
+            raise RuntimeError("Codex private proxy request was cancelled")
         event = AgentActivityEvent(
             turn_id=turn_id,
             stage="execute_role",
-            label="正在通过 OpenClass Codex 代理调用模型",
+            label="正在通过私有 Codex 代理调用模型",
             status="running",
             role="OpenClass",
             metadata={
                 "kind": "model_runtime",
-                "agent_backend": "platform_proxy",
+                "agent_backend": "private_proxy",
                 "provider": "openai_codex",
                 "model": self.model,
                 "transport": "cliproxyapi",
@@ -286,14 +284,14 @@ class CodexTextProxyClient:
             response.raise_for_status()
             response_payload = response.json()
             if not isinstance(response_payload, dict):
-                raise TypeError("Codex platform proxy returned an invalid response")
+                raise TypeError("Codex private proxy returned an invalid response")
             output_text = _response_output_text(response_payload)
         except (httpx.HTTPError, TypeError, ValueError, RuntimeError) as error:
             if on_activity is not None:
                 on_activity(
                     event.model_copy(
                         update={
-                            "label": "OpenClass Codex 代理调用失败",
+                            "label": "私有 Codex 代理调用失败",
                             "status": "failed",
                         }
                     )
@@ -307,18 +305,18 @@ class CodexTextProxyClient:
                 error=type(error).__name__,
             )
             raise RuntimeError(
-                f"Codex platform proxy request failed: {error}"
+                f"Codex private proxy request failed: {error}"
             ) from error
         finally:
             if owns_client:
                 client.close()
         if is_cancelled is not None and is_cancelled():
-            raise RuntimeError("Codex platform proxy request was cancelled")
+            raise RuntimeError("Codex private proxy request was cancelled")
         if on_activity is not None:
             on_activity(
                 event.model_copy(
                     update={
-                        "label": "OpenClass Codex 代理已返回结果",
+                        "label": "私有 Codex 代理已返回结果",
                         "status": "completed",
                     }
                 )
@@ -397,7 +395,7 @@ class CodexTextProxyClient:
                     repair_validation_issues=validation_issues(repair_error),
                 )
                 raise RuntimeError(
-                    "Codex platform proxy returned an invalid structured response"
+                    "Codex private proxy returned an invalid structured response"
                 ) from repair_error
         return CodexTextProxyStructuredResponse(
             output_parsed=parsed,

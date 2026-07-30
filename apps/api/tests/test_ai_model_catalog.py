@@ -18,7 +18,6 @@ TEST_USER_ID = "user_model_catalog"
 @pytest.fixture(autouse=True)
 def _no_personal_api_credentials(monkeypatch) -> None:
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", raising=False)
-    monkeypatch.delenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY_FILE", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_URL", raising=False)
@@ -29,10 +28,10 @@ def _no_personal_api_credentials(monkeypatch) -> None:
     )
 
 
-def test_shared_codex_text_proxy_models_are_catalogued_and_routed_for_all_users(
+def test_owner_only_codex_text_proxy_models_are_catalogued_and_routed(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", "*")
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", TEST_USER_ID)
     monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "private-proxy-key")
     monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_URL", "http://127.0.0.1:8317/v1")
     monkeypatch.setattr(
@@ -41,65 +40,41 @@ def test_shared_codex_text_proxy_models_are_catalogued_and_routed_for_all_users(
         lambda **_kwargs: False,
     )
 
-    for user_id in (TEST_USER_ID, "guest_model_catalog"):
-        catalog = ai_model_catalog.build_model_catalog(user_id)
-        proxy_options = [
-            option
-            for option in catalog.text
-            if option.model in CODEX_TEXT_PROXY_MODEL_IDS
-        ]
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+    proxy_options = [
+        option for option in catalog.text if option.model in CODEX_TEXT_PROXY_MODEL_IDS
+    ]
 
-        assert [option.model for option in proxy_options] == [
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-        ]
-        assert all(option.enabled and option.configured for option in proxy_options)
-        assert all(
-            option.access_method == "platform_credits" for option in proxy_options
-        )
-        assert [
-            effort.reasoning_effort
-            for effort in proxy_options[0].supported_reasoning_efforts
-        ] == ["none", "low", "medium", "high", "xhigh", "max"]
-        assert proxy_options[0].service_tiers == []
-        assert catalog.defaults["text"].model == "gpt-5.6-sol"
-        assert catalog.defaults["text"].access_method == "platform_credits"
+    assert [option.model for option in proxy_options] == [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
+    assert all(option.enabled and option.configured for option in proxy_options)
+    assert all(
+        option.access_method == "chatgpt_subscription" for option in proxy_options
+    )
+    assert [
+        effort.reasoning_effort
+        for effort in proxy_options[0].supported_reasoning_efforts
+    ] == ["none", "low", "medium", "high", "xhigh", "max"]
+    assert proxy_options[0].service_tiers == []
+    assert catalog.defaults["text"].model == "gpt-5.6-sol"
 
     selection = ai_model_catalog.resolve_text_model_selection(
         AIModelSelection(
             provider="openai_codex",
             model="gpt-5.6-sol",
+            access_method="chatgpt_subscription",
         ),
         user_id=TEST_USER_ID,
     )
-    assert selection.access_method == "platform_credits"
     adapter = ai_execution_adapter.build_ai_execution_adapter(
         selection,
         owner_user_id=TEST_USER_ID,
     )
     assert isinstance(adapter, ai_execution_adapter.CodexTextProxyAIExecutionAdapter)
     assert adapter._selected_model_audit()["transport"] == "cliproxyapi"
-    assert adapter._selected_model_audit()["access_method"] == "platform_credits"
-    assert adapter._selected_model_audit()["agent_backend"] == "platform_proxy"
-
-
-def test_codex_text_proxy_inherits_codex_live_user_policy(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", "*")
-    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "platform-proxy-key")
-    monkeypatch.setattr(
-        ai_model_catalog,
-        "pi_credentials_available",
-        lambda **_kwargs: False,
-    )
-
-    catalog = ai_model_catalog.build_model_catalog("new_studio_user")
-
-    assert CODEX_TEXT_PROXY_MODEL_IDS.issubset(
-        option.model
-        for option in catalog.text
-        if option.enabled and option.access_method == "platform_credits"
-    )
 
 
 def test_codex_text_proxy_models_are_hidden_and_rejected_for_other_users(
@@ -122,7 +97,7 @@ def test_codex_text_proxy_models_are_hidden_and_rejected_for_other_users(
     forged = AIModelSelection(
         provider="openai_codex",
         model="gpt-5.6-sol",
-        access_method="platform_credits",
+        access_method="chatgpt_subscription",
     )
     with pytest.raises(RuntimeError, match="not allowed"):
         ai_model_catalog.resolve_text_model_selection(
@@ -133,29 +108,6 @@ def test_codex_text_proxy_models_are_hidden_and_rejected_for_other_users(
         ai_execution_adapter.build_ai_execution_adapter(
             forged,
             owner_user_id=other_user_id,
-        )
-
-
-def test_codex_text_proxy_rejects_chatgpt_subscription_access_method(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", "*")
-    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", "platform-proxy-key")
-    forged = AIModelSelection(
-        provider="openai_codex",
-        model="gpt-5.6-sol",
-        access_method="chatgpt_subscription",
-    )
-
-    with pytest.raises(RuntimeError, match="platform credits"):
-        ai_model_catalog.resolve_text_model_selection(
-            forged,
-            user_id=TEST_USER_ID,
-        )
-    with pytest.raises(RuntimeError, match="platform credits"):
-        ai_execution_adapter.build_ai_execution_adapter(
-            forged,
-            owner_user_id=TEST_USER_ID,
         )
 
 
