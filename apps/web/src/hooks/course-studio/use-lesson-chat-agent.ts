@@ -294,7 +294,7 @@ export function useLessonChatAgent({
     const lessonId = lesson.id;
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
-      post_generation_action: payload.post_generation_action ?? "auto_explain",
+      post_generation_action: payload.post_generation_action ?? "stop_after_generation",
       text_model: payload.text_model ?? selectedTextModel,
       conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
     };

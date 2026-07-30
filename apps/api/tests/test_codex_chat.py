@@ -843,11 +843,7 @@ def test_broad_knowledge_direction_collects_until_content_is_specific() -> None:
     assert outcome.requirement is not None
     assert outcome.requirement.teaching_type == "knowledge_point"
     assert outcome.requirement.learning_content == "A broad field"
-    assert outcome.clarification.missing_items == [
-        "learning_content",
-        "current_level",
-        "target_scenario",
-    ]
+    assert outcome.clarification.missing_items == ["learning_content"]
     assert outcome.ready_for_board is False
 
 
@@ -886,25 +882,25 @@ def test_blank_board_question_wording_does_not_create_a_requirement_version() ->
     )
 
 
-def test_specific_knowledge_point_requires_level_and_target_scenario() -> None:
+def test_specific_knowledge_point_is_ready_without_optional_learner_profile() -> None:
     decision = BlankBoardTurnDecision(
         intent="learning_need",
         teaching_type="knowledge_point",
         learning_content="A specific concept",
         content_is_specific=True,
-        chatbot_message="One question about the learner context.",
-        next_question="What is your current level and where will you use this?",
-        reason="The current level and target scenario are still missing.",
+        chatbot_message="The focused board is ready.",
+        teaching_plan="Explain the focused concept as one coherent board.",
+        reason="The learning content is specific enough for one board.",
     )
 
     outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
 
-    assert outcome.route == "collect_requirements"
+    assert outcome.route == "generate_board"
     assert outcome.requirement is not None
     assert outcome.requirement.teaching_type == "knowledge_point"
     assert outcome.requirement.learning_goal == "A specific concept"
-    assert outcome.clarification.missing_items == ["current_level", "target_scenario"]
-    assert outcome.ready_for_board is False
+    assert outcome.clarification.missing_items == []
+    assert outcome.ready_for_board is True
 
 
 def test_specific_knowledge_point_is_ready_with_all_core_factors() -> None:
@@ -1174,11 +1170,7 @@ def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves
 
     assert collecting.active_requirement_sheet is not None
     assert collecting.active_requirement_sheet.teaching_type == "knowledge_point"
-    assert collecting.learning_clarification.missing_items == [
-        "learning_content",
-        "current_level",
-        "target_scenario",
-    ]
+    assert collecting.learning_clarification.missing_items == ["learning_content"]
     assert collecting.requirement_version_id is not None
     assert [update["requirement_phase"] for update in requirement_updates] == [
         "collecting"

@@ -51,17 +51,17 @@ When the board state is EMPTY, classify and handle the turn using this contract:
   invent any missing factor or teaching type. Do not edit `board.md`.
 - `learning_need`: the user does want to learn. Preserve every confirmed core factor even when the
   teaching type still needs one more choice. Select exactly one teaching type before generation:
-  - Both `knowledge_point` and `skill_practice` require `learning_content`, `current_level`, and
-    `target_scenario`. `target_scenario="无明确应用场景"` is a valid, explicitly resolved scenario.
-    All three factors are mandatory.
-  - `knowledge_point` also requires `learning_content` to be specific enough for one focused
-    teaching board.
+  - `knowledge_point` requires only a `learning_content` that is specific enough for one focused
+    teaching board. Preserve a stated level or purpose, but never delay a focused knowledge board
+    merely to collect them.
+  - `skill_practice` requires `learning_content`, `current_level`, and `target_scenario`, where the
+    scenario expresses the learner's practice purpose. `target_scenario="无明确应用场景"` is valid only
+    when the learner explicitly confirms that no narrower purpose is needed.
 
 Also classify `requested_action` independently from requirement completeness:
-- Use `generate_board` only when the supplied active requirement phase is `frozen` and the learner
-  explicitly asks to start, retry, continue, explain, or teach the already selected learning scope.
-  The board is still empty in this state, so this action means retry the same frozen board generation;
-  do not replace the frozen requirement or ask for optional learner-profile details first.
+- Use `generate_board` when the learner explicitly asks to generate now, stop clarifying, or retry a
+  frozen generation. The backend records an incomplete requirement as forced-frozen before writing;
+  this role must preserve every known fact and must not invent missing facts.
 - Use `none` for ordinary conversation, requirement corrections, new constraints, or answers to a
   clarification question. Never infer a generation request from topic discussion alone.
 
@@ -210,10 +210,10 @@ copying a canned script. Return only the learner-facing plain text, without JSON
 BOARD_GENERATION_HANDOFF_INSTRUCTIONS = """
 You are the learner-facing Chatbot in OpenClass. The board-writing role has already completed and
 OpenClass has safely saved the new board. Produce one brief, natural message that acknowledges
-completion in the learner's current context and offers a useful next conversational step. Use only
-the supplied frozen requirement and teaching plan. Do not reproduce the board, invent unsupported
-details, claim an edit that was not made, or use a fixed completion template. Return plain text
-only, without JSON or Markdown fences.
+completion in the learner's current context and asks whether they want to start explaining it from
+the beginning. Do not start teaching in this response. Use only the supplied frozen requirement and
+teaching plan. Do not reproduce the board, invent unsupported details, claim an edit that was not
+made, or use a fixed completion template. Return plain text only, without JSON or Markdown fences.
 """.strip()
 
 SOURCE_RESOLUTION_INSTRUCTIONS = """
@@ -592,6 +592,7 @@ def process_blank_board_turn(
                 previous_clarification=active_state.clarification,
                 previous_phase=active_state.phase,
             )
+            outcome = force_blank_board_generation_if_requested(decision, outcome)
         if outcome.route == "ordinary_chat":
             complete_text = getattr(adapter, "complete_text", None)
             if callable(complete_text):
@@ -717,14 +718,27 @@ def process_blank_board_turn(
         run_id = existing_run_id or new_id("reqrun")
         ready_version_id = new_id("reqver")
         frozen_version_id = new_id("reqver")
+        forced_start = outcome.clarification.forced_start
         lesson.learning_requirements = outcome.requirement
         commit_operations(
             lesson,
             operations=[],
-            label="Learning requirement completed",
-            message="The core learning requirement is ready for board generation.",
+            label=(
+                "Learning requirement forced ready"
+                if forced_start
+                else "Learning requirement completed"
+            ),
+            message=(
+                "The learner explicitly requested generation with the available requirement."
+                if forced_start
+                else "The core learning requirement is ready for board generation."
+            ),
             metadata={
-                "kind": "learning_requirement_completed",
+                "kind": (
+                    "learning_requirement_forced_ready"
+                    if forced_start
+                    else "learning_requirement_completed"
+                ),
                 "user_message": request.message,
                 "assistant_message": outcome.chatbot_message,
                 "assistant_message_source": _activity_backend(current_activity()),
@@ -732,6 +746,9 @@ def process_blank_board_turn(
                 "requirement_run_id": run_id,
                 "requirement_version_id": ready_version_id,
                 "requirement_phase": "ready",
+                "requirement_change_kind": (
+                    "forced_frozen" if forced_start else "completed"
+                ),
                 "active_requirement_sheet_after": requirement_payload,
                 "learning_clarification_after": clarification_payload,
                 "requirement_cleared": False,
@@ -743,10 +760,22 @@ def process_blank_board_turn(
         commit_operations(
             lesson,
             operations=[],
-            label="Learning requirement frozen",
-            message="Frozen before board generation.",
+            label=(
+                "Learning requirement forced frozen"
+                if forced_start
+                else "Learning requirement frozen"
+            ),
+            message=(
+                "Forced-frozen before board generation at the learner's explicit request."
+                if forced_start
+                else "Frozen before board generation."
+            ),
             metadata={
-                "kind": "learning_requirement_frozen",
+                "kind": (
+                    "learning_requirement_forced_frozen"
+                    if forced_start
+                    else "learning_requirement_frozen"
+                ),
                 "user_message": request.message,
                 "assistant_message": outcome.chatbot_message,
                 "assistant_message_source": _activity_backend(current_activity()),
@@ -755,6 +784,9 @@ def process_blank_board_turn(
                 "requirement_version_id": frozen_version_id,
                 "requirement_parent_version_id": ready_version_id,
                 "requirement_phase": "frozen",
+                "requirement_change_kind": (
+                    "forced_frozen" if forced_start else "frozen"
+                ),
                 "frozen_requirement_payload": requirement_payload,
                 "teaching_plan": outcome.teaching_plan,
                 "active_requirement_sheet_after": requirement_payload,
@@ -763,6 +795,7 @@ def process_blank_board_turn(
                 "document_changed": False,
                 "board_state_before": "empty",
                 "board_state_after": "empty",
+                "board_content_extent": "article",
             },
         )
         generation_base_commit_id = current_head_commit(lesson).id
@@ -967,6 +1000,7 @@ def process_blank_board_turn(
                 "codex_base_commit_id": generation_base_commit_id,
                 "requirement_retry": frozen_retry,
                 "board_generation_action": request.board_generation_action,
+                "board_content_extent": "article",
                 **visual_insertion_metadata,
                 "agent_activity": [
                     event.model_dump(mode="json") for event in current_activity()
@@ -1587,6 +1621,34 @@ def evaluate_blank_board_decision(
     )
 
 
+def force_blank_board_generation_if_requested(
+    decision: BlankBoardTurnDecision,
+    outcome: BlankBoardIntakeOutcome,
+) -> BlankBoardIntakeOutcome:
+    if (
+        decision.intent != "learning_need"
+        or decision.requested_action != "generate_board"
+        or outcome.requirement is None
+        or outcome.ready_for_board
+    ):
+        return outcome
+    return outcome.model_copy(
+        update={
+            "route": "generate_board",
+            "ready_for_board": True,
+            "requirement_phase": "ready",
+            "teaching_plan": decision.teaching_plan.strip(),
+            "clarification": outcome.clarification.model_copy(
+                update={
+                    "can_start": True,
+                    "forced_start": True,
+                    "ready_for_board": True,
+                }
+            ),
+        }
+    )
+
+
 def _requirement_from_decision(
     decision: BlankBoardTurnDecision,
     *,
@@ -1761,13 +1823,14 @@ def _missing_core_factors(decision: BlankBoardTurnDecision) -> list[str]:
     missing: list[str] = []
     if not decision.learning_content.strip() or not decision.content_is_specific:
         missing.append("learning_content")
-    if not decision.current_level.strip():
-        missing.append("current_level")
-    if not _resolved_target_scenario(
-        decision,
-        current_level=decision.current_level,
-    ):
-        missing.append("target_scenario")
+    if decision.teaching_type == "skill_practice":
+        if not decision.current_level.strip():
+            missing.append("current_level")
+        if not _resolved_target_scenario(
+            decision,
+            current_level=decision.current_level,
+        ):
+            missing.append("target_scenario")
     return missing
 
 
@@ -1778,7 +1841,11 @@ def _learning_clarification(
     missing_items: list[str],
 ) -> LearningClarificationStatus:
     teaching_type = decision.teaching_type
-    required_items = ["learning_content", "current_level", "target_scenario"]
+    required_items = (
+        ["learning_content"]
+        if teaching_type == "knowledge_point"
+        else ["learning_content", "current_level", "target_scenario"]
+    )
     progress = round(
         100 * (len(required_items) - len(missing_items)) / len(required_items)
     )
