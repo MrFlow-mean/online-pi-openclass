@@ -83,6 +83,16 @@ def current_user(request: Request) -> UserView:
     return auth_service.get_user_by_token(token)
 
 
+def optional_current_user(request: Request) -> UserView | None:
+    try:
+        token = bearer_token_from_request(request)
+        return auth_service.get_user_by_token(token)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise
+
+
 def current_websocket_user(websocket: WebSocket) -> UserView:
     token = bearer_token_from_websocket(websocket)
     return auth_service.get_user_by_token(token)

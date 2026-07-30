@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models import BoardDocument, CoursePackage, Lesson, WorkspaceState, new_id, now_iso
+from app.models import BoardDocument, CourseGraphEdge, CoursePackage, Lesson, WorkspaceState, new_id, now_iso
 from app.services.lesson_factory import build_teaching_guide, create_empty_lesson
 from app.services.workspace_state import get_standalone_package, normalize_package_state
 
@@ -52,6 +52,20 @@ def retain_public_lesson_as_personal_copy(
         return package, lesson
 
     package = get_standalone_package(workspace)
+    personal_lesson = _copy_public_lesson(
+        source_lesson,
+        source_commit_id=source_commit_id,
+    )
+    package.lessons.append(personal_lesson)
+    _activate_lesson(workspace, package, personal_lesson)
+    return package, personal_lesson
+
+
+def _copy_public_lesson(
+    source_lesson: Lesson,
+    *,
+    source_commit_id: str,
+) -> Lesson:
     personal_lesson = create_empty_lesson(source_lesson.title)
     personal_document = BoardDocument.model_validate(
         source_lesson.board_document.model_dump(mode="json")
@@ -83,30 +97,57 @@ def retain_public_lesson_as_personal_copy(
         }
     )
 
-    package.lessons.append(personal_lesson)
-    _activate_lesson(workspace, package, personal_lesson)
-    return package, personal_lesson
+    return personal_lesson
 
 
-def retain_public_lessons_as_personal_copies(
+def retain_public_package_as_personal_copy(
     workspace: WorkspaceState,
+    source_package: CoursePackage,
     source_lessons: list[tuple[Lesson, str]],
 ) -> tuple[CoursePackage, Lesson]:
     if not source_lessons:
         raise ValueError("At least one public lesson is required")
 
-    first_copy: tuple[CoursePackage, Lesson] | None = None
+    source_lesson_ids = [lesson.id for lesson, _commit_id in source_lessons]
+    for package in workspace.packages[1:]:
+        copies_by_source_id = {
+            str(commit.metadata[PUBLIC_SOURCE_LESSON_ID_KEY]): lesson
+            for lesson in package.lessons
+            for commit in lesson.history_graph.commits
+            if commit.metadata.get(PUBLIC_SOURCE_LESSON_ID_KEY) in source_lesson_ids
+        }
+        if all(source_id in copies_by_source_id for source_id in source_lesson_ids):
+            lesson = copies_by_source_id[source_lesson_ids[0]]
+            _activate_lesson(workspace, package, lesson)
+            return package, lesson
+
+    personal_package = CoursePackage(
+        title=source_package.title,
+        summary=source_package.summary,
+        visibility="private",
+        lessons=[],
+    )
+    source_to_personal_id: dict[str, str] = {}
     for source_lesson, source_commit_id in source_lessons:
-        personal_copy = retain_public_lesson_as_personal_copy(
-            workspace,
+        personal_lesson = _copy_public_lesson(
             source_lesson,
             source_commit_id=source_commit_id,
         )
-        if first_copy is None:
-            first_copy = personal_copy
+        personal_package.lessons.append(personal_lesson)
+        source_to_personal_id[source_lesson.id] = personal_lesson.id
 
-    if first_copy is None:
-        raise ValueError("At least one public lesson is required")
-    package, lesson = first_copy
-    _activate_lesson(workspace, package, lesson)
-    return package, lesson
+    personal_package.course_graph = [
+        CourseGraphEdge(
+            source_lesson_id=source_to_personal_id[edge.source_lesson_id],
+            target_lesson_id=source_to_personal_id[edge.target_lesson_id],
+            relationship=edge.relationship,
+        )
+        for edge in source_package.course_graph
+        if edge.source_lesson_id in source_to_personal_id
+        and edge.target_lesson_id in source_to_personal_id
+    ]
+
+    workspace.packages.append(personal_package)
+    first_lesson = personal_package.lessons[0]
+    _activate_lesson(workspace, personal_package, first_lesson)
+    return personal_package, first_lesson

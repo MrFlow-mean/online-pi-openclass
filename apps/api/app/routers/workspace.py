@@ -32,7 +32,7 @@ from app.models import (
     WorkspaceStateView,
     now_iso,
 )
-from app.routers.auth import current_user
+from app.routers.auth import current_user, optional_current_user
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson, create_untitled_lesson
 from app.services.lesson_package_format import (
@@ -46,7 +46,7 @@ from app.services.lesson_package_import import import_ridoc_archive, rollback_im
 from app.services.lesson_summary import lesson_content_summary
 from app.services.personal_lesson_copy import (
     retain_public_lesson_as_personal_copy,
-    retain_public_lessons_as_personal_copies,
+    retain_public_package_as_personal_copy,
 )
 from app.services.publication_review import (
     PublicationReviewProgressUpdate,
@@ -353,6 +353,19 @@ def search_public_courses(
     )
 
 
+@router.get("/api/public/courses", response_model=list[PublicCourseSearchResult])
+def list_public_courses(
+    sort: Literal["popular", "recent"] = Query(default="popular"),
+    limit: int = Query(default=50, ge=1, le=100),
+    user: UserView | None = Depends(optional_current_user),
+) -> list[PublicCourseSearchResult]:
+    return get_course_store().list_public_courses(
+        exclude_owner_user_id=user.id if user else None,
+        sort=sort,
+        limit=limit,
+    )
+
+
 @router.get("/api/courses/search", response_model=CourseSearchResponse)
 def search_courses(
     q: str = Query(min_length=1, max_length=200),
@@ -466,8 +479,9 @@ def fork_public_package_to_standalone(
         raise HTTPException(status_code=400, detail="Public package has no lessons")
 
     workspace, revision = load_workspace_for_user_with_revision(user.id)
-    package, personal_lesson = retain_public_lessons_as_personal_copies(
+    package, personal_lesson = retain_public_package_as_personal_copy(
         workspace,
+        source_package,
         [
             (lesson, current_head_commit(lesson).id)
             for lesson in source_package.lessons

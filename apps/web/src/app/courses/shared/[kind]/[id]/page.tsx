@@ -3,12 +3,21 @@
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ArrowLeft, BookOpen, GitFork, Globe2, LoaderCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  BookOpen,
+  Download,
+  GitFork,
+  GitPullRequest,
+  Globe2,
+  LoaderCircle,
+} from "lucide-react";
 
 import { BrandMark } from "@/components/brand-mark";
 import { CommunityMarkdown } from "@/components/community/community-markdown";
 import {
   forkPublicLesson,
+  forkPublicPackage,
   getPublicLesson,
   getPublicPackage,
   ProjectVisibilityRequestError,
@@ -49,7 +58,8 @@ function PublicLessonArticle({
       </div>
       <div className="mt-8 flex flex-col gap-4 border-t border-stone-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
         <p className="max-w-2xl text-sm leading-6 text-stone-500">
-          完成阅读后，可保留为你的单独课程。后续提问和修改只进入个人版本，并保留完整历史，可随时回滚。
+          下载后会成为你的私有可编辑课程。后续提问、修改和回滚只进入个人版本；完成改进后可从
+          Studio 提交 PR，交由原作者审阅、讨论和合并。
         </p>
         <button
           type="button"
@@ -58,7 +68,7 @@ function PublicLessonArticle({
           className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:opacity-60"
         >
           {isRetaining ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
-          {isRetaining ? "正在保留…" : "保留到单独课程并继续"}
+          {isRetaining ? "正在下载…" : "下载并进入编辑"}
         </button>
       </div>
     </article>
@@ -74,6 +84,7 @@ export default function SharedCoursePage() {
   const [error, setError] = useState<string | null>(null);
   const [retainError, setRetainError] = useState<string | null>(null);
   const [retainingLessonId, setRetainingLessonId] = useState<string | null>(null);
+  const [isRetainingPackage, setIsRetainingPackage] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -121,6 +132,26 @@ export default function SharedCoursePage() {
     }
   }
 
+  async function handleRetainPackage(coursePackage: PublicCoursePackage) {
+    setRetainError(null);
+    setIsRetainingPackage(true);
+    try {
+      const retained = await forkPublicPackage(coursePackage.id);
+      if (!retained.active_lesson_id) {
+        throw new Error("下载后的课程包中没有可编辑课程。");
+      }
+      router.push(`/studio?lesson=${encodeURIComponent(retained.active_lesson_id)}`);
+    } catch (retainFailure) {
+      if (retainFailure instanceof ProjectVisibilityRequestError && retainFailure.status === 401) {
+        const next = `${window.location.pathname}${window.location.search}`;
+        router.push(`/login?next=${encodeURIComponent(next)}`);
+        return;
+      }
+      setRetainError(retainFailure instanceof Error ? retainFailure.message : "暂时无法下载课程包");
+      setIsRetainingPackage(false);
+    }
+  }
+
   const title =
     project?.kind === "lesson"
       ? project.lesson.title
@@ -151,6 +182,40 @@ export default function SharedCoursePage() {
             {summary ? <p className="mt-3 max-w-3xl text-base leading-7 text-stone-600">{summary}</p> : null}
           </div>
         </section>
+
+        {project ? (
+          <section className="mb-8 rounded-[24px] border border-violet-200 bg-violet-50/70 p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white text-violet-700 shadow-sm">
+                  <GitPullRequest className="h-5 w-5" />
+                </span>
+                <div>
+                  <h2 className="font-semibold text-stone-950">像 GitHub 一样协作改进课程</h2>
+                  <p className="mt-1 max-w-2xl text-sm leading-6 text-stone-600">
+                    下载会创建你的私有项目副本并保留来源版本。你可以在 Studio 编辑、查看 commits、
+                    建立分支与回滚，再提交 PR；原作者可比较 revision、评论、要求修改或合并。
+                  </p>
+                </div>
+              </div>
+              {project.kind === "package" ? (
+                <button
+                  type="button"
+                  onClick={() => void handleRetainPackage(project.coursePackage)}
+                  disabled={isRetainingPackage}
+                  className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isRetainingPackage ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  {isRetainingPackage ? "正在下载…" : "下载整个课程包"}
+                </button>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
 
         {project?.kind === "lesson" && historyNodeId ? (
           <div className="mb-5 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">

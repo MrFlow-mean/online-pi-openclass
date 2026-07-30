@@ -2061,6 +2061,7 @@ class PublicCourseSearchResult(BaseModel):
     updated_at: str | None = None
     visibility: Literal["private", "public"] = "public"
     is_starred: bool = False
+    star_count: int = 0
 
 
 class PublicCourseStarState(BaseModel):

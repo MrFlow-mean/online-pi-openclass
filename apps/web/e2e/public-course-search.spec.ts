@@ -90,6 +90,7 @@ test("search mode hides the home chrome and groups owned and public course resul
             updated_at: "2026-07-28T02:00:00+00:00",
             visibility: "private",
             is_starred: false,
+            star_count: 0,
           },
         ],
         public_courses: [
@@ -105,6 +106,7 @@ test("search mode hides the home chrome and groups owned and public course resul
             updated_at: "2026-07-28T01:00:00+00:00",
             visibility: "public",
             is_starred: false,
+            star_count: 0,
           },
         ],
       }),
@@ -152,9 +154,11 @@ test("search mode hides the home chrome and groups owned and public course resul
   await expect(page.getByRole("button", { name: "我的私有课程" })).toBeVisible();
   await expect(page.getByText("私有", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "其他用户的公开课程" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "真实公开课程" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "真实公开课程", exact: true })).toBeVisible();
   expect(requestedQuery).toBe("真实内容");
   await expect(page.getByText("公开课作者")).toBeVisible();
+  await expect(page.getByRole("link", { name: "详情 真实公开课程" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载 真实公开课程" })).toBeVisible();
   await expect(page.getByText("筛选")).toHaveCount(0);
   await expect(page.getByText("排序方式")).toHaveCount(0);
   await page.getByRole("button", { name: "收藏 真实公开课程" }).click();
@@ -166,6 +170,6 @@ test("search mode hides the home chrome and groups owned and public course resul
 
   await search.click();
   await search.fill("真实内容");
-  await page.getByRole("button", { name: "下载 真实公开课程 并开学" }).click();
+  await page.getByRole("button", { name: "下载 真实公开课程" }).click();
   await expect.poll(() => downloadedLessonId).toBe("lesson_public_search");
 });

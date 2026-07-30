@@ -1,405 +1,164 @@
 "use client";
 
 import clsx from "clsx";
-import Image from "next/image";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import {
-  Activity,
-  ArrowLeft,
-  BookText,
-  Eye,
-  Heart,
-  MessageCircle,
-  MoreHorizontal,
-  Search,
-} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Activity, ArrowLeft, LoaderCircle, Search, UserRound } from "lucide-react";
 
 import { BrandMark } from "@/components/brand-mark";
+import { PublicCourseDiscoveryCard } from "@/components/public-course-discovery-card";
 import {
-  FOLLOWED_CREATORS,
-  FOLLOWED_UPDATE_KIND_LABELS,
-  buildFollowedCourseUpdateItems,
-  creatorAvatarUrl,
-  type FollowedCreator,
-  type FollowedCourseUpdate,
-  type FollowedCourseUpdateItem,
-} from "@/lib/following";
+  listPublicCourses,
+  type PublicCourseSearchResult,
+} from "@/lib/project-visibility";
 
 type CreatorFilter = "all" | string;
 
-function formatRelativeTime(value: string | Date | null | undefined) {
-  if (!value) {
-    return "刚刚";
+function matchesSearch(course: PublicCourseSearchResult, query: string) {
+  if (!query) {
+    return true;
   }
-
-  const date = value instanceof Date ? value : new Date(value);
-  const timestamp = date.getTime();
-
-  if (Number.isNaN(timestamp)) {
-    return "刚刚";
-  }
-
-  const minutes = Math.floor((Date.now() - timestamp) / 60000);
-  if (minutes <= 0) {
-    return "刚刚";
-  }
-  if (minutes < 60) {
-    return `${minutes} 分钟前`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours} 小时前`;
-  }
-
-  const days = Math.floor(hours / 24);
-  if (days < 7) {
-    return `${days} 天前`;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
-}
-
-function feedItemMatchesSearch(item: FollowedCourseUpdateItem, normalizedQuery: string) {
-  const { creator, update } = item;
-
-  return (
-    !normalizedQuery ||
-    [
-      creator.name,
-      creator.handle,
-      creator.field,
-      update.courseTitle,
-      update.moduleTitle,
-      update.summary,
-      update.tags.join(" "),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedQuery)
-  );
-}
-
-function formatCompactCount(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    maximumFractionDigits: 1,
-    notation: "compact",
-  }).format(value);
-}
-
-function updateTone(kind: FollowedCourseUpdate["updateKind"]) {
-  switch (kind) {
-    case "note_added":
-      return "bg-sky-500";
-    case "course_revision":
-      return "bg-rose-500";
-    case "new_lesson":
-    default:
-      return "bg-stone-950";
-  }
-}
-
-function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
-  switch (kind) {
-    case "note_added":
-      return "bg-sky-100 text-sky-700";
-    case "course_revision":
-      return "bg-rose-100 text-rose-700";
-    case "new_lesson":
-    default:
-      return "bg-stone-100 text-stone-700";
-  }
-}
-
-function updateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
-  switch (kind) {
-    case "note_added":
-      return "published notes in";
-    case "course_revision":
-      return "updated";
-    case "new_lesson":
-    default:
-      return "published";
-  }
-}
-
-function updatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) {
-  switch (kind) {
-    case "note_added":
-      return "Class Notes";
-    case "course_revision":
-      return "What's Changed";
-    case "new_lesson":
-    default:
-      return "Highlights";
-  }
+  return [
+    course.owner_display_name,
+    course.title,
+    course.summary,
+    course.tags.join(" "),
+  ]
+    .join(" ")
+    .toLowerCase()
+    .includes(query);
 }
 
 export function FollowingFeedContent() {
-  const [selectedCreatorId, setSelectedCreatorId] = useState<CreatorFilter>("all");
+  const [courses, setCourses] = useState<PublicCourseSearchResult[]>([]);
+  const [selectedCreator, setSelectedCreator] = useState<CreatorFilter>("all");
   const [query, setQuery] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void listPublicCourses("recent", 100, controller.signal)
+      .then(setCourses)
+      .catch((loadError: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(loadError instanceof Error ? loadError.message : "暂时无法载入课程动态。");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  const creators = useMemo(() => {
+    const counts = new Map<string, number>();
+    courses.forEach((course) => {
+      counts.set(course.owner_display_name, (counts.get(course.owner_display_name) ?? 0) + 1);
+    });
+    return Array.from(counts, ([name, count]) => ({ name, count })).sort(
+      (left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-CN"),
+    );
+  }, [courses]);
   const normalizedQuery = query.trim().toLowerCase();
-  const feedItems = useMemo(() => buildFollowedCourseUpdateItems(), []);
-  const updateCountByCreator = useMemo(() => {
-    return feedItems.reduce((counts, item) => {
-      counts.set(item.creator.id, (counts.get(item.creator.id) ?? 0) + 1);
-      return counts;
-    }, new Map<string, number>());
-  }, [feedItems]);
-  const selectedCreator =
-    selectedCreatorId === "all" ? null : FOLLOWED_CREATORS.find((creator) => creator.id === selectedCreatorId) ?? null;
-  const totalUnreadCount = FOLLOWED_CREATORS.reduce((total, creator) => total + creator.unreadCount, 0);
-  const visibleFeedItems = feedItems.filter((item) => {
-    const matchesCreator = selectedCreatorId === "all" || item.creator.id === selectedCreatorId;
-    return matchesCreator && feedItemMatchesSearch(item, normalizedQuery);
-  });
+  const visibleCourses = courses.filter(
+    (course) =>
+      (selectedCreator === "all" || course.owner_display_name === selectedCreator) &&
+      matchesSearch(course, normalizedQuery),
+  );
 
   return (
     <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[250px_minmax(0,1fr)] lg:items-start">
-      <FollowingCreatorRail
-        creators={FOLLOWED_CREATORS}
-        selectedCreatorId={selectedCreatorId}
-        totalUnreadCount={totalUnreadCount}
-        updateCountByCreator={updateCountByCreator}
-        onSelectCreator={setSelectedCreatorId}
-      />
-
-      <section className="min-w-0 rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">
-        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
-              <Activity className="h-5 w-5" />
-              {selectedCreator ? selectedCreator.name : "全部动态"}
-            </h1>
-            <p className="mt-1 text-sm text-stone-500">
-              {selectedCreator
-                ? `${selectedCreator.field} · ${formatCompactCount(selectedCreator.followers)} 粉丝`
-                : `${FOLLOWED_CREATORS.length} 位关注创作者的课程项目更新`}
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-3 md:flex-row md:items-center">
-            <div className="relative min-w-0 md:w-72">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
-              <input
-                type="text"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索创作者、课程或更新内容"
-                className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-stone-950"
-              />
-            </div>
-
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          {visibleFeedItems.length ? (
-            visibleFeedItems.map((item) => renderFeedCard(item))
-          ) : (
-            <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-8 text-sm text-stone-500">
-              没有找到匹配的他人项目更新。
-            </div>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-type FollowingCreatorRailProps = {
-  creators: FollowedCreator[];
-  selectedCreatorId: CreatorFilter;
-  totalUnreadCount: number;
-  updateCountByCreator: Map<string, number>;
-  onSelectCreator: (creatorId: CreatorFilter) => void;
-};
-
-function FollowingCreatorRail({
-  creators,
-  selectedCreatorId,
-  totalUnreadCount,
-  updateCountByCreator,
-  onSelectCreator,
-}: FollowingCreatorRailProps) {
-  const isAllActive = selectedCreatorId === "all";
-
-  return (
-    <aside className="min-w-0 overflow-hidden border-y border-stone-200 bg-[#eef0f3] sm:rounded-[24px] sm:border lg:sticky lg:top-[82px]">
-      <div className="flex gap-2 overflow-x-auto p-3 lg:max-h-[calc(100vh-7rem)] lg:flex-col lg:gap-1 lg:overflow-y-auto lg:p-2">
+      <aside className="min-w-0 rounded-2xl border border-stone-200 bg-[#eef0f3] p-2 lg:sticky lg:top-24">
         <button
           type="button"
-          aria-pressed={isAllActive}
-          onClick={() => onSelectCreator("all")}
+          onClick={() => setSelectedCreator("all")}
           className={clsx(
-            "flex min-w-[178px] shrink-0 items-center gap-3 rounded-[18px] px-3 py-3 text-left transition lg:min-w-0 lg:w-full",
-            isAllActive ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:bg-white/70 hover:text-stone-950"
+            "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition",
+            selectedCreator === "all" ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:bg-white/70",
           )}
         >
-          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#ff6699] text-white shadow-sm">
-            <Activity className="h-5 w-5" />
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#ff6699] text-white">
+            <Activity className="h-4 w-4" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">全部动态</span>
-            <span className="mt-0.5 block truncate text-xs text-stone-400">{creators.length} 位已关注</span>
+            <span className="block text-sm font-semibold">全部动态</span>
+            <span className="text-xs text-stone-400">{courses.length} 个真实项目</span>
           </span>
-          {totalUnreadCount ? (
-            <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#ff6699] px-1.5 text-[11px] font-semibold text-white">
-              {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
-            </span>
-          ) : null}
         </button>
-
-        {creators.map((creator) => {
-          const isActive = selectedCreatorId === creator.id;
-          const updateCount = updateCountByCreator.get(creator.id) ?? 0;
-
-          return (
+        <div className="mt-1 space-y-1">
+          {creators.map((creator) => (
             <button
-              key={creator.id}
+              key={creator.name}
               type="button"
-              aria-pressed={isActive}
-              onClick={() => onSelectCreator(creator.id)}
+              onClick={() => setSelectedCreator(creator.name)}
               className={clsx(
-                "flex min-w-[210px] shrink-0 items-center gap-3 rounded-[18px] px-3 py-3 text-left transition lg:min-w-0 lg:w-full",
-                isActive ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:bg-white/70 hover:text-stone-950"
+                "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition",
+                selectedCreator === creator.name
+                  ? "bg-white text-stone-950 shadow-sm"
+                  : "text-stone-600 hover:bg-white/70",
               )}
             >
-              <span className="relative h-12 w-12 shrink-0">
-                <Image
-                  src={creatorAvatarUrl(creator)}
-                  alt={`${creator.name} 头像`}
-                  className="h-12 w-12 rounded-full border border-white bg-stone-100 object-cover shadow-sm"
-                  width={48}
-                  height={48}
-                  unoptimized
-                />
-                {creator.unreadCount ? (
-                  <span
-                    className={clsx(
-                      "absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full bg-[#ff6699] ring-2",
-                      isActive ? "ring-white" : "ring-[#eef0f3]"
-                    )}
-                  />
-                ) : null}
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-stone-200 text-stone-600">
+                <UserRound className="h-4 w-4" />
               </span>
-
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold">{creator.name}</span>
-                <span className="mt-0.5 block truncate text-xs text-stone-400">{creator.field}</span>
-              </span>
-
-              <span
-                className={clsx(
-                  "flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-1.5 text-xs font-semibold",
-                  isActive ? "bg-stone-100 text-stone-600" : "bg-white/80 text-stone-400"
-                )}
-              >
-                {updateCount}
-              </span>
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold">{creator.name}</span>
+              <span className="text-xs text-stone-400">{creator.count}</span>
             </button>
-          );
-        })}
-      </div>
-    </aside>
-  );
-}
+          ))}
+        </div>
+      </aside>
 
-function renderFeedCard(item: FollowedCourseUpdateItem) {
-  const { creator, update } = item;
-
-  return (
-    <article
-      key={update.id}
-      className="rounded-lg border border-stone-300 bg-white p-4 shadow-sm"
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 gap-3">
-          <span className="relative h-10 w-10 shrink-0">
-            <Image
-              src={creatorAvatarUrl(creator)}
-              alt=""
-              className="h-10 w-10 rounded-full border border-stone-200 bg-stone-100"
-              width={40}
-              height={40}
-              unoptimized
+      <section className="min-w-0 rounded-2xl border border-stone-200 bg-white p-6 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+              <Activity className="h-5 w-5" />
+              {selectedCreator === "all" ? "课程动态" : selectedCreator}
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-stone-500">
+              按真实公开课程的最近更新时间排列；下载后可在个人项目中编辑、保留历史并提交 PR 协作。
+            </p>
+          </div>
+          <div className="relative min-w-0 md:w-80">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索作者、课程或主题"
+              className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-4 text-sm outline-none focus:border-stone-950"
             />
-            <span
-              className={clsx(
-                "absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full text-white ring-2 ring-white",
-                updateTone(update.updateKind)
-              )}
-            >
-              <BookText className="h-3 w-3" />
-            </span>
-          </span>
-
-          <div className="min-w-0">
-            <p className="text-sm text-stone-600">
-              <span className="font-semibold text-stone-950">{creator.name}</span>{" "}
-              {updateActionLabel(update.updateKind)}{" "}
-              <span className="font-semibold text-stone-950">{update.courseTitle}</span>
-            </p>
-            <p className="mt-1 text-xs text-stone-400">
-              @{creator.handle} · {creator.field} · {formatRelativeTime(update.updatedAt)}
-            </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-          aria-label="更多项目操作"
-          title="更多项目操作"
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </button>
-      </div>
-
-      <h2 className="mt-4 text-lg font-semibold text-stone-950">{update.moduleTitle}</h2>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <span
-          className={clsx("rounded-full px-2.5 py-1 text-[10px] font-semibold", updateLabelTone(update.updateKind))}
-        >
-          {FOLLOWED_UPDATE_KIND_LABELS[update.updateKind]}
-        </span>
-        <span className="text-xs text-stone-400">{update.lessonCount} 课 · {update.views.toLocaleString("zh-CN")} views</span>
-      </div>
-
-      <div className="mt-4 rounded-md bg-[#f6f8fa] p-4">
-        <div className="border-b border-stone-200 pb-3">
-          <p className="text-base font-semibold text-stone-950">{updatePreviewHeading(update.updateKind)}</p>
-        </div>
-        <p className="mt-3 text-sm leading-7 text-stone-600">{update.summary}</p>
-        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-stone-600">
-          {update.tags.map((tag) => (
-            <li key={`${update.id}:tag:${tag}`}>{tag}</li>
-          ))}
-        </ul>
-        <Link href="/" className="mt-4 inline-flex text-xs font-semibold text-stone-800 underline underline-offset-2">
-          Read more
-        </Link>
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500">
-        <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
-          <Eye className="h-3.5 w-3.5" />
-          {update.views.toLocaleString("zh-CN")}
-        </span>
-        <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
-          <MessageCircle className="h-3.5 w-3.5" />
-          {update.comments.toLocaleString("zh-CN")}
-        </span>
-        <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
-          <Heart className="h-3.5 w-3.5" />
-          {update.likes.toLocaleString("zh-CN")}
-        </span>
-      </div>
-    </article>
+        {isLoading ? (
+          <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-stone-200 py-16 text-sm text-stone-500">
+            <LoaderCircle className="h-5 w-5 animate-spin" />
+            正在载入真实课程动态…
+          </div>
+        ) : error ? (
+          <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
+            {error}
+          </div>
+        ) : visibleCourses.length ? (
+          <div className="mt-6 space-y-4">
+            {visibleCourses.map((course) => (
+              <PublicCourseDiscoveryCard
+                key={`${course.kind}:${course.id}`}
+                course={course}
+                badge="最近更新"
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="mt-6 rounded-xl border border-dashed border-stone-300 px-5 py-12 text-center text-sm text-stone-500">
+            没有找到匹配的公开课程动态。
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -410,22 +169,20 @@ export function FollowingFeed() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <Link
             href="/"
-            className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
+            className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100"
           >
             <ArrowLeft className="h-4 w-4" />
             开放课堂
           </Link>
-
           <Link
             href="/"
-            className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+            className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700"
           >
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
             开放课堂
           </Link>
         </div>
       </header>
-
       <div className="px-4 py-6 sm:px-6">
         <FollowingFeedContent />
       </div>

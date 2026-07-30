@@ -45,6 +45,7 @@ export interface PublicCourseSearchResult {
   updated_at?: string | null;
   visibility: ProjectVisibility;
   is_starred: boolean;
+  star_count: number;
 }
 
 export interface CourseSearchResponse {
@@ -208,6 +209,21 @@ export function searchCourses(query: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ q: query });
   return visibilityRequest<CourseSearchResponse>(
     `/api/courses/search?${params.toString()}`,
+    { signal },
+  );
+}
+
+export function listPublicCourses(
+  sort: "popular" | "recent",
+  limit = 50,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    sort,
+    limit: String(limit),
+  });
+  return visibilityRequest<PublicCourseSearchResult[]>(
+    `/api/public/courses?${params.toString()}`,
     { signal },
   );
 }

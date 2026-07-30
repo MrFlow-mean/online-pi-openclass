@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import {
   ArrowUpRight,
   BookOpen,
-  Download,
   FolderClosed,
   Globe2,
   GraduationCap,
@@ -16,6 +15,7 @@ import {
   UserRound,
 } from "lucide-react";
 
+import { PublicCourseActions } from "@/components/public-course-actions";
 import {
   publicProjectHref,
   searchCourses,
@@ -414,10 +414,36 @@ function CourseResultCard({
             <p className="mt-0.5">{kindLabel}</p>
           </div>
         </div>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[11px] font-semibold text-stone-600">
-          <VisibilityIcon className="h-3 w-3" />
-          {visibilityLabel}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[11px] font-semibold text-stone-600">
+            <VisibilityIcon className="h-3 w-3" />
+            {visibilityLabel}
+          </span>
+          {scope === "public" ? (
+            <button
+              type="button"
+              onClick={() => void onTogglePublicCourseStar(course)}
+              disabled={isOpening || isStarring}
+              aria-label={
+                language === "en"
+                  ? `${course.is_starred ? "Unstar" : "Star"} ${course.title}`
+                  : `${course.is_starred ? "取消收藏" : "收藏"} ${course.title}`
+              }
+              aria-pressed={course.is_starred}
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition disabled:cursor-wait disabled:opacity-60 ${
+                course.is_starred
+                  ? "border-amber-200 bg-amber-50 text-amber-700"
+                  : "border-stone-200 bg-white text-stone-500 hover:text-stone-950"
+              }`}
+            >
+              {isStarring ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Star className={`h-3.5 w-3.5 ${course.is_starred ? "fill-current" : ""}`} />
+              )}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="mt-4">
@@ -469,51 +495,12 @@ function CourseResultCard({
             {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
           </button>
         ) : (
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void onTogglePublicCourseStar(course)}
-              disabled={isOpening || isStarring}
-              aria-label={
-                language === "en"
-                  ? `${course.is_starred ? "Unstar" : "Star"} ${course.title}`
-                  : `${course.is_starred ? "取消收藏" : "收藏"} ${course.title}`
-              }
-              aria-pressed={course.is_starred}
-              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-xs font-semibold transition disabled:cursor-wait disabled:opacity-60 ${
-                course.is_starred
-                  ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300"
-                  : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-950"
-              }`}
-            >
-              {isStarring ? (
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Star className={`h-3.5 w-3.5 ${course.is_starred ? "fill-current" : ""}`} />
-              )}
-              {language === "en" ? (course.is_starred ? "Starred" : "Star") : course.is_starred ? "已收藏" : "收藏"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void onDownloadPublicCourse(course)}
-              disabled={isOpening || isStarring}
-              aria-label={
-                language === "en"
-                  ? `Download ${course.title} and start learning`
-                  : `下载 ${course.title} 并开学`
-              }
-              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-wait disabled:opacity-60"
-            >
-              {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              {isOpening
-                ? language === "en"
-                  ? "Downloading…"
-                  : "正在下载…"
-                : language === "en"
-                  ? "Download & start"
-                  : "下载并开学"}
-            </button>
-          </div>
+          <PublicCourseActions
+            course={course}
+            language={language}
+            disabled={isOpening || isStarring}
+            onDownload={() => onDownloadPublicCourse(course)}
+          />
         )}
       </div>
     </article>

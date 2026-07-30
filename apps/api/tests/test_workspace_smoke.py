@@ -94,6 +94,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     workspace_state.ensure_data_dirs()
 
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER
+    main_module.app.dependency_overrides[auth_router.optional_current_user] = lambda: TEST_USER
     try:
         yield TestClient(main_module.app)
     finally:
@@ -965,6 +966,7 @@ def test_public_course_stars_are_private_persistent_and_searchable(
         created_at="2026-01-04T00:00:00+00:00",
     )
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: viewer
+    main_module.app.dependency_overrides[auth_router.optional_current_user] = lambda: viewer
 
     initial_search = api_client.get(
         "/api/courses/search",
@@ -998,6 +1000,57 @@ def test_public_course_stars_are_private_persistent_and_searchable(
     assert unstarred.status_code == 200
     assert unstarred.json()["is_starred"] is False
     assert api_client.get("/api/public/courses/stars").json() == []
+
+
+def test_public_course_discovery_lists_real_projects_by_popularity_and_recency(
+    api_client: TestClient,
+) -> None:
+    first = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "First public discovery course", "start_blank": True},
+    ).json()["lessons"][0]
+    assert api_client.post(
+        f"/api/lessons/{first['id']}/visibility",
+        json={"visibility": "public"},
+    ).status_code == 200
+
+    second = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Second public discovery course", "start_blank": True},
+    ).json()["lessons"][-1]
+    assert api_client.post(
+        f"/api/lessons/{second['id']}/visibility",
+        json={"visibility": "public"},
+    ).status_code == 200
+
+    viewer = UserView(
+        id="user_discovery_viewer",
+        email="discovery-viewer@example.com",
+        role="user",
+        created_at="2026-01-05T00:00:00+00:00",
+    )
+    main_module.app.dependency_overrides[auth_router.current_user] = lambda: viewer
+    main_module.app.dependency_overrides[auth_router.optional_current_user] = lambda: viewer
+    assert api_client.put(
+        f"/api/public/courses/lesson/{first['id']}/star"
+    ).status_code == 200
+
+    popular = api_client.get("/api/public/courses", params={"sort": "popular"})
+    assert popular.status_code == 200
+    assert [item["id"] for item in popular.json()[:2]] == [first["id"], second["id"]]
+    assert popular.json()[0]["star_count"] == 1
+    assert popular.json()[0]["is_starred"] is True
+
+    main_module.app.dependency_overrides[auth_router.optional_current_user] = lambda: None
+    anonymous = api_client.get("/api/public/courses", params={"sort": "popular"})
+    assert anonymous.status_code == 200
+    assert [item["id"] for item in anonymous.json()[:2]] == [first["id"], second["id"]]
+    assert anonymous.json()[0]["is_starred"] is False
+
+    main_module.app.dependency_overrides[auth_router.optional_current_user] = lambda: viewer
+    recent = api_client.get("/api/public/courses", params={"sort": "recent"})
+    assert recent.status_code == 200
+    assert [item["id"] for item in recent.json()[:2]] == [second["id"], first["id"]]
 
 
 def test_standalone_lesson_publication_stream_reports_real_review_stage(
@@ -1137,7 +1190,7 @@ def test_public_lesson_fork_is_personal_idempotent_and_restorable(
     assert persisted_source["board_document"]["content_text"] == "Public source version"
 
 
-def test_public_package_downloads_all_lessons_into_viewer_standalone_courses(
+def test_public_package_downloads_all_lessons_into_viewer_course_package(
     api_client: TestClient,
 ) -> None:
     created_package = api_client.post(
@@ -1174,24 +1227,32 @@ def test_public_package_downloads_all_lessons_into_viewer_standalone_courses(
     )
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: viewer
 
+    existing_lesson_copy = api_client.post(
+        f"/api/public/lessons/{source_lessons[0]['id']}/fork"
+    )
+    assert existing_lesson_copy.status_code == 200
+    assert existing_lesson_copy.json()["is_standalone"] is True
+
     downloaded = api_client.post(f"/api/public/packages/{package_id}/fork")
     assert downloaded.status_code == 200
-    standalone_package = downloaded.json()
-    assert standalone_package["is_standalone"] is True
-    assert [lesson["title"] for lesson in standalone_package["lessons"]] == [
+    personal_package = downloaded.json()
+    assert personal_package["is_standalone"] is False
+    assert personal_package["title"] == "Downloadable package"
+    assert personal_package["visibility"] == "private"
+    assert [lesson["title"] for lesson in personal_package["lessons"]] == [
         "First downloadable lesson",
         "Second downloadable lesson",
     ]
-    assert all(lesson["visibility"] == "private" for lesson in standalone_package["lessons"])
+    assert all(lesson["visibility"] == "private" for lesson in personal_package["lessons"])
     active_lesson = next(
         lesson
-        for lesson in standalone_package["lessons"]
-        if lesson["id"] == standalone_package["active_lesson_id"]
+        for lesson in personal_package["lessons"]
+        if lesson["id"] == personal_package["active_lesson_id"]
     )
     assert active_lesson["title"] == "First downloadable lesson"
     assert {
         lesson["history_graph"]["commits"][0]["metadata"]["forked_from_public_lesson_id"]
-        for lesson in standalone_package["lessons"]
+        for lesson in personal_package["lessons"]
     } == {lesson["id"] for lesson in source_lessons}
 
     repeated_download = api_client.post(f"/api/public/packages/{package_id}/fork")

@@ -78,6 +78,7 @@ def _course_search_result(row: sqlite3.Row) -> PublicCourseSearchResult:
         lesson_count=int(row["lesson_count"]),
         updated_at=row["updated_at"],
         visibility=row["visibility"],
+        star_count=int(row["star_count"]) if "star_count" in row.keys() else 0,
     )
 
 
@@ -232,7 +233,13 @@ class SqliteCourseStore:
                         COUNT(lessons.id) AS lesson_count,
                         MAX(lessons.updated_at) AS updated_at,
                         GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
-                        course_packages.visibility
+                        course_packages.visibility,
+                        (
+                            SELECT COUNT(*)
+                            FROM public_course_stars
+                            WHERE course_kind = 'package'
+                              AND course_id = course_packages.id
+                        ) AS star_count
                     FROM course_packages
                     {user_join}
                     LEFT JOIN lessons ON lessons.package_id = course_packages.id
@@ -268,7 +275,13 @@ class SqliteCourseStore:
                         1 AS lesson_count,
                         lessons.updated_at,
                         lessons.tags_json AS tags_group,
-                        lessons.visibility
+                        lessons.visibility,
+                        (
+                            SELECT COUNT(*)
+                            FROM public_course_stars
+                            WHERE course_kind = 'lesson'
+                              AND course_id = lessons.id
+                        ) AS star_count
                     FROM lessons
                     JOIN course_packages ON course_packages.id = lessons.package_id
                     {user_join}
@@ -306,6 +319,142 @@ class SqliteCourseStore:
                 ]
                 results.sort(key=lambda item: item.updated_at or "", reverse=True)
                 return results[:limit]
+
+    def list_public_courses(
+        self,
+        *,
+        exclude_owner_user_id: str | None,
+        sort: str,
+        limit: int = 50,
+    ) -> list[PublicCourseSearchResult]:
+        if sort not in {"popular", "recent"}:
+            raise ValueError("Unsupported public course sort")
+
+        with self._lock:
+            with self._connect() as conn:
+                user_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(users)").fetchall()
+                }
+                has_user_profiles = {"id", "display_name", "avatar_url"}.issubset(user_columns)
+                user_join = (
+                    "LEFT JOIN users ON users.id = course_packages.owner_user_id"
+                    if has_user_profiles
+                    else ""
+                )
+                owner_name = (
+                    "COALESCE(NULLIF(users.display_name, ''), 'OpenClass 用户')"
+                    if has_user_profiles
+                    else "'OpenClass 用户'"
+                )
+                owner_avatar = "users.avatar_url" if has_user_profiles else "NULL"
+                order_clause = (
+                    "star_count DESC, updated_at DESC, title COLLATE NOCASE"
+                    if sort == "popular"
+                    else "updated_at DESC, star_count DESC, title COLLATE NOCASE"
+                )
+                rows = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM (
+                        SELECT
+                            course_packages.id,
+                            'package' AS kind,
+                            {owner_name} AS owner_display_name,
+                            {owner_avatar} AS owner_avatar_url,
+                            course_packages.title,
+                            course_packages.summary,
+                            COUNT(lessons.id) AS lesson_count,
+                            COALESCE(MAX(lessons.updated_at), '') AS updated_at,
+                            GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
+                            course_packages.visibility,
+                            (
+                                SELECT COUNT(*)
+                                FROM public_course_stars
+                                WHERE course_kind = 'package'
+                                  AND course_id = course_packages.id
+                            ) AS star_count
+                        FROM course_packages
+                        {user_join}
+                        LEFT JOIN lessons ON lessons.package_id = course_packages.id
+                        WHERE course_packages.visibility = 'public'
+                          AND course_packages.sort_order > 0
+                          AND (
+                              ? IS NULL
+                              OR course_packages.owner_user_id IS NULL
+                              OR course_packages.owner_user_id != ?
+                          )
+                        GROUP BY
+                            course_packages.id,
+                            owner_display_name,
+                            owner_avatar_url,
+                            course_packages.title,
+                            course_packages.summary
+
+                        UNION ALL
+
+                        SELECT
+                            lessons.id,
+                            'lesson' AS kind,
+                            {owner_name} AS owner_display_name,
+                            {owner_avatar} AS owner_avatar_url,
+                            lessons.title,
+                            lessons.summary,
+                            1 AS lesson_count,
+                            lessons.updated_at,
+                            lessons.tags_json AS tags_group,
+                            lessons.visibility,
+                            (
+                                SELECT COUNT(*)
+                                FROM public_course_stars
+                                WHERE course_kind = 'lesson'
+                                  AND course_id = lessons.id
+                            ) AS star_count
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        {user_join}
+                        WHERE course_packages.sort_order = 0
+                          AND lessons.visibility = 'public'
+                          AND (
+                              ? IS NULL
+                              OR course_packages.owner_user_id IS NULL
+                              OR course_packages.owner_user_id != ?
+                          )
+                    )
+                    ORDER BY {order_clause}
+                    LIMIT ?
+                    """,
+                    (
+                        exclude_owner_user_id,
+                        exclude_owner_user_id,
+                        exclude_owner_user_id,
+                        exclude_owner_user_id,
+                        limit,
+                    ),
+                ).fetchall()
+                starred_keys = (
+                    {
+                        (row["course_kind"], row["course_id"])
+                        for row in conn.execute(
+                            """
+                            SELECT course_kind, course_id
+                            FROM public_course_stars
+                            WHERE owner_user_id = ?
+                            """,
+                            (exclude_owner_user_id,),
+                        ).fetchall()
+                    }
+                    if exclude_owner_user_id
+                    else set()
+                )
+                return [
+                    _course_search_result(row).model_copy(
+                        update={
+                            "is_starred": (row["kind"], row["id"]) in starred_keys,
+                        }
+                    )
+                    for row in rows
+                ]
 
     def set_public_course_star(
         self,
@@ -540,7 +689,8 @@ class SqliteCourseStore:
                         COUNT(lessons.id) AS lesson_count,
                         MAX(lessons.updated_at) AS updated_at,
                         GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
-                        course_packages.visibility
+                        course_packages.visibility,
+                        0 AS star_count
                     FROM course_packages
                     {user_join}
                     LEFT JOIN lessons ON lessons.package_id = course_packages.id
@@ -573,7 +723,8 @@ class SqliteCourseStore:
                         1 AS lesson_count,
                         lessons.updated_at,
                         lessons.tags_json AS tags_group,
-                        lessons.visibility
+                        lessons.visibility,
+                        0 AS star_count
                     FROM lessons
                     JOIN course_packages ON course_packages.id = lessons.package_id
                     {user_join}
