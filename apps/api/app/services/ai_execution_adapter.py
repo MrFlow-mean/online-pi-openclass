@@ -6,7 +6,13 @@ from typing import Any, Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from app.models import AgentActivityEvent, AIModelSelection, LearningRequirementSheet, new_id
+from app.models import (
+    AgentActivityEvent,
+    AIModelSelection,
+    BoardContentExtent,
+    LearningRequirementSheet,
+    new_id,
+)
 from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.deepseek_api import DeepSeekTextClient
 from app.services.pi_agent_runtime import PiTextClient
@@ -31,6 +37,7 @@ class TextExecutionResult:
 class BoardGenerationExecutionRequest:
     requirement: LearningRequirementSheet
     teaching_plan: str
+    content_extent: BoardContentExtent = "article"
     image_inputs: list[str] = field(default_factory=list)
     visual_manifest: list[dict[str, Any]] = field(default_factory=list)
 
@@ -99,6 +106,7 @@ BoardRunner = Callable[
         str,
         LearningRequirementSheet,
         str,
+        BoardContentExtent,
         list[str],
         list[dict[str, Any]],
         Callable[[], bool] | None,
@@ -180,6 +188,7 @@ class CodexAIExecutionAdapter:
             self.model,
             request.requirement,
             request.teaching_plan,
+            request.content_extent,
             request.image_inputs,
             request.visual_manifest,
             is_cancelled,
@@ -234,7 +243,8 @@ class StructuredBoardGenerationResult:
 
 STRUCTURED_BOARD_GENERATION_INSTRUCTIONS = """
 You are the board-writing capability inside OpenClass. Generate a self-contained learning board
-from only the supplied frozen learning requirement, teaching plan, and verified source evidence.
+from only the supplied frozen learning requirement, teaching plan, requested content extent, and
+verified source evidence. Treat `content_extent` as an authoritative output-scale constraint.
 Return the complete board as Markdown in `content_text` and a brief learner-facing completion in
 `chatbot_message`. Do not ask questions and do not use HTML. Use fenced code blocks only for real
 code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
@@ -249,8 +259,9 @@ introduces it. Never write both markers for one item and never invent missing vi
 
 PI_BOARD_GENERATION_INSTRUCTIONS = """
 You are the board-writing capability inside OpenClass. Generate one complete, self-contained
-learning board from only the supplied frozen learning requirement, teaching plan, and verified
-source evidence. Return only the board Markdown. Do not wrap the document in a JSON object, do not
+learning board from only the supplied frozen learning requirement, teaching plan, requested content
+extent, and verified source evidence. Treat `content_extent` as an authoritative output-scale
+constraint. Return only the board Markdown. Do not wrap the document in a JSON object, do not
 add a learner-facing completion message, and do not use HTML. Use fenced code blocks only for real
 code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
 heading hierarchy and keep sibling sections at the same level.
@@ -311,6 +322,7 @@ class DeepSeekAIExecutionAdapter:
                     {
                         "learning_requirement": request.requirement.model_dump(mode="json"),
                         "teaching_plan": request.teaching_plan,
+                        "content_extent": request.content_extent,
                         "visual_manifest": request.visual_manifest,
                     },
                     ensure_ascii=False,
@@ -517,6 +529,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
                     {
                         "learning_requirement": request.requirement.model_dump(mode="json"),
                         "teaching_plan": request.teaching_plan,
+                        "content_extent": request.content_extent,
                         "visual_manifest": request.visual_manifest,
                     },
                     ensure_ascii=False,

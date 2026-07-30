@@ -1498,6 +1498,7 @@ def test_board_handoff_replaces_nonempty_writer_reply_after_document_commit(
             return SimpleNamespace(output_parsed=parsed, activity=[])
 
         def generate_board(self, _request, **_kwargs):
+            assert _request.content_extent == "article"
             return (
                 ai_execution_adapter.StructuredBoardGenerationResult(
                     thread_id="piturn_board",
@@ -1546,6 +1547,71 @@ def test_board_handoff_replaces_nonempty_writer_reply_after_document_commit(
     assert handoff_commit.metadata["user_message"] == ""
     assert handoff_commit.metadata["document_changed"] is False
     assert handoff_commit.parent_ids == [board_commit.id]
+
+
+def test_blank_board_generation_payload_carries_article_extent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = ai_execution_adapter.BoardGenerationExecutionRequest(
+        requirement=build_requirements("A provider-neutral learning topic"),
+        teaching_plan="Build a complete learning board.",
+    )
+    assert request.content_extent == "article"
+
+    observed: dict[str, str] = {}
+
+    def codex_runner(*args):
+        observed["codex"] = args[4]
+        return (
+            SimpleNamespace(
+                thread_id="codex_thread",
+                turn_id="codex_turn",
+                final_response="",
+                activity=[],
+            ),
+            "# Codex board",
+        )
+
+    codex_adapter = ai_execution_adapter.CodexAIExecutionAdapter(
+        owner_user_id=TEST_USER_ID,
+        model="gpt-test",
+        board_runner=codex_runner,
+    )
+    codex_adapter.generate_board(request, is_cancelled=None, on_activity=None)
+
+    deepseek_adapter = object.__new__(ai_execution_adapter.DeepSeekAIExecutionAdapter)
+    deepseek_adapter.model = "deepseek-test"
+
+    def parse_deepseek_payload(**kwargs):
+        payload = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+        observed["deepseek"] = payload["content_extent"]
+        return ai_execution_adapter.StructuredExecutionResult(
+            output_parsed={
+                "content_text": "# DeepSeek board",
+                "chatbot_message": "",
+            }
+        )
+
+    monkeypatch.setattr(deepseek_adapter, "parse_structured", parse_deepseek_payload)
+    deepseek_adapter.generate_board(request, is_cancelled=None, on_activity=None)
+
+    pi_adapter = object.__new__(ai_execution_adapter.PiAIExecutionAdapter)
+    pi_adapter.provider = "openai_codex"
+    pi_adapter.model = "pi-test"
+
+    def complete_pi_payload(**kwargs):
+        payload = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+        observed["pi"] = payload["content_extent"]
+        return ai_execution_adapter.TextExecutionResult(output_text="# Pi board")
+
+    monkeypatch.setattr(pi_adapter, "complete_text", complete_pi_payload)
+    pi_adapter.generate_board(request, is_cancelled=None, on_activity=None)
+
+    assert observed == {
+        "codex": "article",
+        "deepseek": "article",
+        "pi": "article",
+    }
 
 
 def test_source_chapter_selection_generates_blank_board_without_requirement_questions(

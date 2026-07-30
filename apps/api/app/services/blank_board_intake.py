@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.models import (
     AgentActivityEvent,
+    BoardContentExtent,
     BoardDecision,
     ChatRequest,
     ChatResponse,
@@ -316,6 +317,7 @@ BoardGenerationRunner = Callable[
         str,
         LearningRequirementSheet,
         str,
+        BoardContentExtent,
         Callable[[], bool] | None,
         Callable[[AgentActivityEvent], None] | None,
     ],
@@ -870,6 +872,7 @@ def process_blank_board_turn(
             model,
             outcome.requirement,
             outcome.teaching_plan,
+            "article",
             is_cancelled,
             record_activity,
         )

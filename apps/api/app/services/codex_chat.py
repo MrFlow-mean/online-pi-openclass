@@ -17,6 +17,7 @@ from typing import Any, Callable
 from app.models import (
     AgentActivityEvent,
     AIModelSelection,
+    BoardContentExtent,
     BoardDecision,
     BoardDocument,
     ChatRequest,
@@ -26,7 +27,6 @@ from app.models import (
     LearningRequirementSheet,
     RetrievalEvidence,
     SelectionRef,
-    SourceCitation,
     SourceQueryRef,
     SourceQueryScope,
     SourceVisualAsset,
@@ -64,7 +64,6 @@ from app.services.chat.prompts.existing_board import (
     StructuredExistingBoardTurn as _StructuredExistingBoardTurn,
 )
 from app.services.chat.prompts.source_qa import (
-    MAX_SOURCE_BATCH_SUMMARY_CHARS,
     SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
     SOURCE_QA_INSTRUCTIONS,
     SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS,
@@ -78,10 +77,7 @@ from app.services.chat.response_factory import (
 from app.services.chat.turn_context import (
     BoardState,
     board_state as _board_state,
-    board_state_context as _board_state_context,
     conversation_context as _conversation_context,
-    selection_context as _selection_context,
-    selection_contexts as _selection_contexts,
     turn_prompt as _turn_prompt,
 )
 from app.services.codex_app_server import (
@@ -588,6 +584,7 @@ def _run_frozen_board_generation(
     model: str,
     requirement: LearningRequirementSheet,
     teaching_plan: str,
+    content_extent: BoardContentExtent,
     image_inputs: list[str] | None = None,
     visual_manifest: list[dict[str, Any]] | None = None,
     is_cancelled: Callable[[], bool] | None,
@@ -618,6 +615,7 @@ def _run_frozen_board_generation(
         payload = {
             "learning_requirement": requirement.model_dump(mode="json"),
             "teaching_plan": teaching_plan,
+            "content_extent": content_extent,
             "visual_manifest": visual_manifest or [],
         }
         try:
@@ -1204,6 +1202,7 @@ def _generate_blank_board(
     model: str,
     requirement: LearningRequirementSheet,
     teaching_plan: str,
+    content_extent: BoardContentExtent,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> tuple[CodexBoardGenerationResult, str]:
@@ -1218,6 +1217,7 @@ def _generate_blank_board(
         user_id=user_id,
         requirement=requirement,
         teaching_plan=teaching_plan,
+        content_extent=content_extent,
         include_raster_images=True,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
@@ -1230,6 +1230,7 @@ def _generate_blank_board_with_adapter(
     user_id: str,
     requirement: LearningRequirementSheet,
     teaching_plan: str,
+    content_extent: BoardContentExtent,
     include_raster_images: bool,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
@@ -1266,6 +1267,7 @@ def _generate_blank_board_with_adapter(
         BoardGenerationExecutionRequest(
             requirement=prepared_requirement,
             teaching_plan=teaching_plan,
+            content_extent=content_extent,
             image_inputs=image_inputs,
             visual_manifest=visual_manifest,
         ),
@@ -1306,6 +1308,7 @@ def _run_codex_board_generation(
     model: str,
     requirement: LearningRequirementSheet,
     teaching_plan: str,
+    content_extent: BoardContentExtent,
     image_inputs: list[str],
     visual_manifest: list[dict[str, Any]],
     is_cancelled: Callable[[], bool] | None,
@@ -1316,6 +1319,7 @@ def _run_codex_board_generation(
         model=model,
         requirement=requirement,
         teaching_plan=teaching_plan,
+        content_extent=content_extent,
         image_inputs=image_inputs,
         visual_manifest=visual_manifest,
         is_cancelled=is_cancelled,
@@ -1873,6 +1877,7 @@ def process_codex_chat_on_lesson(
                 _selected_model,
                 requirement,
                 teaching_plan,
+                content_extent,
                 selected_is_cancelled,
                 selected_on_activity,
             ):
@@ -1881,6 +1886,7 @@ def process_codex_chat_on_lesson(
                     user_id=selected_user_id,
                     requirement=requirement,
                     teaching_plan=teaching_plan,
+                    content_extent=content_extent,
                     include_raster_images=False,
                     is_cancelled=selected_is_cancelled,
                     on_activity=selected_on_activity,
