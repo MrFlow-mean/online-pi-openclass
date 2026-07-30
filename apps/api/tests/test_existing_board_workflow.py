@@ -6,9 +6,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import AIModelSelection, BoardExplanationDirective, ChatRequest
+from app.models import (
+    AIModelSelection,
+    BoardExplanationDirective,
+    ChatRequest,
+    SelectionRef,
+)
 from app.services import workspace_state
+from app.services.board_segment_index import build_board_segment_index
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.existing_board.mutation_planner import MutationPlannerModelDraft
 from app.services.existing_board.task_manager import BoardTaskManagerDraft
 from app.services.existing_board.workflow import (
     ExistingBoardWorkflowError,
@@ -49,15 +56,37 @@ def _draft(**updates: object) -> BoardTaskManagerDraft:
     return BoardTaskManagerDraft.model_validate(payload)
 
 
+def _mutation_draft(**updates: object) -> MutationPlannerModelDraft:
+    payload: dict[str, object] = {
+        "operations": [
+            {
+                "operation_id": "edit_target",
+                "action": "edit",
+                "binding": {"kind": "target_range", "position": "replace"},
+                "content_markdown": "Rewritten paragraph.",
+            }
+        ],
+        "extent": "paragraph",
+        "destination": "current_lesson",
+        "topic_relation": "current_document",
+        "requires_confirmation": False,
+        "reason": "The bounded edit is ready.",
+    }
+    payload.update(updates)
+    return MutationPlannerModelDraft.model_validate(payload)
+
+
 class RecordingAdapter:
     def __init__(
         self,
         draft: BoardTaskManagerDraft,
         *,
         directive_status: str = "approved",
+        mutation_draft: MutationPlannerModelDraft | None = None,
     ) -> None:
         self.draft = draft
         self.directive_status = directive_status
+        self.mutation_draft = mutation_draft
         self.parse_calls: list[dict[str, object]] = []
         self.text_calls: list[dict[str, object]] = []
 
@@ -65,6 +94,10 @@ class RecordingAdapter:
         self.parse_calls.append(kwargs)
         if kwargs["schema"] is BoardTaskManagerDraft:
             parsed = self.draft
+        elif kwargs["schema"] is MutationPlannerModelDraft:
+            if self.mutation_draft is None:
+                raise AssertionError("A mutation draft was not configured")
+            parsed = self.mutation_draft
         elif kwargs["schema"] is BoardExplanationDirective:
             payload = json.loads(str(kwargs["user_prompt"]))
             excerpt = payload["resolved_target"]["excerpt"]
@@ -95,10 +128,30 @@ class RecordingAdapter:
             "task_clarification": "model generated one clarification question",
             "future_action_status": "model generated pending-stage status",
             "confirmation_required": "model generated confirmation request",
+            "mutation_completed": "model generated mutation completion",
             "approved_bounded_explanation": "model generated bounded explanation",
             "directive_status_only": "model generated directive status",
         }
         return SimpleNamespace(output_text=messages[mode], activity=[])
+
+
+def _selection_for_text(lesson, text: str) -> SelectionRef:
+    segment = next(
+        item
+        for item in build_board_segment_index(lesson.board_document).segments
+        if item.text == text
+    )
+    return SelectionRef(
+        kind="board",
+        location_kind="target_range",
+        lesson_id=lesson.id,
+        source_commit_id=current_head_commit(lesson).id,
+        document_id=lesson.board_document.id,
+        segment_id=segment.segment_id,
+        heading_path=list(segment.heading_path),
+        excerpt=text,
+        text_hash=segment.text_hash,
+    )
 
 
 @pytest.fixture
@@ -237,7 +290,6 @@ def test_approved_explanation_persists_ready_then_consumed_without_document_chan
 @pytest.mark.parametrize(
     ("action", "extent", "expected_phase", "expected_mode"),
     [
-        ("edit", "paragraph", "ready", "future_action_status"),
         ("delete", "paragraph", "awaiting_confirmation", "confirmation_required"),
     ],
 )
@@ -272,6 +324,69 @@ def test_non_explain_actions_persist_pending_state_with_zero_document_mutation(
     assert current_head_commit(saved).metadata["board_task_route"] == (
         "await_write_confirmation" if expected_phase == "awaiting_confirmation" else action
     )
+
+
+def test_bounded_edit_and_write_execute_atomically_in_one_history_version(
+    workflow_store,
+) -> None:
+    store, lesson = workflow_store
+    commit_count_before = len(lesson.history_graph.commits)
+    adapter = RecordingAdapter(
+        _draft(action="edit", target_hint="Authorized paragraph.", extent="paragraph"),
+        mutation_draft=_mutation_draft(
+            operations=[
+                {
+                    "operation_id": "edit_target",
+                    "action": "edit",
+                    "binding": {"kind": "target_range", "position": "replace"},
+                    "content_markdown": "Rewritten paragraph.",
+                },
+                {
+                    "operation_id": "write_example",
+                    "action": "write",
+                    "binding": {"kind": "insertion_anchor", "position": "after"},
+                    "content_markdown": "Example paragraph.",
+                },
+            ]
+        ),
+    )
+
+    response = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="current request",
+            selection=_selection_for_text(lesson, "Authorized paragraph."),
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert response.chatbot_message == "model generated mutation completion"
+    assert response.board_task_phase == "consumed"
+    assert response.active_board_task_sheet is None
+    assert response.board_document_operation_status == "succeeded"
+    assert response.decision_trace is not None
+    assert response.decision_trace.document_changed is True
+    persisted = store.load_for_user(TEST_USER_ID)
+    _package, saved = workspace_state.find_lesson_package(persisted, lesson.id)
+    assert len(saved.history_graph.commits) == commit_count_before + 1
+    assert saved.board_document.content_text == (
+        "# Target\n\nRewritten paragraph.\n\nExample paragraph.\n\n"
+        f"## Other\n\n{FULL_BOARD_SENTINEL}"
+    )
+    head = current_head_commit(saved)
+    assert head.metadata["document_changed"] is True
+    assert head.metadata["board_mutation_plan"]["operations"][0]["action"] == "edit"
+    assert head.metadata["board_mutation_plan"]["operations"][1]["action"] == "write"
+    assert head.metadata["board_mutation_audit"]["document_changed"] is True
+    assert head.runtime_snapshot is not None
+    assert head.runtime_snapshot.board_task_requirements is None
+    assert [call["schema"] for call in adapter.parse_calls] == [
+        BoardTaskManagerDraft,
+        MutationPlannerModelDraft,
+    ]
+    assert all(FULL_BOARD_SENTINEL not in str(call["user_prompt"]) for call in adapter.parse_calls)
 
 
 def test_board_manager_clarification_keeps_the_task_active_for_refinement(
@@ -309,7 +424,14 @@ def test_expected_head_conflict_fails_closed_without_persisting_workflow_commit(
             store.load_for_user(TEST_USER_ID), lesson.id
         )[1]
     ).id
-    adapter = RecordingAdapter(_draft(action="edit", extent="paragraph"))
+    adapter = RecordingAdapter(
+        _draft(
+            action="edit",
+            target_hint="Authorized paragraph.",
+            extent="paragraph",
+        ),
+        mutation_draft=_mutation_draft(),
+    )
     monkeypatch.setattr(
         workspace_state,
         "save_lesson_for_user_if_head",
@@ -319,7 +441,10 @@ def test_expected_head_conflict_fails_closed_without_persisting_workflow_commit(
     with pytest.raises(ExistingBoardWorkflowError, match="changed"):
         process_existing_board_workflow(
             lesson.id,
-            ChatRequest(message="current request"),
+            ChatRequest(
+                message="current request",
+                selection=_selection_for_text(lesson, "Authorized paragraph."),
+            ),
             user_id=TEST_USER_ID,
             adapter=adapter,
             selected_model=_model(),

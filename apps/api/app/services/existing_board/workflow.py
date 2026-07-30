@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable
 from typing import Literal
@@ -9,6 +8,7 @@ from app.models import (
     AIModelSelection,
     AgentActivityEvent,
     BoardDecision,
+    BoardDocument,
     BoardFocusRef,
     BoardTaskRequirementSheet,
     BoardTaskRunStatus,
@@ -31,6 +31,15 @@ from app.services.existing_board.focus_resolver import (
     FocusResolver,
     TargetResolution,
 )
+from app.services.existing_board.mutation_binding import (
+    ConfirmedWriteAnchor,
+    bind_and_execute_board_mutation,
+)
+from app.services.existing_board.mutation_plan import board_document_hash
+from app.services.existing_board.mutation_planner import (
+    MutationPlannerError,
+    plan_existing_board_mutation,
+)
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
 
@@ -41,14 +50,18 @@ structured task and bounded target candidates in the payload. In
 task_clarification mode, generate exactly one context-specific question that
 resolves the most important missing field or candidate choice. In pending-stage
 modes, generate only the status or confirmation response appropriate to the
-structured task. Do not explain lesson content, perform the requested action,
-claim a document change, invent board text, or reuse fixed wording.
+structured task. In mutation_completed mode, state that the authorized mutation
+completed and ask whether the learner wants the changed content explained. Do
+not explain lesson content, perform another action, invent board text, or reuse
+fixed wording. Claim a document change only when the supplied execution status
+explicitly says it succeeded.
 """.strip()
 
 TaskResponseMode = Literal[
     "task_clarification",
     "future_action_status",
     "confirmation_required",
+    "mutation_completed",
 ]
 
 
@@ -115,15 +128,9 @@ def process_existing_board_workflow(
         _role_execution("focus_resolver", None, ["board_segment_index", "target_hint", "frozen_selection_identity"]),
     ]
 
-    if phase == "collecting" or task.requested_action != "explain":
-        needs_clarification = phase == "collecting"
+    if phase == "collecting":
+        needs_clarification = True
         response_mode: TaskResponseMode = "task_clarification"
-        if not needs_clarification:
-            response_mode = (
-                "confirmation_required"
-                if phase == "awaiting_confirmation"
-                else "future_action_status"
-            )
         chatbot_message, chatbot_activity = _generate_task_message(
             adapter,
             task,
@@ -168,6 +175,78 @@ def process_existing_board_workflow(
             activity=activity,
             decision_reason=decision.reason,
             needs_clarification=needs_clarification,
+        )
+
+    if task.requested_action in {"edit", "write"} and phase == "ready":
+        return _execute_ready_mutation(
+            lesson_id=lesson_id,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            adapter=adapter,
+            selected_model=selected_model,
+            decision=decision,
+            task=task,
+            branch_name=branch_name,
+            base_head_id=base_head.id,
+            run_id=run_id,
+            version_id=version_id,
+            roles=roles,
+            activity=activity,
+            on_delta=on_delta,
+            on_board_task_update=on_board_task_update,
+            on_agent_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
+        )
+
+    if task.requested_action != "explain":
+        response_mode: TaskResponseMode = (
+            "confirmation_required"
+            if phase == "awaiting_confirmation"
+            else "future_action_status"
+        )
+        chatbot_message, chatbot_activity = _generate_task_message(
+            adapter,
+            task,
+            mode=response_mode,
+            on_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
+        )
+        activity.extend(chatbot_activity)
+        roles.append(
+            _role_execution("chatbot", selected_model, ["board_task_sheet", "bounded_target_candidates"])
+        )
+        trace = _decision_trace(decision, task, phase, role="chatbot")
+        _persist_task_phase(
+            lesson,
+            user_id=user_id,
+            expected_branch=branch_name,
+            expected_head=base_head.id,
+            task=task,
+            phase=phase,
+            run_id=run_id,
+            version_id=version_id,
+            request=request,
+            chatbot_message=chatbot_message,
+            selected_model=selected_model,
+            decision=decision,
+            trace=trace,
+            roles=roles,
+        )
+        _publish_task_update(on_board_task_update, task, run_id, version_id, phase)
+        _publish_delta(on_delta, chatbot_message)
+        return _build_response(
+            lesson_id=lesson_id,
+            user_id=user_id,
+            task=task,
+            active_task=task,
+            phase=phase,
+            run_id=run_id,
+            version_id=version_id,
+            chatbot_message=chatbot_message,
+            activity=activity,
+            decision_reason=decision.reason,
+            needs_clarification=False,
         )
 
     assert task.target_location is not None
@@ -399,6 +478,152 @@ def _next_phase(
     return "awaiting_confirmation" if requires_confirmation else "ready"
 
 
+def _execute_ready_mutation(
+    *,
+    lesson_id: str,
+    lesson: Lesson,
+    request: ChatRequest,
+    user_id: str,
+    adapter: AIExecutionAdapter,
+    selected_model: AIModelSelection,
+    decision: task_manager.BoardTaskManagerDecision,
+    task: BoardTaskRequirementSheet,
+    branch_name: str,
+    base_head_id: str,
+    run_id: str,
+    version_id: str,
+    roles: list[dict[str, object]],
+    activity: list[AgentActivityEvent],
+    on_delta: Callable[[str], None] | None,
+    on_board_task_update: Callable[[dict[str, object]], None] | None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> ChatResponse:
+    focus = task.target_location
+    if focus is None:
+        raise ExistingBoardWorkflowError("A ready mutation requires one resolved target")
+    try:
+        planned = plan_existing_board_mutation(
+            adapter=adapter,
+            board_task=task,
+            current_commit_id=base_head_id,
+            current_document_hash=_document_hash(lesson),
+            parent_heading_path=focus.heading_path,
+            resolved_focus=focus,
+            on_activity=on_agent_activity,
+        )
+    except MutationPlannerError as exc:
+        raise ExistingBoardWorkflowError(
+            f"The mutation planner rejected the authorized task: {exc}"
+        ) from exc
+    activity.extend(planned.activity)
+    write_anchors = [
+        ConfirmedWriteAnchor(
+            confirmed=True,
+            operation_id=operation.operation_id,
+            lesson_id=operation.binding.lesson_id,
+            document_id=operation.binding.document_id,
+            segment_id=operation.binding.segment_id,
+            text_hash=operation.binding.text_hash,
+            position=operation.binding.position,
+            parent_heading_path=list(operation.binding.parent_heading_path),
+        )
+        for operation in planned.plan.operations
+        if operation.action == "write"
+    ]
+    execution = bind_and_execute_board_mutation(
+        draft=planned.plan,
+        document=lesson.board_document,
+        current_commit_id=base_head_id,
+        resolved_focus=focus,
+        confirmed_write_anchors=write_anchors,
+    )
+    if execution.status != "applied" or execution.execution_audit is None:
+        raise ExistingBoardWorkflowError(
+            f"The mutation was rejected before persistence: {execution.reason}"
+        )
+    task.mutation_plan = planned.plan.model_dump(mode="json")
+    roles.extend(
+        [
+            _role_execution(
+                "content_planner_editor",
+                selected_model,
+                ["board_task_sheet", "resolved_target_excerpt", "version_identity"],
+            ),
+            _role_execution(
+                "backend_mutation_executor",
+                None,
+                ["bounded_mutation_plan", "current_document", "version_identity"],
+                document_write_allowed=True,
+            ),
+        ]
+    )
+    chatbot_message, chatbot_activity = _generate_task_message(
+        adapter,
+        task,
+        mode="mutation_completed",
+        on_activity=on_agent_activity,
+        is_cancelled=is_cancelled,
+        status_context={
+            "execution_status": "succeeded",
+            "operation_count": execution.atomic_operation_count,
+            "applied_actions": [
+                operation.action for operation in planned.plan.operations
+            ],
+        },
+    )
+    activity.extend(chatbot_activity)
+    roles.append(
+        _role_execution(
+            "chatbot",
+            selected_model,
+            ["board_task_sheet", "mutation_execution_status"],
+        )
+    )
+    trace = _decision_trace(decision, task, "consumed", role="chatbot")
+    trace["document_changed"] = True
+    _persist_mutation(
+        lesson,
+        user_id=user_id,
+        expected_branch=branch_name,
+        expected_head=base_head_id,
+        task=task,
+        run_id=run_id,
+        version_id=version_id,
+        request=request,
+        chatbot_message=chatbot_message,
+        selected_model=selected_model,
+        decision=decision,
+        trace=trace,
+        roles=roles,
+        next_document=execution.document,
+        mutation_audit=execution.execution_audit.model_dump(mode="json"),
+    )
+    _publish_task_update(
+        on_board_task_update,
+        task,
+        run_id,
+        version_id,
+        "consumed",
+    )
+    _publish_delta(on_delta, chatbot_message)
+    return _build_response(
+        lesson_id=lesson_id,
+        user_id=user_id,
+        task=task,
+        active_task=None,
+        phase="consumed",
+        run_id=run_id,
+        version_id=version_id,
+        chatbot_message=chatbot_message,
+        activity=activity,
+        decision_reason=decision.reason,
+        needs_clarification=False,
+        document_changed=True,
+        document_operation_status="succeeded",
+    )
+
+
 def _generate_task_message(
     adapter: AIExecutionAdapter,
     task: BoardTaskRequirementSheet,
@@ -406,6 +631,7 @@ def _generate_task_message(
     mode: TaskResponseMode,
     on_activity: Callable[[AgentActivityEvent], None] | None,
     is_cancelled: Callable[[], bool] | None,
+    status_context: dict[str, object] | None = None,
 ) -> tuple[str, list[AgentActivityEvent]]:
     safe_task = task.model_copy(
         deep=True,
@@ -425,6 +651,7 @@ def _generate_task_message(
                 "target_candidates": [
                     item.model_dump(mode="json") for item in safe_task.target_candidates
                 ],
+                "execution_status": dict(status_context or {}),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -512,6 +739,78 @@ def _persist_task_phase(
     return current_head_commit(lesson).id
 
 
+def _persist_mutation(
+    lesson: Lesson,
+    *,
+    user_id: str,
+    expected_branch: str,
+    expected_head: str,
+    task: BoardTaskRequirementSheet,
+    run_id: str,
+    version_id: str,
+    request: ChatRequest,
+    chatbot_message: str,
+    selected_model: AIModelSelection,
+    decision: task_manager.BoardTaskManagerDecision,
+    trace: dict[str, object],
+    roles: list[dict[str, object]],
+    next_document: BoardDocument,
+    mutation_audit: dict[str, object],
+) -> str:
+    lesson.board_document = next_document.model_copy(deep=True)
+    lesson.board_task_requirements = None
+    commit_operations(
+        lesson,
+        operations=[],
+        label="Board mutation consumed",
+        message="Applied one bounded atomic board mutation plan.",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "board_document_mutation",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": "existing_board_workflow",
+            "document_changed": True,
+            "document_write_authorized": True,
+            "document_hash_before": mutation_audit["document_hash_before"],
+            "document_hash_after": mutation_audit["document_hash_after"],
+            "board_task_run_id": run_id,
+            "board_task_version_id": version_id,
+            "board_task_phase": "consumed",
+            "board_task_route": task.requested_action,
+            "board_task_decision": decision.model_dump(mode="json"),
+            "board_task_cleared": True,
+            "active_board_task_sheet_after": None,
+            "resolved_focus": (
+                task.target_location.model_dump(mode="json")
+                if task.target_location is not None
+                else None
+            ),
+            "board_mutation_plan": task.mutation_plan,
+            "board_mutation_audit": mutation_audit,
+            "board_content_extent": task.content_extent,
+            "board_topic_relation": task.topic_relation,
+            "board_document_destination": task.document_destination,
+            "decision_trace": trace,
+            "selected_model": selected_model.model_dump(mode="json"),
+            "ai_provider": selected_model.provider,
+            "ai_model": selected_model.model,
+            "agent_backend": selected_model.agent_backend,
+            "role_executions": roles,
+        },
+    )
+    if not workspace_state.save_lesson_for_user_if_head(
+        user_id,
+        lesson,
+        expected_branch_name=expected_branch,
+        expected_head_commit_id=expected_head,
+    ):
+        raise ExistingBoardWorkflowError(
+            "The lesson changed while the board mutation was being persisted"
+        )
+    return current_head_commit(lesson).id
+
+
 def _build_response(
     *,
     lesson_id: str,
@@ -525,6 +824,8 @@ def _build_response(
     activity: list[AgentActivityEvent],
     decision_reason: str,
     needs_clarification: bool,
+    document_changed: bool = False,
+    document_operation_status: Literal["none", "succeeded", "failed"] = "none",
 ) -> ChatResponse:
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
@@ -539,7 +840,7 @@ def _build_response(
             role_executed="chatbot",
             board_access="bounded_board_role",
             requirement_effect="updated",
-            document_changed=False,
+            document_changed=document_changed,
             reason=decision_reason,
         ),
         agent_activity=activity,
@@ -552,11 +853,14 @@ def _build_response(
         board_task_version_id=version_id,
         board_task_phase=phase,
         board_task_questions=([chatbot_message] if needs_clarification else []),
-        board_decision=BoardDecision(action="no_change", reason=decision_reason),
+        board_decision=BoardDecision(
+            action=("edit_board" if document_changed else "no_change"),
+            reason=decision_reason,
+        ),
         needs_clarification=needs_clarification,
         clarification_questions=([chatbot_message] if needs_clarification else []),
         requirement_cleared=False,
-        board_document_operation_status="none",
+        board_document_operation_status=document_operation_status,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
     )
 
@@ -618,12 +922,14 @@ def _role_execution(
     role: str,
     model: AIModelSelection | None,
     input_scope: list[str],
+    *,
+    document_write_allowed: bool = False,
 ) -> dict[str, object]:
     return {
         "role": role,
         "model": model.model_dump(mode="json") if model is not None else None,
         "input_scope": input_scope,
-        "document_write_allowed": False,
+        "document_write_allowed": document_write_allowed,
     }
 
 
@@ -666,4 +972,4 @@ def _publish_delta(callback: Callable[[str], None] | None, message: str) -> None
 
 
 def _document_hash(lesson: Lesson) -> str:
-    return hashlib.sha256(lesson.board_document.content_text.encode("utf-8")).hexdigest()
+    return board_document_hash(lesson.board_document)
