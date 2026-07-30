@@ -37,7 +37,6 @@ from app.services.workspace_state import DATABASE_PATH
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
-OPENAI_SPONSORED_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 OPENAI_CODEX_REALTIME_MODEL = "gpt-live-1-codex"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
@@ -63,17 +62,6 @@ PI_OPENAI_CODEX_SERVICE_TIERS = (
         "name": "Priority",
         "description": "Faster processing with higher usage.",
     },
-)
-OPENAI_SPONSORED_TEXT_MODELS = (
-    ("gpt-5.4-mini", "GPT 5.4 Mini"),
-    ("gpt-5.4", "GPT 5.4"),
-    ("gpt-5.5", "GPT 5.5"),
-)
-OPENAI_SPONSORED_REASONING_EFFORTS = (
-    "low",
-    "medium",
-    "high",
-    "xhigh",
 )
 DEFAULT_TEXT_MODEL_PROVIDERS = frozenset({"openai_codex", "deepseek"})
 DEFAULT_REALTIME_MODEL_PROVIDERS = frozenset({"openai", "openai_codex"})
@@ -171,15 +159,15 @@ def resolve_text_model_selection(
     if selection is not None:
         selected_model = selection.model.strip()
         if (
-            selection.provider in {"openai", "openai_codex", "deepseek"}
+            selection.provider in {"openai_codex", "deepseek"}
             and text_model_provider_enabled(selection.provider)
             and selected_model
         ):
-            access_method = selection.access_method or {
-                "openai": "platform_sponsored",
-                "openai_codex": "chatgpt_subscription",
-                "deepseek": "platform_credits",
-            }[selection.provider]
+            access_method = selection.access_method or (
+                "chatgpt_subscription"
+                if selection.provider == "openai_codex"
+                else "platform_credits"
+            )
             return selection.model_copy(
                 update={
                     "model": selected_model,
@@ -231,22 +219,6 @@ def realtime_runtime_enabled() -> bool:
     }
 
 
-def sponsored_openai_text_enabled() -> bool:
-    return (os.getenv("OPENCLASS_SPONSORED_OPENAI_TEXT_ENABLED") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def sponsored_openai_text_model() -> str:
-    return (
-        os.getenv("OPENCLASS_SPONSORED_OPENAI_TEXT_MODEL")
-        or OPENAI_SPONSORED_DEFAULT_TEXT_MODEL
-    ).strip() or OPENAI_SPONSORED_DEFAULT_TEXT_MODEL
-
-
 def codex_realtime_runtime_enabled() -> bool:
     return (os.getenv("OPENCLASS_CODEX_REALTIME_ENABLED") or "").strip().lower() in {
         "1",
@@ -273,10 +245,6 @@ def _configured_secret(name: str) -> bool:
         and value.lower() not in {"none", "null", "disabled", "false", "0"}
         and not value.startswith(("your_", "你的_"))
     )
-
-
-def sponsored_openai_text_configured() -> bool:
-    return sponsored_openai_text_enabled() and _configured_secret("OPENAI_API_KEY")
 
 
 def codex_realtime_proxy_configured() -> bool:
@@ -443,10 +411,6 @@ async def _openrouter_input_prices(config: OpenRouterConfig) -> dict[str, Decima
 
 def build_model_catalog(user_id: str) -> AIModelCatalog:
     pi_available = pi_runtime_available()
-    sponsored_openai_configured = (
-        pi_available
-        and sponsored_openai_text_configured()
-    )
     pi_openai_configured = pi_available and pi_credentials_available(
         owner_user_id=user_id
     )
@@ -480,55 +444,30 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             0,
             {"model": default_model_id, "displayName": default_model_id},
         )
-    sponsored_model_id = sponsored_openai_text_model()
-    sponsored_models = list(OPENAI_SPONSORED_TEXT_MODELS)
-    if not any(model == sponsored_model_id for model, _label in sponsored_models):
-        sponsored_models.insert(0, (sponsored_model_id, sponsored_model_id))
     text_options = [
         AIModelOption(
-            provider="openai",
-            model=model,
-            access_method="platform_sponsored",
-            label=label,
+            provider="openai_codex",
+            model=str(item["model"]),
+            access_method="chatgpt_subscription",
+            label=str(item["displayName"]),
             capability="text",
-            enabled=sponsored_openai_configured,
-            configured=sponsored_openai_configured,
-            default=model == sponsored_model_id,
-            default_reasoning_effort="low",
-            supported_reasoning_efforts=[
-                AIReasoningEffortOption(reasoning_effort=effort)
-                for effort in OPENAI_SPONSORED_REASONING_EFFORTS
-            ],
+            enabled=pi_openai_configured,
+            configured=pi_openai_configured,
+            default=item["model"] == default_model_id,
+            default_reasoning_effort=_optional_string(
+                item.get("defaultReasoningEffort")
+                or item.get("default_reasoning_effort")
+            ),
+            supported_reasoning_efforts=_reasoning_efforts(item),
+            default_service_tier=_optional_string(
+                item.get("defaultServiceTier")
+                or item.get("default_service_tier")
+            ),
+            service_tiers=_service_tiers(item),
         )
-        for model, label in sponsored_models
-        if text_model_provider_enabled("openai")
+        for item in models
+        if text_model_provider_enabled("openai_codex")
     ]
-    text_options.extend(
-        [
-            AIModelOption(
-                provider="openai_codex",
-                model=str(item["model"]),
-                access_method="chatgpt_subscription",
-                label=str(item["displayName"]),
-                capability="text",
-                enabled=pi_openai_configured,
-                configured=pi_openai_configured,
-                default=item["model"] == default_model_id,
-                default_reasoning_effort=_optional_string(
-                    item.get("defaultReasoningEffort")
-                    or item.get("default_reasoning_effort")
-                ),
-                supported_reasoning_efforts=_reasoning_efforts(item),
-                default_service_tier=_optional_string(
-                    item.get("defaultServiceTier")
-                    or item.get("default_service_tier")
-                ),
-                service_tiers=_service_tiers(item),
-            )
-            for item in models
-            if text_model_provider_enabled("openai_codex")
-        ]
-    )
     if text_model_provider_enabled("deepseek"):
         deepseek_models = list(DEEPSEEK_CURATED_MODELS)
         if not any(model == shared_deepseek.model for model, _label in deepseek_models):

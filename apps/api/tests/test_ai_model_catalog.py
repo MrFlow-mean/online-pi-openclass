@@ -252,69 +252,6 @@ def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypa
         assert catalog.defaults["text"].access_method == "platform_credits"
 
 
-def test_sponsored_openai_is_enabled_for_guests_and_members_without_wallets(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("OPENCLASS_TEXT_MODEL_PROVIDERS", "openai_codex,openai")
-    monkeypatch.setenv("OPENCLASS_SPONSORED_OPENAI_TEXT_ENABLED", "true")
-    monkeypatch.setenv("OPENCLASS_SPONSORED_OPENAI_TEXT_MODEL", "gpt-5.4-mini")
-    monkeypatch.setenv("OPENAI_API_KEY", "server-sponsored-key")
-    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
-    monkeypatch.setattr(
-        ai_model_catalog,
-        "pi_credentials_available",
-        lambda **_kwargs: False,
-    )
-
-    for user_id in ("guest_default", "user_member", "admin_owner"):
-        catalog = ai_model_catalog.build_model_catalog(user_id)
-        sponsored = [
-            option
-            for option in catalog.text
-            if option.provider == "openai"
-            and option.access_method == "platform_sponsored"
-        ]
-
-        assert [option.model for option in sponsored] == [
-            "gpt-5.4-mini",
-            "gpt-5.4",
-            "gpt-5.5",
-        ]
-        assert all(option.enabled and option.configured for option in sponsored)
-        assert catalog.defaults["text"].provider == "openai"
-        assert catalog.defaults["text"].model == "gpt-5.4-mini"
-        assert catalog.defaults["text"].access_method == "platform_sponsored"
-        assert catalog.defaults["text"].reasoning_effort == "low"
-
-        resolved = ai_model_catalog.resolve_text_model_selection(
-            AIModelSelection(
-                provider="openai",
-                model="gpt-5.4-mini",
-                access_method="platform_sponsored",
-            ),
-            user_id=user_id,
-        )
-        assert resolved.agent_backend == "pi"
-        assert resolved.access_method == "platform_sponsored"
-
-
-def test_sponsored_openai_requires_an_explicit_flag_and_server_key(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_TEXT_MODEL_PROVIDERS", "openai")
-    monkeypatch.setenv("OPENCLASS_SPONSORED_OPENAI_TEXT_ENABLED", "false")
-    monkeypatch.setenv("OPENAI_API_KEY", "server-key")
-    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
-
-    disabled_by_flag = ai_model_catalog.build_model_catalog(TEST_USER_ID)
-    assert disabled_by_flag.text
-    assert all(not option.enabled for option in disabled_by_flag.text)
-
-    monkeypatch.setenv("OPENCLASS_SPONSORED_OPENAI_TEXT_ENABLED", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "disabled")
-    disabled_by_key = ai_model_catalog.build_model_catalog(TEST_USER_ID)
-    assert disabled_by_key.text
-    assert all(not option.enabled for option in disabled_by_key.text)
-
-
 def test_openrouter_mapping_enables_platform_models_without_a_deepseek_key(
     monkeypatch,
 ) -> None:
