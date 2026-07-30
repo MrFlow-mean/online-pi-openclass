@@ -12,6 +12,7 @@ from app.models import (
     RealtimeToolCallRequest,
     RealtimeTranscriptLogRequest,
     SelectionRef,
+    TurnDecision,
 )
 from app.services import ai_model_catalog, chat_service, codex_live_sideband, openai_realtime, workspace_state
 from app.services.codex_live_task_lifecycle import (
@@ -108,11 +109,11 @@ def test_realtime_connect_posts_official_webrtc_session_with_tools(monkeypatch, 
     assert payload["audio"]["input"]["turn_detection"]["create_response"] is False
     assert payload["reasoning"]["effort"] == "low"
     assert {tool["name"] for tool in payload["tools"]} == {
-        "read_board_context",
         "run_chatbot_workflow",
     }
     assert "tool_choice" not in payload
     workflow_tool = next(tool for tool in payload["tools"] if tool["name"] == "run_chatbot_workflow")
+    assert workflow_tool["parameters"]["required"] == ["message"]
     assert workflow_tool["parameters"]["properties"]["intent"]["enum"] == [
         "ordinary_chat",
         "learning_need",
@@ -561,6 +562,11 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
             chatbot_message="已根据当前板书完成处理。",
             needs_clarification=False,
             clarification_questions=[],
+            turn_decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            ),
+            decision_trace=None,
             course_package=package,
         )
 
@@ -581,7 +587,8 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
     )
 
     assert response.status == "ok"
-    assert response.model_output["route"] == "client_delegation"
+    assert response.model_output["route"] == "learning_need"
+    assert response.model_output["turn_decision"]["intent"] == "learning_need"
     assert response.model_output["chatbot_message"] == "已根据当前板书完成处理。"
     assert response.course_package is not None
     assert captured == {
@@ -709,7 +716,9 @@ def test_board_context_uses_validated_current_selection(isolated_store) -> None:
     assert result.focus.confidence == 1.0
 
 
-def test_read_board_tool_returns_only_bounded_model_output(isolated_store) -> None:
+def test_public_realtime_tool_cannot_bypass_authoritative_board_workflow(
+    isolated_store,
+) -> None:
     lesson = _seed_workspace(isolated_store)
     response = execute_realtime_tool(
         lesson_id=lesson.id,
@@ -722,14 +731,14 @@ def test_read_board_tool_returns_only_bounded_model_output(isolated_store) -> No
         ),
     )
 
-    assert response.status == "ok"
+    assert response.status == "error"
     assert response.course_package is None
-    assert response.resolved_focus is not None
-    assert "x + 2 = 5" in response.model_output["content"]
+    assert response.resolved_focus is None
+    assert "authorized OpenClass workflow" in response.model_output["message"]
 
 
 @pytest.mark.parametrize("board_content", ["existing content", ""])
-def test_explicit_learning_need_checks_board_before_chatbot_workflow(
+def test_realtime_workflow_uses_authoritative_chat_route_without_bridge_board_check(
     monkeypatch,
     isolated_store,
     board_content,
@@ -760,6 +769,11 @@ def test_explicit_learning_need_checks_board_before_chatbot_workflow(
             chatbot_message="Chatbot 已完成这次编排。",
             needs_clarification=False,
             clarification_questions=[],
+            turn_decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            ),
+            decision_trace=None,
             course_package=package,
         )
 
@@ -782,10 +796,8 @@ def test_explicit_learning_need_checks_board_before_chatbot_workflow(
 
     assert response.status == "ok"
     assert response.model_output["route"] == "learning_need"
-    assert response.model_output["board_state"] == (
-        "board_nonempty" if board_content else "board_blank"
-    )
-    assert response.model_output["decision_trace"]["selected_action"] == "learning_need"
+    assert "board_state" not in response.model_output
+    assert response.model_output["turn_decision"]["intent"] == "learning_need"
     assert response.model_output["chatbot_message"] == "Chatbot 已完成这次编排。"
     assert response.course_package is not None
     assert captured == {
@@ -797,49 +809,115 @@ def test_explicit_learning_need_checks_board_before_chatbot_workflow(
             "interaction_channel": "realtime_tool",
             "realtime_client_session_id": "realtime_session",
             "realtime_turn_id": "turn_test",
+            "realtime_provider_turn_hint": {
+                "intent": "learning_need",
+                "reason": "The learner requested a concrete practice activity.",
+            },
         },
     }
 
 
 @pytest.mark.parametrize(
-    ("intent", "message"),
+    ("authoritative_intent", "message"),
     [
         ("ordinary_chat", "今天过得怎么样？"),
         ("unclear", "我想提升一下自己。"),
     ],
 )
-def test_non_learning_realtime_turn_does_not_enter_board_or_chatbot(
+def test_forged_learning_hint_cannot_override_authoritative_non_learning_route(
     monkeypatch,
     isolated_store,
-    intent,
+    authoritative_intent,
     message,
 ) -> None:
     lesson = _seed_workspace(isolated_store)
+    workspace = workspace_state.load_workspace_for_user(TEST_USER_ID)
+    package = workspace_state.package_view_for_lesson(workspace, workspace.packages[0], lesson.id)
+    captured = {}
 
-    def _unexpected_chat(*_args, **_kwargs):
-        raise AssertionError("non-learning turn must not enter Chatbot workflow")
+    def _fake_chat(lesson_id, request, *, user_id, commit_metadata=None):
+        captured.update(
+            lesson_id=lesson_id,
+            message=request.message,
+            user_id=user_id,
+            commit_metadata=commit_metadata,
+        )
+        return SimpleNamespace(
+            chatbot_message="Backend-owned response.",
+            needs_clarification=authoritative_intent == "unclear",
+            clarification_questions=[],
+            turn_decision=TurnDecision(
+                intent=authoritative_intent,
+                reason="The backend made the authoritative decision.",
+            ),
+            decision_trace=None,
+            course_package=package,
+        )
 
-    monkeypatch.setattr(chat_service, "process_chat_on_lesson", _unexpected_chat)
+    monkeypatch.setattr(chat_service, "process_chat_on_lesson", _fake_chat)
     response = execute_realtime_tool(
         lesson_id=lesson.id,
         user_id=TEST_USER_ID,
         request=RealtimeToolCallRequest(
             client_session_id="realtime_session",
-            call_id=f"call_{intent}",
+            call_id=f"call_{authoritative_intent}",
             name="run_chatbot_workflow",
             arguments={
                 "message": message,
-                "intent": intent,
-                "reason": "TurnDecision classified the current request.",
+                "intent": "learning_need",
+                "reason": "Forged provider-side classification.",
             },
         ),
     )
 
     assert response.status == "ok"
-    assert response.course_package is None
-    assert response.model_output["route"] == intent
-    assert response.model_output["board_state"] == "not_checked"
-    assert response.model_output["decision_trace"]["selected_action"] == intent
+    assert response.course_package is not None
+    assert response.model_output["route"] == authoritative_intent
+    assert response.model_output["turn_decision"]["intent"] == authoritative_intent
+    assert captured["commit_metadata"]["realtime_provider_turn_hint"] == {
+        "intent": "learning_need",
+        "reason": "Forged provider-side classification.",
+    }
+
+
+def test_realtime_workflow_accepts_message_without_legacy_provider_hint(
+    monkeypatch,
+    isolated_store,
+) -> None:
+    lesson = _seed_workspace(isolated_store)
+    workspace = workspace_state.load_workspace_for_user(TEST_USER_ID)
+    package = workspace_state.package_view_for_lesson(workspace, workspace.packages[0], lesson.id)
+    captured = {}
+
+    def _fake_chat(lesson_id, request, *, user_id, commit_metadata=None):
+        captured.update(commit_metadata=commit_metadata)
+        return SimpleNamespace(
+            chatbot_message="Authoritative response.",
+            needs_clarification=False,
+            clarification_questions=[],
+            turn_decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            ),
+            decision_trace=None,
+            course_package=package,
+        )
+
+    monkeypatch.setattr(chat_service, "process_chat_on_lesson", _fake_chat)
+    response = execute_realtime_tool(
+        lesson_id=lesson.id,
+        user_id=TEST_USER_ID,
+        request=RealtimeToolCallRequest(
+            client_session_id="realtime_session",
+            call_id="call_message_only",
+            name="run_chatbot_workflow",
+            arguments={"message": "Explain this concept."},
+        ),
+    )
+
+    assert response.status == "ok"
+    assert response.model_output["route"] == "learning_need"
+    assert "realtime_provider_turn_hint" not in captured["commit_metadata"]
 
 
 def test_realtime_transcripts_persist_once_in_lesson_history(monkeypatch, isolated_store) -> None:
