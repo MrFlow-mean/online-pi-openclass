@@ -92,6 +92,16 @@ function boardTaskLocationLabel(task: BoardTaskRequirementSheet) {
   return `${kind} · ${hint}`;
 }
 
+export function boardTaskConfirmationPayload(
+  confirmation: NonNullable<ChatRequestPayload["board_task_confirmation"]>
+): ChatRequestPayload {
+  return {
+    message: confirmation === "confirm" ? "确认执行当前板书任务" : "取消当前板书任务",
+    interaction_mode: "ask",
+    board_task_confirmation: confirmation,
+  };
+}
+
 function composerSelectionLabel(selection: SelectionRef) {
   if (selection.kind === "source") {
     return selection.source_scope_kind === "source" ? "整份资料" : "资料章节";
@@ -135,6 +145,7 @@ function CurrentNeedCard({
   isChatBusy,
   lesson,
   onSelectBoardCandidate,
+  onSubmitChat,
   targetCommitId,
 }: {
   activeBoardTask: BoardTaskRequirementSheet | null;
@@ -145,6 +156,7 @@ function CurrentNeedCard({
   isChatBusy: boolean;
   lesson: Lesson;
   onSelectBoardCandidate: (task: BoardTaskRequirementSheet, candidate: BoardFocusRef) => void;
+  onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
   targetCommitId: string | null;
 }) {
   if (currentNeedPending) {
@@ -208,7 +220,13 @@ function CurrentNeedCard({
 
   if (activeBoardTask) {
     const progress = Math.max(0, Math.min(100, activeBoardTask.progress));
-    const statusLabel = isChatBusy ? "执行中" : progress >= 100 ? "已完成" : "收集中";
+    const statusLabel = isChatBusy
+      ? "执行中"
+      : activeBoardTask.confirmation_status === "awaiting"
+        ? "等待确认"
+        : progress >= 100
+          ? "已完成"
+          : "收集中";
     return (
       <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
         <div className="flex items-center justify-between gap-3">
@@ -249,7 +267,29 @@ function CurrentNeedCard({
           </div>
         ) : null}
         {activeBoardTask.confirmation_status === "awaiting" ? (
-          <p className="mt-3 text-xs leading-6 text-sky-900">等待你确认是否先扩写板书。</p>
+          <div className="mt-3 rounded-lg border border-sky-200 bg-white p-3">
+            <p className="text-xs leading-6 text-sky-900">该板书任务需要你的明确确认。</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={isChatBusy}
+                onClick={() => void onSubmitChat(boardTaskConfirmationPayload("confirm"))}
+                className="inline-flex items-center gap-1.5 rounded-md bg-sky-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Check className="h-3.5 w-3.5" />
+                确认执行
+              </button>
+              <button
+                type="button"
+                disabled={isChatBusy}
+                onClick={() => void onSubmitChat(boardTaskConfirmationPayload("decline"))}
+                className="inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-900 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <X className="h-3.5 w-3.5" />
+                取消任务
+              </button>
+            </div>
+          </div>
         ) : null}
         {activeBoardTask.missing_items.length ? (
           <p className="mt-3 text-xs leading-6 text-sky-900">待补充：{activeBoardTask.missing_items.join("、")}</p>
@@ -573,6 +613,7 @@ export function CourseStudioChatSidebar({
                 null
               )
             }
+            onSubmitChat={onSubmitChat}
             targetCommitId={targetCommitId}
           />
           <div className="space-y-5">

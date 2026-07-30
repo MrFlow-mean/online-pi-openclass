@@ -1396,6 +1396,7 @@ export interface ChatRequestPayload {
   interaction_mode?: ChatInteractionMode;
   board_generation_action?: "start" | null;
   teaching_action?: "continue" | "restart" | null;
+  board_task_confirmation?: "confirm" | "decline" | null;
   post_generation_action?: "auto_explain" | "stop_after_generation";
   chat_edit_source_commit_id?: string | null;
   chat_edit_base_commit_id?: string | null;
