@@ -25,7 +25,6 @@ from app.models import (
 from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_catalog import (
-    SourceCodexCatalogError,
     generate_codex_direct_catalog,
 )
 from app.services.source_directory_extractor import (
@@ -34,8 +33,10 @@ from app.services.source_directory_extractor import (
     DirectoryExtraction,
     extract_directory,
 )
-from app.services.source_structure_store import SourceStructureStore, source_structure_store
-
+from app.services.source_structure_store import (
+    SourceStructureStore,
+    source_structure_store,
+)
 
 CATALOG_SCHEMA_VERSION = "codex_directory_v1"
 MAX_CODEX_BATCH_NODES = 120

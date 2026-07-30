@@ -1,26 +1,26 @@
 from __future__ import annotations
 
-import json
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import socket
 import sqlite3
 import threading
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
+from urllib.parse import urlparse
 
 from app.models import LessonContribution, UserView, new_id, now_iso
 from app.project_collaboration_models import (
     CheckStatus,
-    IntegrationAppView,
     IncomingProjectInvitationView,
+    IntegrationAppView,
     OrganizationView,
     ProjectAuditEventView,
     ProjectBoardColumnView,
@@ -36,15 +36,14 @@ from app.project_collaboration_models import (
     ProjectPolicyView,
     ProjectReviewView,
     ProjectRole,
-    ProjectWebhookView,
     ProjectWebhookDeliveryView,
+    ProjectWebhookView,
     ProjectWorkItemView,
     ReviewDecision,
     TeamView,
 )
 from app.services.course_store import SqliteCourseStore
 from app.services.workspace_state import find_lesson_package, get_package
-
 
 ROLE_PRIORITY: dict[ProjectRole, int] = {
     "viewer": 1,

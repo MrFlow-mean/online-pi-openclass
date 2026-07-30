@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import stat
 import uuid
 import zipfile
@@ -13,7 +12,6 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.models import EvidenceBundle, Lesson
-
 
 RIDOC_MEDIA_TYPE = "application/vnd.openclass.ridoc+zip"
 RIDOC_SPEC_VERSION = "1.0"

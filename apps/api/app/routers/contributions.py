@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models import (
     CreateLessonContributionRequest,
@@ -35,7 +35,6 @@ from app.services.workspace_state import (
     load_workspace_for_user,
     load_workspace_for_user_with_revision,
 )
-
 
 router = APIRouter()
 

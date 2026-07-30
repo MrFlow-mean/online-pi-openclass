@@ -25,14 +25,12 @@ from app.models import (
 )
 from app.services.codex_app_server import (
     CODEX_SOURCE_CATALOG_ARTIFACT,
-    CodexAppServerTextClient,
 )
 from app.services.pi_source_runtime import PiSourceTextClient
+from app.services.source_archive import SafeSourceArchive
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_pdf_mapping import build_pdf_catalog_visual_inputs
-from app.services.source_archive import SafeSourceArchive
 from app.services.source_xml import parse_untrusted_xml
-
 
 MAX_NODE_TEXT_LENGTH = 4_096
 MAX_MATERIALIZED_PATH_COMPONENTS = 1_000_000
