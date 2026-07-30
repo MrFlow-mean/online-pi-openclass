@@ -127,6 +127,7 @@ export function BoardEditorPanel({
   const teachingFocus = isMergeMode
     ? null
     : transientTeachingFocus ?? currentTeachingFocus(activeLesson, previewCommit);
+  const sourceCommitId = currentHeadCommit(activeLesson)?.id ?? null;
 
   return (
     <section className="relative z-10 flex min-w-0 flex-col overflow-hidden bg-white shadow-[0_0_20px_rgba(0,0,0,0.02)]">
@@ -177,6 +178,7 @@ export function BoardEditorPanel({
               kind: "board",
               location_kind: payload.locationKind,
               lesson_id: activeLesson.id,
+              source_commit_id: sourceCommitId,
               document_id: payload.documentId,
               excerpt: payload.excerpt,
               before_text: payload.beforeText,
@@ -195,6 +197,7 @@ export function BoardEditorPanel({
             kind: "board",
             location_kind: selection.locationKind,
             lesson_id: activeLesson.id,
+            source_commit_id: sourceCommitId,
             document_id: selection.documentId,
             excerpt: selection.excerpt,
             before_text: selection.beforeText,
@@ -206,6 +209,7 @@ export function BoardEditorPanel({
             kind: "board",
             location_kind: selection.locationKind,
             lesson_id: activeLesson.id,
+            source_commit_id: sourceCommitId,
             document_id: selection.documentId,
             excerpt: selection.excerpt,
             before_text: selection.beforeText,
@@ -222,6 +226,7 @@ export function BoardEditorPanel({
               kind: "board",
               location_kind: payload.selection.locationKind,
               lesson_id: activeLesson.id,
+              source_commit_id: sourceCommitId,
               document_id: payload.selection.documentId,
               excerpt: payload.selection.excerpt,
               before_text: payload.selection.beforeText,

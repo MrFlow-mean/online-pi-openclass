@@ -13,6 +13,7 @@ from app.services.board_segment_index import (
     compact_segment_text,
     segment_text_hash,
 )
+from app.services.history import current_head_commit
 
 
 TargetResolutionStatus = Literal["resolved", "target_not_resolved"]
@@ -26,6 +27,7 @@ TargetResolutionReason = Literal[
     "selection_kind_mismatch",
     "selection_lesson_mismatch",
     "selection_document_mismatch",
+    "selection_stale_version",
     "selection_segment_missing",
     "selection_stale_hash",
     "selection_text_mismatch",
@@ -145,6 +147,11 @@ class FocusResolver:
             return self._unresolved("selection_lesson_mismatch")
         if selection.document_id and selection.document_id != document.id:
             return self._unresolved("selection_document_mismatch")
+        if (
+            selection.source_commit_id
+            and selection.source_commit_id != current_head_commit(lesson).id
+        ):
+            return self._unresolved("selection_stale_version")
 
         if selection.segment_id:
             segment = next(

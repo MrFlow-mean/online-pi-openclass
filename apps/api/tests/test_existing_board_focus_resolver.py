@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.models import SelectionRef
 from app.services.board_segment_index import build_board_segment_index, segment_text_hash
 from app.services.existing_board.focus_resolver import FocusResolver, resolve_board_focus
+from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document
 
@@ -97,6 +98,42 @@ def test_stale_selection_hash_fails_closed_and_returns_bounded_current_candidate
     assert result.machine_reason == "selection_stale_hash"
     assert len(result.candidates) == 1
     assert result.candidates[0].segment_id == segment.segment_id
+
+
+def test_selection_from_a_stale_board_commit_fails_closed() -> None:
+    lesson = _lesson("# Root\n\nCurrent paragraph")
+
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            excerpt="Current paragraph",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id="commit_before_selection",
+        ),
+    )
+
+    assert result.status == "target_not_resolved"
+    assert result.machine_reason == "selection_stale_version"
+
+
+def test_selection_from_the_current_board_commit_can_resolve() -> None:
+    lesson = _lesson("# Root\n\nCurrent paragraph")
+
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            excerpt="Current paragraph",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+        ),
+    )
+
+    assert result.status == "resolved"
+    assert result.machine_reason == "resolved_by_selection"
 
 
 def test_unique_heading_and_structural_ordinal_resolve_deterministically() -> None:

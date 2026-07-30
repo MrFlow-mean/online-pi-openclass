@@ -1596,6 +1596,7 @@ class SelectionRef(BaseModel):
     excerpt: str
     location_kind: BoardTaskLocationKind | None = None
     lesson_id: str | None = None
+    source_commit_id: str | None = None
     block_id: str | None = None
     document_id: str | None = None
     segment_id: str | None = None

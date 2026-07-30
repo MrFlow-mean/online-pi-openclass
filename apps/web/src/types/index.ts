@@ -1189,6 +1189,7 @@ export interface SelectionRef {
   excerpt: string;
   location_kind?: BoardTaskLocationKind | null;
   lesson_id?: string | null;
+  source_commit_id?: string | null;
   block_id?: string | null;
   document_id?: string | null;
   segment_id?: string | null;
