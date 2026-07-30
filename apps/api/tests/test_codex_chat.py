@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import base64
 import hashlib
+import json
 import queue
 import threading
 import time
@@ -10,11 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from app.models import (
     AgentActivityEvent,
     AIModelSelection,
-    BoardExplanationDirective,
     ChatAttachmentRef,
     ChatRequest,
     GuidedRequirementDiscovery,
@@ -42,7 +40,6 @@ from app.services import (
     turn_intent,
     workspace_state,
 )
-from app.services.board_asset_store import BoardAssetStore
 from app.services.blank_board_intake import (
     BlankBoardAuxiliaryFactor,
     BlankBoardTurnDecision,
@@ -50,6 +47,7 @@ from app.services.blank_board_intake import (
     SourceResolutionTurnResponse,
     evaluate_blank_board_decision,
 )
+from app.services.board_asset_store import BoardAssetStore
 from app.services.codex_app_server import (
     CodexAppServerError,
     CodexTurnCancelledError,
@@ -58,7 +56,10 @@ from app.services.codex_app_server import (
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.history import commit_operations, create_branch, current_head_commit
 from app.services.lesson_factory import build_requirements, create_empty_lesson
-from app.services.rich_document import build_document, rebuild_document_from_content_json
+from app.services.rich_document import (
+    build_document,
+    rebuild_document_from_content_json,
+)
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_structure_indexer import (
     CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
@@ -66,7 +67,6 @@ from app.services.source_structure_indexer import (
 )
 from app.services.source_structure_store import source_structure_store
 from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
-
 
 TEST_USER_ID = "user_codex_chat"
 PRODUCTION_TEXT_MODEL_SELECTION = codex_chat._text_model_selection
@@ -264,6 +264,18 @@ def _seed_workspace(store: SqliteCourseStore, *, content_text: str = "# Existing
     package.active_lesson_id = lesson.id
     store.save_for_user(TEST_USER_ID, workspace)
     return lesson
+
+
+def _board_generation_handoff(
+    message: str = "The saved board is ready. Would you like to start from the beginning?",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        output_parsed=blank_board_intake.BoardGenerationHandoffResponse(
+            chatbot_message=message,
+            follow_up_suggestions=["Start from the beginning."],
+        ),
+        activity=[],
+    )
 
 
 def test_codex_text_round_trip_preserves_existing_visual_nodes() -> None:
@@ -1348,7 +1360,9 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     generation_prompts: list[str] = []
     requirement_updates: list[dict[str, object]] = []
 
-    def fake_parse(_self, **_kwargs):
+    def fake_parse(_self, **kwargs):
+        if kwargs["schema"] is blank_board_intake.BoardGenerationHandoffResponse:
+            return _board_generation_handoff()
         return SimpleNamespace(
             output_parsed=BlankBoardTurnDecision(
                 intent="learning_need",
@@ -1407,8 +1421,15 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     assert '"teaching_plan":"Build a focused explanation with checks for understanding."' in generation_prompts[0]
     assert "this exact request text" not in generation_prompts[0]
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    generation_commit = current_head_commit(saved_lesson)
+    handoff_commit = current_head_commit(saved_lesson)
+    generation_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "board_document_generation"
+    )
     assert saved_lesson.board_document.content_text == "# Focused board\n\nBoard content."
+    assert handoff_commit.metadata["kind"] == "board_generation_handoff"
+    assert handoff_commit.parent_ids == [generation_commit.id]
     assert generation_commit.metadata["kind"] == "board_document_generation"
     assert generation_commit.metadata["requirement_phase"] == "consumed"
     assert generation_commit.metadata["board_generation_codex_thread_id"] == (
@@ -1435,7 +1456,7 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     )
 
 
-def test_pi_board_handoff_runs_only_after_the_document_commit(
+def test_board_handoff_replaces_nonempty_writer_reply_after_document_commit(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
 ) -> None:
@@ -1444,9 +1465,10 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
 
     class FakePiAdapter:
         def parse_structured(self, **kwargs):
-            assert kwargs["schema"] is BlankBoardTurnDecision
-            return SimpleNamespace(
-                output_parsed=BlankBoardTurnDecision(
+            nonlocal observed_board_commit_id
+            schema = kwargs["schema"]
+            if schema is BlankBoardTurnDecision:
+                parsed = BlankBoardTurnDecision(
                     intent="learning_need",
                     teaching_type="knowledge_point",
                     learning_content="A bounded topic",
@@ -1456,33 +1478,34 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
                     chatbot_message="The requirement is ready.",
                     teaching_plan="Build a focused board.",
                     reason="All core factors are complete.",
-                ),
-                activity=[],
-            )
+                )
+            else:
+                assert schema is blank_board_intake.BoardGenerationHandoffResponse
+                saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+                board_commit = current_head_commit(saved_lesson)
+                observed_board_commit_id = board_commit.id
+                assert saved_lesson.board_document.content_text.startswith("# Saved board")
+                assert board_commit.metadata["kind"] == "board_document_generation"
+                assert board_commit.metadata["assistant_message"] == ""
+                payload = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+                assert payload["generation_status"] == "succeeded"
+                assert payload["document_changed"] is True
+                assert payload["board_state_after"] == "non_empty"
+                parsed = blank_board_intake.BoardGenerationHandoffResponse(
+                    chatbot_message="The saved board is ready for us to work through.",
+                    follow_up_suggestions=["Start from the beginning."],
+                )
+            return SimpleNamespace(output_parsed=parsed, activity=[])
 
         def generate_board(self, _request, **_kwargs):
             return (
                 ai_execution_adapter.StructuredBoardGenerationResult(
                     thread_id="piturn_board",
                     turn_id="piturn_board",
-                    final_response="",
+                    final_response="Writer-only completion that must not reach the learner.",
                     activity=[],
                 ),
                 "# Saved board\n\nGenerated learning content.",
-            )
-
-        def complete_text(self, **kwargs):
-            nonlocal observed_board_commit_id
-            saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-            board_commit = current_head_commit(saved_lesson)
-            observed_board_commit_id = board_commit.id
-            assert saved_lesson.board_document.content_text.startswith("# Saved board")
-            assert board_commit.metadata["kind"] == "board_document_generation"
-            assert board_commit.metadata["assistant_message"] == ""
-            assert kwargs["is_cancelled"] is not None
-            return SimpleNamespace(
-                output_text="The saved board is ready for us to work through.",
-                activity=[],
             )
 
     monkeypatch.setattr(
@@ -1499,12 +1522,6 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
             model="gpt-5.5",
         ),
     )
-    monkeypatch.setattr(
-        blank_board_intake,
-        "generate_follow_up_suggestions",
-        lambda **_kwargs: [],
-    )
-
     response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
         ChatRequest(
@@ -1603,7 +1620,9 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         lambda **_kwargs: (stored_visual, visual_bytes),
     )
 
-    def fail_if_intake_runs(**_kwargs):
+    def fail_if_intake_runs(_self, **kwargs):
+        if kwargs["schema"] is blank_board_intake.BoardGenerationHandoffResponse:
+            return _board_generation_handoff()
         raise AssertionError("a verified source selection must bypass requirement questions")
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
@@ -1786,19 +1805,16 @@ def test_existing_board_source_selection_is_frozen_and_mandatory_for_codex(
     assert commit.metadata["verified_source_evidence_ids"]
 
 
-def test_generation_auto_explains_first_section_then_continues_or_restarts(
+def test_generation_auto_explain_request_still_stops_before_teaching(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="")
-    directive_prompts: list[str] = []
-    chatbot_prompts: list[str] = []
-    explanation_messages = iter(
-        ["First section explanation.", "Second section explanation.", "First section again."]
-    )
+    requested_schemas: list[type[object]] = []
 
     def fake_parse(_self, **kwargs):
         schema = kwargs["schema"]
+        requested_schemas.append(schema)
         if schema is BlankBoardTurnDecision:
             parsed = BlankBoardTurnDecision(
                 intent="learning_need",
@@ -1811,19 +1827,20 @@ def test_generation_auto_explains_first_section_then_continues_or_restarts(
                 teaching_plan="Create a structured board.",
                 reason="The requirement is complete.",
             )
-        elif schema is BoardExplanationDirective:
-            directive_prompts.append(kwargs["user_prompt"])
-            excerpt = "## Second\n\nSecond evidence." if "## Second" in kwargs["user_prompt"] else "## First\n\nFirst evidence."
-            parsed = BoardExplanationDirective(
-                status="approved",
-                target_summary="Current section",
-                target_excerpt=excerpt,
-                teaching_instruction="Explain this section in order.",
-                constraints=["Use only the target excerpt."],
-            )
         else:
-            chatbot_prompts.append(kwargs["user_prompt"])
-            parsed = schema(chatbot_message=next(explanation_messages))
+            assert schema is blank_board_intake.BoardGenerationHandoffResponse
+            payload = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+            assert payload["generation_status"] == "succeeded"
+            assert payload["content_extent"] == "article"
+            parsed = blank_board_intake.BoardGenerationHandoffResponse(
+                chatbot_message=(
+                    "The board is saved. Would you like to begin with its first section?"
+                ),
+                follow_up_suggestions=[
+                    "Yes, start from the beginning.",
+                    "No, leave it here for now.",
+                ],
+            )
         return SimpleNamespace(output_parsed=parsed, activity=[])
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
@@ -1835,7 +1852,7 @@ def test_generation_auto_explains_first_section_then_continues_or_restarts(
         return CodexTurnResult(
             thread_id="thread_auto_teaching",
             turn_id="turn_auto_teaching",
-            final_response="Generated.",
+            final_response="Writer completion must remain internal.",
         )
 
     monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
@@ -1850,99 +1867,47 @@ def test_generation_auto_explains_first_section_then_continues_or_restarts(
         user_id=TEST_USER_ID,
     )
 
-    assert generated.chatbot_message == "First section explanation."
-    assert generated.auto_teaching_operation_status == "succeeded"
-    assert generated.teaching_progress is not None
-    assert generated.teaching_progress.section_index == 0
-    assert generated.teaching_progress.has_next_section is True
-    assert "Second evidence." not in directive_prompts[0]
-    assert "Second evidence." not in chatbot_prompts[0]
-
-    continued = codex_chat.process_codex_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="Continue.", teaching_action="continue"),
-        user_id=TEST_USER_ID,
+    assert generated.chatbot_message == (
+        "The board is saved. Would you like to begin with its first section?"
     )
-    assert continued.chatbot_message == "Second section explanation."
-    assert continued.teaching_progress is not None
-    assert continued.teaching_progress.section_index == 1
-    assert continued.teaching_progress.has_next_section is False
-
-    restarted = codex_chat.process_codex_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="Start again.", teaching_action="restart"),
-        user_id=TEST_USER_ID,
-    )
-    assert restarted.chatbot_message == "First section again."
-    assert restarted.teaching_progress is not None
-    assert restarted.teaching_progress.section_index == 0
+    assert generated.follow_up_suggestions == [
+        "Yes, start from the beginning.",
+        "No, leave it here for now.",
+    ]
+    assert generated.board_document_operation_status == "succeeded"
+    assert generated.auto_teaching_operation_status == "none"
+    assert generated.auto_teaching_operation_failure_reason is None
+    assert generated.teaching_progress is None
+    assert generated.board_task_sheet is None
+    assert generated.board_task_run_id is None
+    assert generated.board_task_version_id is None
+    assert requested_schemas == [
+        BlankBoardTurnDecision,
+        blank_board_intake.BoardGenerationHandoffResponse,
+    ]
 
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     commit_kinds = [commit.metadata.get("kind") for commit in saved_lesson.history_graph.commits]
     assert "board_document_generation" in commit_kinds
-    assert commit_kinds.count("board_task_requirement_ready") == 3
-    assert commit_kinds.count("board_directed_explanation") == 3
-    explanation_commit = next(
+    assert "board_generation_handoff" in commit_kinds
+    assert "board_task_requirement_ready" not in commit_kinds
+    assert "board_directed_explanation" not in commit_kinds
+    assert "auto_explain_failed" not in commit_kinds
+    generation_commit = next(
         commit
         for commit in saved_lesson.history_graph.commits
-        if commit.metadata.get("kind") == "board_directed_explanation"
+        if commit.metadata.get("kind") == "board_document_generation"
     )
-    assert explanation_commit.metadata["board_task_route"] == "explain"
-    assert explanation_commit.metadata["board_task_phase"] == "consumed"
-    assert explanation_commit.metadata["board_task_cleared"] is True
-
-
-def test_auto_explanation_failure_preserves_generated_board(
-    monkeypatch: pytest.MonkeyPatch,
-    codex_store: SqliteCourseStore,
-) -> None:
-    lesson = _seed_workspace(codex_store, content_text="")
-
-    def fake_parse(_self, **kwargs):
-        if kwargs["schema"] is BlankBoardTurnDecision:
-            return SimpleNamespace(
-                output_parsed=BlankBoardTurnDecision(
-                    intent="learning_need",
-                    teaching_type="knowledge_point",
-                    learning_content="A bounded topic",
-                    content_is_specific=True,
-                    current_level="Known level",
-                    target_scenario="Known purpose",
-                    chatbot_message="Board generation is ready.",
-                    teaching_plan="Create a structured board.",
-                    reason="The requirement is complete.",
-                ),
-                activity=[],
-            )
-        raise CodexAppServerError("directive unavailable")
-
-    def fake_board_turn(**kwargs) -> CodexTurnResult:
-        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
-        board_path.write_text("# Generated board\n\n## First\n\nPreserved.", encoding="utf-8")
-        return CodexTurnResult(
-            thread_id="thread_auto_teaching_failure",
-            turn_id="turn_auto_teaching_failure",
-            final_response="Generated.",
-        )
-
-    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
-    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
-
-    response = codex_chat.process_codex_chat_on_lesson(
-        lesson.id,
-        ChatRequest(
-            message="Generate and teach this topic.",
-            post_generation_action="auto_explain",
-        ),
-        user_id=TEST_USER_ID,
+    assert generation_commit.metadata["post_generation_action_requested"] == (
+        "auto_explain"
     )
-
-    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    assert response.auto_teaching_operation_status == "failed"
-    assert response.auto_teaching_operation_failure_reason == "directive unavailable"
-    assert saved_lesson.board_document.content_text.endswith("Preserved.")
-    assert current_head_commit(saved_lesson).metadata["kind"] == "auto_explain_failed"
-    assert saved_lesson.board_task_requirements is None
+    assert generation_commit.metadata["auto_teaching_started"] is False
+    handoff_commit = current_head_commit(saved_lesson)
+    assert handoff_commit.metadata["kind"] == "board_generation_handoff"
+    assert handoff_commit.metadata["post_generation_action_requested"] == (
+        "auto_explain"
+    )
+    assert handoff_commit.metadata["decision_trace"]["auto_teaching_started"] is False
 
 
 def test_source_page_range_selection_generates_from_only_that_range(
@@ -1993,7 +1958,9 @@ def test_source_page_range_selection_generates_from_only_that_range(
         ],
     )
 
-    def fail_if_intake_runs(**_kwargs):
+    def fail_if_intake_runs(_self, **kwargs):
+        if kwargs["schema"] is blank_board_intake.BoardGenerationHandoffResponse:
+            return _board_generation_handoff()
         raise AssertionError("a page-range source selection must bypass requirement questions")
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
@@ -2138,7 +2105,9 @@ def test_empty_scanned_pdf_chapter_uses_on_demand_ocr_before_generation(
         lambda **_kwargs: [],
     )
 
-    def fail_if_intake_runs(**_kwargs):
+    def fail_if_intake_runs(_self, **kwargs):
+        if kwargs["schema"] is blank_board_intake.BoardGenerationHandoffResponse:
+            return _board_generation_handoff()
         raise AssertionError("recovered source evidence must bypass requirement questions")
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
@@ -2476,7 +2445,9 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
         ]
     )
 
-    def fake_parse(_self, **_kwargs):
+    def fake_parse(_self, **kwargs):
+        if kwargs["schema"] is blank_board_intake.BoardGenerationHandoffResponse:
+            return _board_generation_handoff("The board is ready after the retry.")
         return SimpleNamespace(output_parsed=next(decisions))
 
     generation_calls = 0
@@ -2548,13 +2519,21 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
     )
 
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    retry_commit = current_head_commit(saved_lesson)
+    handoff_commit = current_head_commit(saved_lesson)
+    retry_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "board_document_generation"
+        and commit.metadata.get("requirement_retry") is True
+    )
     assert generation_calls == 2
     assert generation_timeouts == [
         codex_chat.CODEX_BOARD_GENERATION_TIMEOUT_SECONDS,
         codex_chat.CODEX_BOARD_GENERATION_TIMEOUT_SECONDS,
     ]
     assert retried.chatbot_message == "The board is ready after the retry."
+    assert handoff_commit.metadata["kind"] == "board_generation_handoff"
+    assert handoff_commit.parent_ids == [retry_commit.id]
     assert retry_commit.metadata["kind"] == "board_document_generation"
     assert retry_commit.metadata["requirement_retry"] is True
     assert retry_commit.metadata["requirement_version_id"] == failed_version_id
@@ -3177,7 +3156,7 @@ def test_codex_chat_serializes_turns_and_reloads_latest_document(
                 ChatRequest(message=message, interaction_mode="direct_edit"),
                 user_id=TEST_USER_ID,
             )
-        except BaseException as exc:  # pragma: no cover - asserted below
+        except BaseException as exc:  # noqa: BLE001  # pragma: no cover - asserted below
             errors.append(exc)
 
     first = threading.Thread(target=run, args=("first",))
