@@ -3,6 +3,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pytest
 
@@ -18,7 +19,6 @@ from app.services import ai_model_catalog, chat_service, codex_live_sideband, op
 from app.services.codex_live_task_lifecycle import (
     CodexLiveTask,
     CodexLiveTaskCoordinator,
-    task_texts_match,
 )
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -326,6 +326,9 @@ def test_codex_live_sideband_wire_parser_and_utf8_chunking(monkeypatch) -> None:
         "kind": "delegation",
         "id": "delegation_1",
         "prompt": "读取当前板书，然后补充一段。",
+        "turn_id": None,
+        "input_event_id": None,
+        "provider_reference": "delegation_1",
     }
     chunks = codex_live_sideband.chunk_codex_live_text("你" * 400)
     assert "".join(chunks) == "你" * 400
@@ -374,7 +377,15 @@ def test_codex_live_typed_input_enters_chatbot_queue_with_selection_snapshot() -
         async def receive_json(self):
             self.calls += 1
             if self.calls == 1:
-                return {"type": "input_text", "text": "读取当前板书"}
+                return {
+                    "type": "input_text",
+                    "text": "读取当前板书",
+                    "delegation_id": "typed_delegation_client",
+                    "turn_id": "typed_turn_client",
+                    "input_event_id": "typed_event_client",
+                    "input_kind": "typed",
+                    "provider_reference": "typed_provider_reference",
+                }
             await asyncio.Future()
 
         async def send_json(self, _payload):
@@ -413,28 +424,134 @@ def test_codex_live_typed_input_enters_chatbot_queue_with_selection_snapshot() -
         return queued
 
     queued = asyncio.run(_exercise())
-    assert queued.delegation_id.startswith("typed_delegation_")
+    assert queued.delegation_id == "typed_delegation_client"
+    assert queued.turn_id == "typed_turn_client"
+    assert queued.input_event_id == "typed_event_client"
+    assert queued.input_kind == "typed"
+    assert queued.provider_reference == "typed_provider_reference"
+    assert queued.workflow_run_id.startswith("workflow_run_")
+    assert len({queued.delegation_id, queued.turn_id, queued.workflow_run_id}) == 3
     assert queued.prompt == "读取当前板书"
     assert queued.provider_delegation is False
     assert queued.selection is not None
     assert queued.selection.excerpt == "初始选区"
 
 
-def test_codex_live_task_matching_deduplicates_repeated_work_but_not_distinct_actions() -> None:
-    assert task_texts_match("读取当前板书，然后补充一段。", "读取当前板书然后补充一段")
-    assert not task_texts_match("读取第一段", "读取第二段")
-    assert not task_texts_match("解释当前内容", "把当前内容写入板书")
+def test_codex_live_queue_deduplicates_only_the_same_input_event() -> None:
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        first = await coordinator.submit(
+            CodexLiveTask(
+                "delegation_1",
+                "读取第一段",
+                True,
+                input_event_id="event_same",
+                action="queue",
+            )
+        )
+        duplicate = await coordinator.submit(
+            CodexLiveTask(
+                "delegation_2",
+                "完全不同的文字也属于同一传输事件",
+                True,
+                input_event_id="event_same",
+                action="queue",
+            )
+        )
+        return coordinator, first, duplicate
+
+    coordinator, first, duplicate = asyncio.run(_exercise())
+    assert first.kind == "queued"
+    assert duplicate.kind == "duplicate"
+    assert duplicate.duplicate_of == "delegation_1"
+    assert coordinator.queue.qsize() == 1
+
+
+def test_codex_live_queue_keeps_identical_text_from_different_input_events() -> None:
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        first = await coordinator.submit(
+            CodexLiveTask(
+                "delegation_1",
+                "相同文字",
+                True,
+                input_event_id="event_1",
+                action="queue",
+            )
+        )
+        second = await coordinator.submit(
+            CodexLiveTask(
+                "delegation_2",
+                "相同文字",
+                True,
+                input_event_id="event_2",
+                action="queue",
+            )
+        )
+        return coordinator, first, second
+
+    coordinator, first, second = asyncio.run(_exercise())
+    assert first.kind == "queued"
+    assert second.kind == "queued"
+    assert coordinator.queue.qsize() == 2
+
+
+def test_codex_live_task_logs_keep_turn_workflow_and_delegation_ids_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        codex_live_sideband.ai_usage_logger,
+        "log_model_run_event",
+        lambda event_type, **kwargs: captured.update(event_type=event_type, **kwargs),
+    )
+    task = CodexLiveTask(
+        "delegation_distinct",
+        "处理任务",
+        True,
+        turn_id="turn_distinct",
+        workflow_run_id="workflow_run_distinct",
+        input_event_id="input_event_distinct",
+    )
+
+    async def _decision():
+        return await CodexLiveTaskCoordinator().submit(task)
+
+    decision = asyncio.run(_decision())
+    session = codex_live_sideband.CodexLiveSession(
+        call_id="rtc_distinct",
+        lesson_id="lesson_distinct",
+        user_id=TEST_USER_ID,
+        client_session_id="session_distinct",
+        transport_session_id="transport_distinct",
+        selection=None,
+        created_at=0,
+    )
+    codex_live_sideband._log_task_decision(session, decision, source="test")
+
+    assert captured["run_id"] == "workflow_run_distinct"
+    assert captured["turn_id"] == "turn_distinct"
+    assert captured["metadata"]["delegation_id"] == "delegation_distinct"
+    assert len(
+        {
+            captured["run_id"],
+            captured["turn_id"],
+            captured["metadata"]["delegation_id"],
+        }
+    ) == 3
 
 
 def test_codex_live_running_input_waits_for_explicit_lifecycle_action() -> None:
     async def _exercise():
         coordinator = CodexLiveTaskCoordinator()
-        first = CodexLiveTask("task_1", "读取当前板书", True)
+        first = CodexLiveTask("task_1", "读取当前板书", True, input_event_id="event_1")
         await coordinator.submit(first)
         await coordinator.begin(await coordinator.queue.get())
 
         pending = await coordinator.submit(CodexLiveTask("task_2", "补充一个例子", True))
-        duplicate = await coordinator.submit(CodexLiveTask("task_3", "读取当前板书。", True))
+        duplicate = await coordinator.submit(
+            CodexLiveTask("task_3", "任意重复传输", True, input_event_id="event_1")
+        )
         resolved = await coordinator.resolve("task_2", "queue")
         return coordinator, pending, duplicate, resolved
 
@@ -474,17 +591,39 @@ def test_codex_live_replace_cancels_active_and_clears_older_waiting_work() -> No
 def test_codex_live_completed_work_can_be_requested_again_and_chat_bypasses_queue() -> None:
     async def _exercise():
         coordinator = CodexLiveTaskCoordinator()
-        first = CodexLiveTask("task_1", "再次解释这个内容", True)
+        first = CodexLiveTask(
+            "task_1",
+            "再次解释这个内容",
+            True,
+            input_event_id="event_completed",
+        )
         await coordinator.submit(first)
         active = await coordinator.queue.get()
         await coordinator.begin(active)
         await coordinator.finish(active, "completed")
-        repeated = await coordinator.submit(CodexLiveTask("task_2", "再次解释这个内容", True))
+        repeated = await coordinator.submit(
+            CodexLiveTask(
+                "task_2",
+                "再次解释这个内容",
+                True,
+                input_event_id="event_new",
+            )
+        )
+        redelivered = await coordinator.submit(
+            CodexLiveTask(
+                "task_4",
+                "传输重放即使文字变化也不能重跑",
+                True,
+                input_event_id="event_completed",
+            )
+        )
         chat = await coordinator.submit(CodexLiveTask("task_3", "这是普通对话", True, action="chat"))
-        return coordinator, repeated, chat
+        return coordinator, repeated, redelivered, chat
 
-    coordinator, repeated, chat = asyncio.run(_exercise())
+    coordinator, repeated, redelivered, chat = asyncio.run(_exercise())
     assert repeated.kind == "queued"
+    assert redelivered.kind == "duplicate"
+    assert redelivered.duplicate_of == "task_1"
     assert chat.kind == "chat"
     assert chat.task.status == "dismissed"
     assert coordinator.snapshot()["queued_count"] == 1
@@ -555,6 +694,12 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
             lesson_id=lesson_id,
             message=request.message,
             selection=request.selection,
+            session_id=request.session_id,
+            turn_id=request.turn_id,
+            input_event_id=request.input_event_id,
+            channel=request.channel,
+            input_kind=request.input_kind,
+            provider_reference=request.provider_reference,
             user_id=user_id,
             commit_metadata=commit_metadata,
         )
@@ -583,6 +728,11 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
         message="读取我选中的板书并继续编辑。",
         client_session_id="codex_session",
         delegation_id="delegation_1",
+        turn_id="turn_1",
+        workflow_run_id="workflow_run_1",
+        input_event_id="input_event_1",
+        input_kind="voice",
+        provider_reference="provider_reference_1",
         selection=selection,
     )
 
@@ -595,11 +745,22 @@ def test_codex_live_delegation_runs_normal_chatbot_workflow(
         "lesson_id": lesson.id,
         "message": "读取我选中的板书并继续编辑。",
         "selection": selection,
+        "session_id": "codex_session",
+        "turn_id": "turn_1",
+        "input_event_id": "input_event_1",
+        "channel": "realtime",
+        "input_kind": "voice",
+        "provider_reference": "provider_reference_1",
         "user_id": TEST_USER_ID,
         "commit_metadata": {
             "chat_visibility": "visible",
             "interaction_channel": "realtime_delegation",
             "realtime_client_session_id": "codex_session",
+            "realtime_turn_id": "turn_1",
+            "realtime_input_event_id": "input_event_1",
+            "realtime_provider_reference": "provider_reference_1",
+            "workflow_run_id": "workflow_run_1",
+            "delegation_id": "delegation_1",
             "realtime_delegation_id": "delegation_1",
         },
     }
@@ -762,6 +923,12 @@ def test_realtime_workflow_uses_authoritative_chat_route_without_bridge_board_ch
         captured.update(
             lesson_id=lesson_id,
             message=request.message,
+            session_id=request.session_id,
+            turn_id=request.turn_id,
+            input_event_id=request.input_event_id,
+            channel=request.channel,
+            input_kind=request.input_kind,
+            provider_reference=request.provider_reference,
             user_id=user_id,
             commit_metadata=commit_metadata,
         )
@@ -784,6 +951,9 @@ def test_realtime_workflow_uses_authoritative_chat_route_without_bridge_board_ch
         request=RealtimeToolCallRequest(
             client_session_id="realtime_session",
             turn_id="turn_test",
+            input_event_id="input_event_test",
+            input_kind="voice",
+            provider_reference="provider_reference_test",
             call_id="call_chatbot",
             name="run_chatbot_workflow",
             arguments={
@@ -803,12 +973,21 @@ def test_realtime_workflow_uses_authoritative_chat_route_without_bridge_board_ch
     assert captured == {
         "lesson_id": lesson.id,
         "message": "我们来做轮流角色练习，我说一句你说一句。",
+        "session_id": "realtime_session",
+        "turn_id": "turn_test",
+        "input_event_id": "input_event_test",
+        "channel": "realtime",
+        "input_kind": "voice",
+        "provider_reference": "provider_reference_test",
         "user_id": TEST_USER_ID,
         "commit_metadata": {
             "chat_visibility": "hidden",
             "interaction_channel": "realtime_tool",
             "realtime_client_session_id": "realtime_session",
             "realtime_turn_id": "turn_test",
+            "realtime_input_event_id": "input_event_test",
+            "realtime_provider_reference": "provider_reference_test",
+            "workflow_run_id": ANY,
             "realtime_provider_turn_hint": {
                 "intent": "learning_need",
                 "reason": "The learner requested a concrete practice activity.",
@@ -918,6 +1097,10 @@ def test_realtime_workflow_accepts_message_without_legacy_provider_hint(
     assert response.status == "ok"
     assert response.model_output["route"] == "learning_need"
     assert "realtime_provider_turn_hint" not in captured["commit_metadata"]
+    assert captured["commit_metadata"]["realtime_turn_id"] == "call_message_only"
+    assert captured["commit_metadata"]["realtime_input_event_id"] == "call_message_only"
+    assert captured["commit_metadata"]["realtime_provider_reference"] == "call_message_only"
+    assert captured["commit_metadata"]["workflow_run_id"].startswith("workflow_run_")
 
 
 def test_realtime_transcripts_persist_once_in_lesson_history(monkeypatch, isolated_store) -> None:

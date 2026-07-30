@@ -186,7 +186,17 @@ def parse_codex_live_event(payload: str) -> dict[str, Any] | None:
             and part.get("type") == "input_text"
             and isinstance(part.get("text"), str)
         )
-        return {"kind": "delegation", "id": delegation_id, "prompt": prompt}
+        return {
+            "kind": "delegation",
+            "id": delegation_id,
+            "prompt": prompt,
+            "turn_id": _nonempty_identifier(event.get("turn_id"))
+            or _nonempty_identifier(item.get("turn_id")),
+            "input_event_id": _nonempty_identifier(event.get("input_event_id"))
+            or _nonempty_identifier(item.get("input_event_id")),
+            "provider_reference": _nonempty_identifier(event.get("id"))
+            or delegation_id,
+        }
     if event_type == "error":
         error = event.get("error")
         if isinstance(error, dict) and isinstance(error.get("message"), str):
@@ -199,6 +209,10 @@ def parse_codex_live_event(payload: str) -> dict[str, Any] | None:
             message = "Codex Live sideband error"
         return {"kind": "error", "message": message}
     return {"kind": "ignored", "event_type": event_type}
+
+
+def _nonempty_identifier(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 async def _send_context(
@@ -255,14 +269,14 @@ def _log_task_decision(
     task = decision.task
     ai_usage_logger.log_model_run_event(
         decision.kind,
-        run_id=task.delegation_id,
+        run_id=task.workflow_run_id,
         parent_run_id=session.client_session_id,
         provider="openai_codex",
         model=OPENAI_CODEX_REALTIME_MODEL,
         status=task.status,
         user_id=session.user_id,
         lesson_id=session.lesson_id,
-        turn_id=task.delegation_id,
+        turn_id=task.turn_id,
         request_kind="provider_delegation" if task.provider_delegation else "typed_delegation",
         input_data={"text": task.prompt},
         metadata={
@@ -271,6 +285,9 @@ def _log_task_decision(
             "task_action": task.action,
             "duplicate_of": decision.duplicate_of,
             "queue_position": decision.queue_position,
+            "delegation_id": task.delegation_id,
+            "input_event_id": task.input_event_id,
+            "provider_reference": task.provider_reference,
         },
     )
 
@@ -387,9 +404,29 @@ async def _handle_client_messages(
                 )
                 decision = await coordinator.submit(
                     CodexLiveTask(
-                        delegation_id=new_id("typed_delegation"),
+                        delegation_id=(
+                            _nonempty_identifier(payload.get("delegation_id"))
+                            or new_id("typed_delegation")
+                        ),
                         prompt=text,
                         provider_delegation=False,
+                        turn_id=(
+                            _nonempty_identifier(payload.get("turn_id"))
+                            or new_id("realtime_turn")
+                        ),
+                        workflow_run_id=new_id("workflow_run"),
+                        input_event_id=(
+                            _nonempty_identifier(payload.get("input_event_id"))
+                            or new_id("realtime_input")
+                        ),
+                        input_kind=(
+                            payload["input_kind"]
+                            if payload.get("input_kind") in {"typed", "voice"}
+                            else "typed"
+                        ),
+                        provider_reference=_nonempty_identifier(
+                            payload.get("provider_reference")
+                        ),
                         selection=_snapshot_selection(session.selection),
                         action=action,
                     )
@@ -438,17 +475,22 @@ async def _handle_delegations(
         try:
             ai_usage_logger.log_model_run_event(
                 "started",
-                run_id=task.delegation_id,
+                run_id=task.workflow_run_id,
                 parent_run_id=session.client_session_id,
                 provider="openai_codex",
                 model=OPENAI_CODEX_REALTIME_MODEL,
                 status="running",
                 user_id=session.user_id,
                 lesson_id=session.lesson_id,
-                turn_id=task.delegation_id,
+                turn_id=task.turn_id,
                 request_kind="provider_delegation" if task.provider_delegation else "typed_delegation",
                 input_data={"text": task.prompt},
-                metadata={"call_id": session.call_id, "task_action": task.action},
+                metadata={
+                    "call_id": session.call_id,
+                    "task_action": task.action,
+                    "delegation_id": task.delegation_id,
+                    "input_event_id": task.input_event_id,
+                },
             )
             await _send_client_event(
                 websocket,
@@ -465,16 +507,20 @@ async def _handle_delegations(
             def publish_progress(event) -> None:
                 ai_usage_logger.log_model_run_event(
                     "workflow_progress",
-                    run_id=task.delegation_id,
+                    run_id=task.workflow_run_id,
                     parent_run_id=session.client_session_id,
                     provider="openai_codex",
                     model=OPENAI_CODEX_REALTIME_MODEL,
                     status=event.status,
                     user_id=session.user_id,
                     lesson_id=session.lesson_id,
-                    turn_id=task.delegation_id,
+                    turn_id=task.turn_id,
                     request_kind="provider_delegation" if task.provider_delegation else "typed_delegation",
-                    metadata={"activity": event.model_dump(mode="json")},
+                    metadata={
+                        "activity": event.model_dump(mode="json"),
+                        "delegation_id": task.delegation_id,
+                        "input_event_id": task.input_event_id,
+                    },
                 )
                 pending_client_events.append(asyncio.run_coroutine_threadsafe(
                     _send_client_event(
@@ -510,6 +556,11 @@ async def _handle_delegations(
                 message=task.prompt,
                 client_session_id=session.client_session_id,
                 delegation_id=task.delegation_id,
+                turn_id=task.turn_id,
+                workflow_run_id=task.workflow_run_id,
+                input_event_id=task.input_event_id,
+                input_kind=task.input_kind,
+                provider_reference=task.provider_reference,
                 selection=task.selection,
                 on_delta=publish_delta,
                 on_agent_activity=publish_progress,
@@ -543,14 +594,14 @@ async def _handle_delegations(
             )
             ai_usage_logger.log_model_run_event(
                 "completed" if result.status == "ok" else "failed",
-                run_id=task.delegation_id,
+                run_id=task.workflow_run_id,
                 parent_run_id=session.client_session_id,
                 provider="openai_codex",
                 model=OPENAI_CODEX_REALTIME_MODEL,
                 status="completed" if result.status == "ok" else "failed",
                 user_id=session.user_id,
                 lesson_id=session.lesson_id,
-                turn_id=task.delegation_id,
+                turn_id=task.turn_id,
                 request_kind="provider_delegation" if task.provider_delegation else "typed_delegation",
                 output_data={
                     "status": result.status,
@@ -566,7 +617,11 @@ async def _handle_delegations(
                     if result.status != "ok"
                     else None
                 ),
-                metadata={"call_id": session.call_id},
+                metadata={
+                    "call_id": session.call_id,
+                    "delegation_id": task.delegation_id,
+                    "input_event_id": task.input_event_id,
+                },
             )
             await coordinator.finish(task, "completed" if result.status == "ok" else "failed")
             response_text = str(result.model_output.get("chatbot_message") or "").strip()
@@ -657,6 +712,11 @@ async def _handle_upstream_messages(
                     delegation_id=event["id"],
                     prompt=event["prompt"],
                     provider_delegation=True,
+                    turn_id=event.get("turn_id") or new_id("realtime_turn"),
+                    workflow_run_id=new_id("workflow_run"),
+                    input_event_id=event.get("input_event_id") or event["id"],
+                    input_kind="voice",
+                    provider_reference=event.get("provider_reference") or event["id"],
                     selection=_snapshot_selection(session.selection),
                 )
             )

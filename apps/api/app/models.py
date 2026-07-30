@@ -2594,6 +2594,13 @@ RealtimeToolName = Literal["read_board_context", "run_chatbot_workflow"]
 class RealtimeToolCallRequest(BaseModel):
     client_session_id: str = Field(min_length=1, max_length=160)
     turn_id: str | None = Field(default=None, max_length=200)
+    input_event_id: str | None = Field(default=None, min_length=1, max_length=200)
+    input_kind: ChatInputKind = "voice"
+    provider_reference: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+    )
     call_id: str = Field(min_length=1, max_length=160)
     name: RealtimeToolName
     arguments: dict[str, Any] = Field(default_factory=dict)

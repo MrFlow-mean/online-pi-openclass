@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from app.models import AgentActivityEvent, ChatRequest, RealtimeToolCallRequest, RealtimeToolCallResponse, SelectionRef
+from app.models import (
+    AgentActivityEvent,
+    ChatInputKind,
+    ChatRequest,
+    RealtimeToolCallRequest,
+    RealtimeToolCallResponse,
+    SelectionRef,
+    new_id,
+)
 from app.services.ai_logging import ai_usage_logger
 
 
@@ -56,17 +64,33 @@ def execute_realtime_tool(
             provider_hint = _legacy_provider_turn_hint(request.arguments)
             from app.services.chat_service import process_chat_on_lesson
 
+            turn_id = request.turn_id or request.call_id
+            input_event_id = request.input_event_id or request.call_id
+            provider_reference = request.provider_reference or request.call_id
+            workflow_run_id = new_id("workflow_run")
             commit_metadata: dict[str, object] = {
                 "chat_visibility": "hidden",
                 "interaction_channel": "realtime_tool",
                 "realtime_client_session_id": request.client_session_id,
-                "realtime_turn_id": request.turn_id or "",
+                "realtime_turn_id": turn_id,
+                "realtime_input_event_id": input_event_id,
+                "realtime_provider_reference": provider_reference,
+                "workflow_run_id": workflow_run_id,
             }
             if provider_hint:
                 commit_metadata["realtime_provider_turn_hint"] = provider_hint
             chat_response = process_chat_on_lesson(
                 lesson_id,
-                ChatRequest(message=message, selection=request.selection),
+                ChatRequest(
+                    message=message,
+                    session_id=request.client_session_id,
+                    turn_id=turn_id,
+                    input_event_id=input_event_id,
+                    channel="realtime",
+                    input_kind=request.input_kind,
+                    provider_reference=provider_reference,
+                    selection=request.selection,
+                ),
                 user_id=user_id,
                 commit_metadata=commit_metadata,
             )
@@ -79,7 +103,7 @@ def execute_realtime_tool(
                     "realtime_provider_turn_hint",
                     lesson_id=lesson_id,
                     client_session_id=request.client_session_id,
-                    turn_id=request.turn_id,
+                    turn_id=turn_id,
                     tool_call_id=request.call_id,
                     provider_hint=provider_hint,
                     authoritative_route=response.model_output["route"],
@@ -117,6 +141,11 @@ def execute_realtime_delegation(
     message: str,
     client_session_id: str,
     delegation_id: str,
+    turn_id: str | None = None,
+    workflow_run_id: str | None = None,
+    input_event_id: str | None = None,
+    input_kind: ChatInputKind = "voice",
+    provider_reference: str | None = None,
     selection: SelectionRef | None = None,
     on_delta: Callable[[str], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
@@ -129,22 +158,50 @@ def execute_realtime_delegation(
             status="error",
             model_output={"status": "error", "message": "委托内容为空"},
         )
+    effective_turn_id = (turn_id or "").strip() or new_id("realtime_turn")
+    effective_workflow_run_id = (
+        (workflow_run_id or "").strip() or new_id("workflow_run")
+    )
+    effective_input_event_id = (
+        (input_event_id or "").strip()
+        or delegation_id.strip()
+        or new_id("realtime_input")
+    )
+    effective_provider_reference = (
+        (provider_reference or "").strip() or delegation_id.strip() or None
+    )
     try:
         from app.services.chat_service import process_chat_on_lesson
 
+        commit_metadata: dict[str, object] = {
+            "chat_visibility": "visible",
+            "interaction_channel": "realtime_delegation",
+            "realtime_client_session_id": client_session_id,
+            "realtime_turn_id": effective_turn_id,
+            "realtime_input_event_id": effective_input_event_id,
+            "realtime_provider_reference": effective_provider_reference or "",
+            "workflow_run_id": effective_workflow_run_id,
+        }
+        if delegation_id.strip():
+            commit_metadata["delegation_id"] = delegation_id.strip()
+            commit_metadata["realtime_delegation_id"] = delegation_id.strip()
         chat_response = process_chat_on_lesson(
             lesson_id,
-            ChatRequest(message=normalized, selection=selection),
+            ChatRequest(
+                message=normalized,
+                session_id=client_session_id,
+                turn_id=effective_turn_id,
+                input_event_id=effective_input_event_id,
+                channel="realtime",
+                input_kind=input_kind,
+                provider_reference=effective_provider_reference,
+                selection=selection,
+            ),
             user_id=user_id,
             on_delta=on_delta,
             on_agent_activity=on_agent_activity,
             is_cancelled=is_cancelled,
-            commit_metadata={
-                "chat_visibility": "visible",
-                "interaction_channel": "realtime_delegation",
-                "realtime_client_session_id": client_session_id,
-                "realtime_delegation_id": delegation_id,
-            },
+            commit_metadata=commit_metadata,
         )
         response = _chat_response_as_realtime_result(
             chat_response,
@@ -155,6 +212,9 @@ def execute_realtime_delegation(
             lesson_id=lesson_id,
             client_session_id=client_session_id,
             delegation_id=delegation_id,
+            workflow_run_id=effective_workflow_run_id,
+            turn_id=effective_turn_id,
+            input_event_id=effective_input_event_id,
             status=response.status,
         )
         return response
@@ -164,6 +224,9 @@ def execute_realtime_delegation(
             lesson_id=lesson_id,
             client_session_id=client_session_id,
             delegation_id=delegation_id,
+            workflow_run_id=effective_workflow_run_id,
+            turn_id=effective_turn_id,
+            input_event_id=effective_input_event_id,
             error=str(exc),
         )
         return RealtimeToolCallResponse(
