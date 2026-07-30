@@ -21,7 +21,7 @@ from app.models import (
 from app.services.blank_board_intake import active_requirement_from_history
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
 from app.services.course_store import SqliteCourseStore
-from app.services.history import commit_operations
+from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_summary import lesson_content_summary
 
 
@@ -322,9 +322,12 @@ def lesson_view(lesson: Lesson) -> LessonView:
 
 
 def _codex_only_lesson(lesson: Lesson) -> Lesson:
-    active_requirement = (
-        active_requirement_from_history(lesson)
-        if not lesson.board_document.content_text.strip()
+    board_is_empty = not lesson.board_document.content_text.strip()
+    active_requirement = active_requirement_from_history(lesson) if board_is_empty else None
+    runtime = current_head_commit(lesson).runtime_snapshot
+    active_board_task = (
+        runtime.board_task_requirements
+        if not board_is_empty and runtime is not None
         else None
     )
     return lesson.model_copy(
@@ -333,7 +336,7 @@ def _codex_only_lesson(lesson: Lesson) -> Lesson:
             "board_teaching_guide": None,
             "board_teaching_progress": None,
             "learning_requirements": active_requirement,
-            "board_task_requirements": None,
+            "board_task_requirements": active_board_task,
         }
     )
 
