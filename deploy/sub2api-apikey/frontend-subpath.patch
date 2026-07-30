@@ -1,0 +1,188 @@
+diff --git a/frontend/src/api/__tests__/client.spec.ts b/frontend/src/api/__tests__/client.spec.ts
+index d1b6190..792b369 100644
+--- a/frontend/src/api/__tests__/client.spec.ts
++++ b/frontend/src/api/__tests__/client.spec.ts
+@@ -39,6 +39,21 @@ describe('API Client', () => {
+       )
+     })
+
++    it('在子路径部署时为网关、setup 和 WebSocket 请求保留部署前缀', async () => {
++      vi.resetModules()
++      vi.stubEnv('VITE_API_BASE_URL', '/apikey/api/v1')
++
++      const mod = await import('@/api/client')
++
++      expect(mod.buildGatewayUrl('/v1/models')).toBe(`${window.location.origin}/apikey/v1/models`)
++      expect(mod.buildGatewayUrl('/setup/status')).toBe(
++        `${window.location.origin}/apikey/setup/status`
++      )
++      expect(mod.buildGatewayUrl('/api/v1/admin/ops/ws/qps')).toBe(
++        `${window.location.origin}/apikey/api/v1/admin/ops/ws/qps`
++      )
++    })
++
+     it('自动附加 Authorization 头', async () => {
+       localStorage.setItem('auth_token', 'my-jwt-token')
+
+diff --git a/frontend/src/api/url.ts b/frontend/src/api/url.ts
+index a2cde25..f1fd7a7 100644
+--- a/frontend/src/api/url.ts
++++ b/frontend/src/api/url.ts
+@@ -32,11 +32,15 @@ export function buildApiUrl(path: string): string {
+ export function buildGatewayUrl(path: string): string {
+   const suffix = normalizePath(path)
+   try {
+-    const origin =
++    const apiBase =
+       typeof window === 'undefined'
+-        ? new URL(getAPIBaseURL()).origin
+-        : new URL(getAPIBaseURL(), window.location.origin).origin
+-    return `${origin}${suffix}`
++        ? new URL(getAPIBaseURL())
++        : new URL(getAPIBaseURL(), window.location.origin)
++    const normalizedBasePath = apiBase.pathname.replace(/\/+$/, '')
++    const gatewayBasePath = normalizedBasePath.endsWith(DEFAULT_API_BASE_URL)
++      ? normalizedBasePath.slice(0, -DEFAULT_API_BASE_URL.length)
++      : ''
++    return `${apiBase.origin}${gatewayBasePath}${suffix}`
+   } catch {
+     return suffix
+   }
+diff --git a/frontend/src/components/layout/AppSidebar.vue b/frontend/src/components/layout/AppSidebar.vue
+index 2b519e3..e003dc8 100644
+--- a/frontend/src/components/layout/AppSidebar.vue
++++ b/frontend/src/components/layout/AppSidebar.vue
+@@ -14,7 +14,7 @@
+         class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl shadow-glow transition-opacity hover:opacity-80"
+         @click="handleMenuItemClick(homePath)"
+       >
+-        <img v-if="settingsLoaded" :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
++        <img v-if="settingsLoaded" :src="siteLogo || DEFAULT_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
+       </router-link>
+       <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
+         <router-link
+@@ -193,6 +193,7 @@ import { useRoute, useRouter } from 'vue-router'
+ import { useI18n } from 'vue-i18n'
+ import { useAdminSettingsStore, useAppStore, useAuthStore, useOnboardingStore } from '@/stores'
+ import VersionBadge from '@/components/common/VersionBadge.vue'
++import { DEFAULT_LOGO_URL } from '@/utils/branding'
+ import { sanitizeSvg } from '@/utils/sanitize'
+ import { sanitizeUrl } from '@/utils/url'
+ import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
+diff --git a/frontend/src/components/layout/AuthLayout.vue b/frontend/src/components/layout/AuthLayout.vue
+index c39cf3d..944bf81 100644
+--- a/frontend/src/components/layout/AuthLayout.vue
++++ b/frontend/src/components/layout/AuthLayout.vue
+@@ -33,7 +33,7 @@
+           <div
+             class="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl shadow-lg shadow-primary-500/30"
+           >
+-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
++            <img :src="siteLogo || DEFAULT_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
+           </div>
+           <h1 class="text-gradient mb-2 text-3xl font-bold">
+             {{ siteName }}
+@@ -65,6 +65,7 @@
+ <script setup lang="ts">
+ import { computed, onMounted } from 'vue'
+ import { useAppStore } from '@/stores'
++import { DEFAULT_LOGO_URL } from '@/utils/branding'
+ import { sanitizeUrl } from '@/utils/url'
+
+ const appStore = useAppStore()
+diff --git a/frontend/src/components/modelPlaza/PlazaNavBar.vue b/frontend/src/components/modelPlaza/PlazaNavBar.vue
+index b1e166a..4f65bf9 100644
+--- a/frontend/src/components/modelPlaza/PlazaNavBar.vue
++++ b/frontend/src/components/modelPlaza/PlazaNavBar.vue
+@@ -9,7 +9,7 @@
+           <span
+             class="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-200 dark:bg-dark-800 dark:ring-dark-700"
+           >
+-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
++            <img :src="siteLogo || DEFAULT_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
+           </span>
+           <span class="truncate text-base font-semibold text-gray-950 dark:text-white">
+             {{ siteName }}
+@@ -43,6 +43,7 @@
+ <script setup lang="ts">
+ import { computed } from 'vue'
+ import { useI18n } from 'vue-i18n'
++import { DEFAULT_LOGO_URL } from '@/utils/branding'
+ import { sanitizeUrl } from '@/utils/url'
+ import { useAppStore } from '@/stores/app'
+ import { useAuthStore } from '@/stores/auth'
+diff --git a/frontend/src/utils/branding.ts b/frontend/src/utils/branding.ts
+index be8c68c..73bdca3 100644
+--- a/frontend/src/utils/branding.ts
++++ b/frontend/src/utils/branding.ts
+@@ -1,5 +1,7 @@
+ import { sanitizeUrl } from '@/utils/url'
+
++export const DEFAULT_LOGO_URL = `${import.meta.env.BASE_URL}logo.svg`
++
+ export function updateFavicon(logoUrl: string): void {
+   const sanitizedLogoUrl = sanitizeUrl(logoUrl, {
+     allowRelative: true,
+diff --git a/frontend/src/views/HomeView.vue b/frontend/src/views/HomeView.vue
+index e01aa53..fda1808 100644
+--- a/frontend/src/views/HomeView.vue
++++ b/frontend/src/views/HomeView.vue
+@@ -42,7 +42,7 @@
+         <!-- Logo -->
+         <div class="flex items-center">
+           <div class="h-10 w-10 overflow-hidden rounded-xl shadow-md">
+-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
++            <img :src="siteLogo || DEFAULT_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
+           </div>
+         </div>
+
+@@ -410,6 +410,7 @@ import { useI18n } from 'vue-i18n'
+ import { useAuthStore, useAppStore } from '@/stores'
+ import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
+ import Icon from '@/components/icons/Icon.vue'
++import { DEFAULT_LOGO_URL } from '@/utils/branding'
+ import { sanitizeUrl } from '@/utils/url'
+
+ const { t } = useI18n()
+diff --git a/frontend/src/views/KeyUsageView.vue b/frontend/src/views/KeyUsageView.vue
+index 49a205f..5e1541b 100644
+--- a/frontend/src/views/KeyUsageView.vue
++++ b/frontend/src/views/KeyUsageView.vue
+@@ -5,7 +5,7 @@
+       <nav class="mx-auto flex max-w-6xl items-center justify-between">
+         <router-link to="/home" class="flex items-center gap-3">
+           <div class="h-10 w-10 overflow-hidden rounded-xl shadow-md">
+-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
++            <img :src="siteLogo || DEFAULT_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
+           </div>
+           <span class="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">{{ siteName }}</span>
+         </router-link>
+@@ -423,6 +423,7 @@ import { useAppStore } from '@/stores'
+ import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
+ import Icon from '@/components/icons/Icon.vue'
+ import { buildGatewayUrl } from '@/api/client'
++import { DEFAULT_LOGO_URL } from '@/utils/branding'
+ import { formatDateLocalInput } from '@/utils/format'
+ import { sanitizeUrl } from '@/utils/url'
+
+diff --git a/frontend/src/views/public/LegalDocumentView.vue b/frontend/src/views/public/LegalDocumentView.vue
+index ebf9fbc..b18df06 100644
+--- a/frontend/src/views/public/LegalDocumentView.vue
++++ b/frontend/src/views/public/LegalDocumentView.vue
+@@ -5,7 +5,7 @@
+         <RouterLink to="/home" class="flex min-w-0 items-center gap-3">
+           <template v-if="settings">
+             <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-200 dark:bg-dark-800 dark:ring-dark-700">
+-              <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
++              <img :src="siteLogo || DEFAULT_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
+             </span>
+             <span class="truncate text-base font-semibold text-gray-950 dark:text-white">
+               {{ siteName }}
+@@ -97,6 +97,7 @@ import DOMPurify from 'dompurify'
+ import { useI18n } from 'vue-i18n'
+ import Icon from '@/components/icons/Icon.vue'
+ import { getLocale } from '@/i18n'
++import { DEFAULT_LOGO_URL } from '@/utils/branding'
+ import { sanitizeUrl } from '@/utils/url'
+ import { useAppStore } from '@/stores/app'
+ import type { LoginAgreementDocument } from '@/types'
