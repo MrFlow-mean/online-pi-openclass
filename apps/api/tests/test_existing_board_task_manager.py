@@ -4,10 +4,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
-
 from app.models import AIModelSelection, ConversationTurn, SelectionRef
 from app.services.existing_board import task_manager
+from pydantic import ValidationError
 
 
 def _selected_model() -> AIModelSelection:
@@ -156,6 +155,136 @@ def test_delete_of_whole_board_requires_confirmation_and_cannot_execute(
 
     assert result.decision.requires_confirmation is True
     assert result.decision.confirmation_reasons == ["delete", "whole_board"]
+    assert result.decision.execution_allowed is False
+
+
+def test_independent_topic_in_new_lesson_is_complete_but_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def parse_structured(self, **_kwargs):
+            return SimpleNamespace(
+                output_parsed=_draft(
+                    action="write",
+                    target_hint="",
+                    location_kind="unresolved",
+                    question_or_topic="Create a lesson for the independent topic",
+                    extent="article",
+                    destination="new_lesson",
+                    topic_relation="independent",
+                    relation_to_active="new_task",
+                    missing_items=["target"],
+                ),
+                activity=[],
+            )
+
+    monkeypatch.setattr(
+        task_manager,
+        "resolve_text_model_selection",
+        lambda *_args, **_kwargs: _selected_model(),
+    )
+    monkeypatch.setattr(
+        task_manager,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+
+    result = task_manager.manage_existing_board_task(
+        task_manager.build_task_manager_input(
+            message="Create a new lesson for this independent topic."
+        ),
+        text_model=_selected_model(),
+        user_id="user_1",
+    )
+
+    assert result.decision.missing_items == []
+    assert result.decision.completeness == 100
+    assert result.decision.requires_confirmation is True
+    assert result.decision.confirmation_reasons == ["new_lesson"]
+    assert result.decision.execution_allowed is False
+
+
+def test_whole_board_write_is_complete_without_segment_target_but_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def parse_structured(self, **_kwargs):
+            return SimpleNamespace(
+                output_parsed=_draft(
+                    action="write",
+                    target_hint="",
+                    location_kind="unresolved",
+                    question_or_topic="Replace the board with a complete new version",
+                    extent="whole_board",
+                    relation_to_active="new_task",
+                    missing_items=["target"],
+                ),
+                activity=[],
+            )
+
+    monkeypatch.setattr(
+        task_manager,
+        "resolve_text_model_selection",
+        lambda *_args, **_kwargs: _selected_model(),
+    )
+    monkeypatch.setattr(
+        task_manager,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+
+    result = task_manager.manage_existing_board_task(
+        task_manager.build_task_manager_input(message="Rewrite the whole board."),
+        text_model=_selected_model(),
+        user_id="user_1",
+    )
+
+    assert result.decision.missing_items == []
+    assert result.decision.completeness == 100
+    assert result.decision.requires_confirmation is True
+    assert result.decision.confirmation_reasons == ["whole_board"]
+    assert result.decision.execution_allowed is False
+
+
+def test_current_lesson_write_without_target_remains_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def parse_structured(self, **_kwargs):
+            return SimpleNamespace(
+                output_parsed=_draft(
+                    action="write",
+                    target_hint="",
+                    location_kind="unresolved",
+                    question_or_topic="Add another example",
+                    extent="section",
+                    destination="current_lesson",
+                    relation_to_active="new_task",
+                    missing_items=[],
+                ),
+                activity=[],
+            )
+
+    monkeypatch.setattr(
+        task_manager,
+        "resolve_text_model_selection",
+        lambda *_args, **_kwargs: _selected_model(),
+    )
+    monkeypatch.setattr(
+        task_manager,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+
+    result = task_manager.manage_existing_board_task(
+        task_manager.build_task_manager_input(message="Add another example."),
+        text_model=_selected_model(),
+        user_id="user_1",
+    )
+
+    assert result.decision.missing_items == ["target"]
+    assert result.decision.completeness < 100
+    assert result.decision.requires_confirmation is False
     assert result.decision.execution_allowed is False
 
 
