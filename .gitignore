@@ -36,4 +36,5 @@ apps/api/data/*.sqlite3-*
 apps/api/data/uploads/
 apps/api/data/exports/
 apps/api/data/logs/
+apps/api/data/pi-runtime/
 apps/api/.env
