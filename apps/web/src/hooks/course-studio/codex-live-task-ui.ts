@@ -1,4 +1,8 @@
-import type { AgentActivityEvent, RealtimeToolCallResponse } from "@/types";
+import type {
+  AgentActivityEvent,
+  RealtimeToolCallResponse,
+  RealtimeToolName,
+} from "@/types";
 
 export type RealtimeToolStatusUpdate = {
   lessonId: string;
@@ -116,6 +120,16 @@ function runForEvent(state: CodexLiveTaskState, payload: CodexLiveBridgeEvent) {
   return runId ? state.runsByWorkflowId[runId] : undefined;
 }
 
+export function shouldPublishRealtimeToolTaskStatus(
+  toolName: RealtimeToolName,
+  result?: RealtimeToolCallResponse
+) {
+  if (toolName !== "run_chatbot_workflow") {
+    return true;
+  }
+  return result?.model_output.route === "learning_need";
+}
+
 function eventRunStatus(payload: CodexLiveBridgeEvent): CodexLiveRunStatus | null {
   if (payload.type === "codex_live.workflow.input_pending") {
     return "waiting";
@@ -213,6 +227,27 @@ export function applyCodexLiveTaskEvent(
   }
 
   const runId = workflowRunId(payload);
+  if (payload.type === "codex_live.speech.error") {
+    if (!runId) {
+      return pendingTasks === state.pendingTasks ? state : { ...state, pendingTasks };
+    }
+    const previous = state.runsByWorkflowId[runId];
+    if (!previous?.documentResultSucceeded) {
+      return pendingTasks === state.pendingTasks ? state : { ...state, pendingTasks };
+    }
+    return {
+      ...state,
+      pendingTasks,
+      runsByWorkflowId: {
+        ...state.runsByWorkflowId,
+        [runId]: {
+          ...previous,
+          speechStatus: "failed",
+          label: "工作流已完成，语音输出未完成",
+        },
+      },
+    };
+  }
   const status = eventRunStatus(payload);
   if (!runId || !status) {
     return pendingTasks === state.pendingTasks ? state : { ...state, pendingTasks };
@@ -220,20 +255,12 @@ export function applyCodexLiveTaskEvent(
 
   const previous = state.runsByWorkflowId[runId];
   if (shouldPreserveTerminalRun(previous, payload, status)) {
-    const speechFailed =
-      previous?.documentResultSucceeded && payload.type === "codex_live.workflow.error";
     return {
       ...state,
       pendingTasks,
       runsByWorkflowId: {
         ...state.runsByWorkflowId,
-        [runId]: speechFailed
-          ? {
-              ...previous,
-              speechStatus: "failed",
-              label: "工作流已完成，语音输出未完成",
-            }
-          : previous,
+        [runId]: previous,
       },
     };
   }
@@ -405,15 +432,27 @@ export function handleCodexLiveTaskEvent(
     });
     return true;
   }
-  if (payload.type === "codex_live.workflow.error" || payload.type === "codex_live.error") {
-    const message = payload.message || "Codex Live Chatbot 工作流通道发生错误";
+  if (payload.type === "codex_live.speech.error") {
     const run = runForEvent(nextState, payload);
     if (run?.documentResultSucceeded) {
       const label = "工作流已完成，语音输出未完成";
       if (run.visibleAsTask && turnId) {
-        onToolStatusUpdate({ lessonId, turnId, delegationId: delegationId ?? undefined, label, status: "completed" });
+        onToolStatusUpdate({
+          lessonId,
+          turnId,
+          delegationId: delegationId ?? undefined,
+          label,
+          status: "completed",
+        });
       }
       setVoiceStatusText(label);
+    }
+    return true;
+  }
+  if (payload.type === "codex_live.workflow.error" || payload.type === "codex_live.error") {
+    const message = payload.message || "Codex Live Chatbot 工作流通道发生错误";
+    const run = runForEvent(nextState, payload);
+    if (run?.documentResultSucceeded) {
       return true;
     }
     onToolStatusUpdate({

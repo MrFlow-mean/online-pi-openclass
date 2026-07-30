@@ -6,6 +6,7 @@ import {
   codexLiveTaskSummary,
   createCodexLiveTaskState,
   handleCodexLiveTaskEvent,
+  shouldPublishRealtimeToolTaskStatus,
   type CodexLiveBridgeEvent,
   type CodexLiveTaskState,
   type RealtimeToolStatusUpdate,
@@ -76,7 +77,7 @@ test("a speech-channel error cannot replace a successful document workflow resul
     context
   );
   handleCodexLiveTaskEvent(
-    workflowEvent("codex_live.workflow.error", "run-success", "turn-success", {
+    workflowEvent("codex_live.speech.error", "run-success", "turn-success", {
       message: "speech channel failed",
     }),
     context
@@ -89,6 +90,45 @@ test("a speech-channel error cannot replace a successful document workflow resul
   });
   expect(statuses.map((update) => update.status)).toEqual(["completed", "completed"]);
   expect(errors).toEqual([]);
+});
+
+test("a generic workflow error does not get relabeled as a speech failure", () => {
+  let state = createCodexLiveTaskState();
+  state = applyCodexLiveTaskEvent(
+    state,
+    workflowEvent("codex_live.workflow.result", "run-terminal", "turn-terminal", {
+      result: successfulResult,
+    })
+  );
+  state = applyCodexLiveTaskEvent(
+    state,
+    workflowEvent("codex_live.workflow.error", "run-terminal", "turn-terminal")
+  );
+
+  expect(state.runsByWorkflowId["run-terminal"]).toMatchObject({
+    status: "completed",
+    documentResultSucceeded: true,
+    speechStatus: "not_requested",
+  });
+});
+
+test("Realtime 2.1 exposes workflow task state only after an authoritative learning route", () => {
+  expect(shouldPublishRealtimeToolTaskStatus("run_chatbot_workflow")).toBe(false);
+  for (const route of ["ordinary_chat", "unclear"] as const) {
+    expect(
+      shouldPublishRealtimeToolTaskStatus("run_chatbot_workflow", {
+        ...successfulResult,
+        model_output: { status: "ok", route },
+      })
+    ).toBe(false);
+  }
+  expect(
+    shouldPublishRealtimeToolTaskStatus("run_chatbot_workflow", {
+      ...successfulResult,
+      model_output: { status: "ok", route: "learning_need" },
+    })
+  ).toBe(true);
+  expect(shouldPublishRealtimeToolTaskStatus("read_board_context")).toBe(true);
 });
 
 test("ordinary chat results never become visible document task activity", () => {

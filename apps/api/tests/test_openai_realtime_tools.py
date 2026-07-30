@@ -1087,6 +1087,132 @@ def test_codex_live_typed_result_uses_speakable_session_context() -> None:
     ]
 
 
+def test_codex_live_speech_failure_preserves_result_and_delegation_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executions: list[str] = []
+
+    def _execute(**kwargs):
+        executions.append(kwargs["message"])
+        return RealtimeToolCallResponse(
+            status="ok",
+            model_output={
+                "status": "ok",
+                "chatbot_message": f"Speak {kwargs['message']}",
+            },
+        )
+
+    monkeypatch.setattr(codex_live_sideband, "execute_realtime_delegation", _execute)
+    monkeypatch.setattr(
+        codex_live_sideband.ai_usage_logger,
+        "log_model_run_event",
+        lambda *_args, **_kwargs: None,
+    )
+
+    class _FakeWebSocket:
+        def __init__(self):
+            self.sent: list[dict[str, object]] = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    class _FakeUpstream:
+        def __init__(self):
+            self.attempts = 0
+            self.sent: list[dict[str, object]] = []
+
+        async def send(self, payload):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("speech transport unavailable")
+            self.sent.append(json.loads(payload))
+
+    async def _exercise():
+        websocket = _FakeWebSocket()
+        upstream = _FakeUpstream()
+        coordinator = CodexLiveTaskCoordinator()
+        first = CodexLiveTask(
+            "delegation_speech_failure",
+            "first",
+            False,
+            turn_id="turn_first",
+            workflow_run_id="workflow_first",
+            input_event_id="input_first",
+            input_kind="typed",
+            action="queue",
+        )
+        second = CodexLiveTask(
+            "delegation_after_failure",
+            "second",
+            False,
+            turn_id="turn_second",
+            workflow_run_id="workflow_second",
+            input_event_id="input_second",
+            input_kind="typed",
+            action="queue",
+        )
+        await coordinator.submit(first)
+        await coordinator.submit(second)
+        handler = asyncio.create_task(
+            codex_live_sideband._handle_delegations(
+                websocket,
+                upstream,
+                codex_live_sideband.CodexLiveSession(
+                    call_id="rtc_speech_failure",
+                    lesson_id="lesson_speech_failure",
+                    user_id=TEST_USER_ID,
+                    client_session_id="client_speech_failure",
+                    transport_session_id="transport_speech_failure",
+                    selection=None,
+                    created_at=0,
+                ),
+                asyncio.Lock(),
+                asyncio.Lock(),
+                coordinator,
+            )
+        )
+        for _ in range(200):
+            results = [
+                event
+                for event in websocket.sent
+                if event.get("type") == "codex_live.workflow.result"
+            ]
+            if len(results) == 2 and upstream.sent:
+                break
+            await asyncio.sleep(0)
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        return websocket, upstream, first, second
+
+    websocket, upstream, first, second = asyncio.run(_exercise())
+    event_types = [event["type"] for event in websocket.sent]
+    first_result_index = next(
+        index
+        for index, event in enumerate(websocket.sent)
+        if event.get("type") == "codex_live.workflow.result"
+        and event.get("workflow_run_id") == "workflow_first"
+    )
+    speech_error_index = next(
+        index
+        for index, event in enumerate(websocket.sent)
+        if event.get("type") == "codex_live.speech.error"
+    )
+
+    assert executions == ["first", "second"]
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert first_result_index < speech_error_index
+    assert "codex_live.workflow.error" not in event_types
+    assert websocket.sent[speech_error_index]["workflow_run_id"] == "workflow_first"
+    assert upstream.sent == [
+        {
+            "type": "session.context.append",
+            "channel": "speakable",
+            "content": [{"type": "input_text", "text": "Speak second"}],
+        }
+    ]
+
+
 def test_codex_live_delegation_runs_normal_chatbot_workflow(
     monkeypatch,
     isolated_store,

@@ -22,7 +22,7 @@ from app.models import (
     new_id,
 )
 from app.services import chat_service
-from app.services.ai_logging import ai_usage_logger
+from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.ai_model_catalog import OPENAI_CODEX_REALTIME_MODEL
 from app.services.chat_turn_gate import TurnGateResult
 from app.services.codex_live_task_lifecycle import (
@@ -355,6 +355,71 @@ async def _send_client_event(
         await websocket.send_json(payload)
 
 
+async def _send_workflow_speech(
+    websocket: WebSocket,
+    client_send_lock: asyncio.Lock,
+    upstream: ClientConnection,
+    upstream_send_lock: asyncio.Lock,
+    session: CodexLiveSession,
+    task: CodexLiveTask,
+    *,
+    text: str,
+) -> bool:
+    """Send optional speech without changing an already completed workflow result."""
+    failure_message: str | None = None
+    if not text:
+        failure_message = "The completed workflow returned no speakable text"
+    else:
+        try:
+            await _send_context(
+                upstream,
+                upstream_send_lock,
+                text=text,
+                delegation_id=(
+                    task.delegation_id if task.provider_delegation else None
+                ),
+                channel="speakable",
+            )
+        except Exception as exc:  # noqa: BLE001 - transport failures are isolated here
+            failure_message = str(exc).strip() or "Speech context delivery failed"
+    if failure_message is None:
+        return True
+
+    await _send_client_event(
+        websocket,
+        client_send_lock,
+        {
+            "type": "codex_live.speech.error",
+            **_task_identity(task),
+            "message": failure_message,
+        },
+    )
+    ai_usage_logger.log_model_run_event(
+        "speech_failed",
+        run_id=task.workflow_run_id,
+        parent_run_id=session.client_session_id,
+        provider="openai_codex",
+        model=OPENAI_CODEX_REALTIME_MODEL,
+        status="failed",
+        user_id=session.user_id,
+        lesson_id=session.lesson_id,
+        turn_id=task.turn_id,
+        request_kind=(
+            "provider_delegation"
+            if task.provider_delegation
+            else "typed_delegation"
+        ),
+        error=failure_message,
+        metadata={
+            "call_id": session.call_id,
+            "delegation_id": task.delegation_id,
+            "input_event_id": task.input_event_id,
+            "workflow_result_preserved": True,
+        },
+    )
+    return False
+
+
 async def _send_queue_snapshot(
     websocket: WebSocket,
     send_lock: asyncio.Lock,
@@ -445,12 +510,24 @@ async def _route_task(
     source: str,
 ) -> TurnIntent:
     request = _chat_request_for_task(session, task)
-    gate = await asyncio.to_thread(
-        chat_service.route_chat_request,
-        session.lesson_id,
-        request,
+    with ai_log_context(
+        lesson_id=session.lesson_id,
         user_id=session.user_id,
-    )
+        session_id=session.client_session_id,
+        turn_id=task.turn_id,
+        workflow_run_id=task.workflow_run_id,
+        delegation_id=task.delegation_id,
+        input_event_id=task.input_event_id,
+        channel="realtime",
+        input_kind=task.input_kind,
+        provider_reference=task.provider_reference,
+    ):
+        gate = await asyncio.to_thread(
+            chat_service.route_chat_request,
+            session.lesson_id,
+            request,
+            user_id=session.user_id,
+        )
     task.prepared_gate = gate
     intent = gate.decision.intent
     _log_authoritative_route(session, task, intent, source=source)
@@ -517,12 +594,25 @@ async def _complete_non_learning_task(
     )
     response_text = str(result.model_output.get("chatbot_message") or "").strip()
     if result.status == "ok" and response_text:
-        await _send_context(
+        await _send_workflow_speech(
+            websocket,
+            client_send_lock,
             upstream,
             upstream_send_lock,
+            session,
+            task,
             text=response_text,
-            delegation_id=task.delegation_id if task.provider_delegation else None,
-            channel="speakable",
+        )
+        return
+    if result.status == "ok":
+        await _send_workflow_speech(
+            websocket,
+            client_send_lock,
+            upstream,
+            upstream_send_lock,
+            session,
+            task,
+            text="",
         )
         return
     _release_input_event(coordinator, task)
@@ -1057,13 +1147,15 @@ async def _handle_delegations(
             )
             await coordinator.finish(task, "completed" if result.status == "ok" else "failed")
             response_text = str(result.model_output.get("chatbot_message") or "").strip()
-            if result.status == "ok" and response_text:
-                await _send_context(
+            if result.status == "ok":
+                await _send_workflow_speech(
+                    websocket,
+                    client_send_lock,
                     upstream,
                     upstream_send_lock,
+                    session,
+                    task,
                     text=response_text,
-                    delegation_id=task.delegation_id if task.provider_delegation else None,
-                    channel="speakable",
                 )
             else:
                 await _send_client_event(

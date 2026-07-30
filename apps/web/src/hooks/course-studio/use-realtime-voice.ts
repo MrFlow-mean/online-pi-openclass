@@ -21,6 +21,7 @@ import {
   createCodexLiveTaskState,
   handleCodexLiveTaskEvent,
   resolveCodexLivePendingTask,
+  shouldPublishRealtimeToolTaskStatus,
   type CodexLiveBridgeEvent,
   type CodexLiveTaskAction,
   type CodexLiveTaskState,
@@ -938,6 +939,7 @@ export function useRealtimeVoice({
       const dataChannel = peerConnection.createDataChannel("oai-events");
       realtimeChannelRef.current = dataChannel;
       dataChannel.onmessage = (messageEvent) => {
+        let publishUnexpectedToolError = true;
         void (async () => {
           try {
             const payload = JSON.parse(messageEvent.data) as OpenAIRealtimeEvent;
@@ -978,15 +980,23 @@ export function useRealtimeVoice({
             const turnId = turnIdentity.turnId;
             const providerReference = payload.response_id ?? payload.item_id ?? functionCall.callId;
             const toolLabel = functionCall.name === "read_board_context" ? "正在定位并读取板书" : "正在交给 Chatbot 工作流处理";
+            const publishPreRouteTaskStatus = shouldPublishRealtimeToolTaskStatus(
+              functionCall.name
+            );
+            publishUnexpectedToolError = publishPreRouteTaskStatus;
             setVoiceStatusText(toolLabel);
-            onToolStatusUpdate({ lessonId, turnId, label: toolLabel, status: "pending" });
+            if (publishPreRouteTaskStatus) {
+              onToolStatusUpdate({ lessonId, turnId, label: toolLabel, status: "pending" });
+            }
             enqueueRealtimeLogEvent(lessonId, "tool", payload.type, `${functionCall.name} (${functionCall.callId})`, {
               turnId,
             });
             const clientSessionId = realtimeClientSessionIdRef.current;
             if (!clientSessionId) {
               const message = "Realtime 客户端会话标识已失效";
-              onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              if (publishPreRouteTaskStatus) {
+                onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              }
               sendOpenAIFunctionOutput(dataChannel, functionCall.callId, { status: "error", message });
               continue;
             }
@@ -995,7 +1005,9 @@ export function useRealtimeVoice({
               turnSnapshot.identity.inputEventId !== turnIdentity.inputEventId
             ) {
               const message = "Realtime 回合缺少提交时冻结的输入快照";
-              onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              if (publishPreRouteTaskStatus) {
+                onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              }
               sendOpenAIFunctionOutput(dataChannel, functionCall.callId, {
                 status: "error",
                 message,
@@ -1047,7 +1059,9 @@ export function useRealtimeVoice({
               }
             } catch (toolError) {
               const message = toolError instanceof Error ? toolError.message : "Realtime 工具执行失败";
-              onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              if (publishPreRouteTaskStatus) {
+                onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              }
               setVoiceStatusText(message);
               sendOpenAIFunctionOutput(dataChannel, functionCall.callId, { status: "error", message });
               continue;
@@ -1064,12 +1078,19 @@ export function useRealtimeVoice({
             const failedLabel = toolResult.status === "ok" && modelStatus === "not_found"
               ? "未定位到明确板书范围"
               : "Realtime 工具执行失败";
-            onToolStatusUpdate({
-              lessonId,
-              turnId,
-              label: succeeded ? completedLabel : failedLabel,
-              status: succeeded ? "completed" : "error",
-            });
+            const publishRoutedTaskStatus = shouldPublishRealtimeToolTaskStatus(
+              functionCall.name,
+              toolResult
+            );
+            publishUnexpectedToolError = publishRoutedTaskStatus;
+            if (publishRoutedTaskStatus) {
+              onToolStatusUpdate({
+                lessonId,
+                turnId,
+                label: succeeded ? completedLabel : failedLabel,
+                status: succeeded ? "completed" : "error",
+              });
+            }
             setVoiceStatusText(succeeded ? `${completedLabel}，Realtime 正在回答` : failedLabel);
             sendOpenAIFunctionOutput(dataChannel, functionCall.callId, toolResult.model_output);
           }
@@ -1135,7 +1156,7 @@ export function useRealtimeVoice({
           }
           } catch (toolError) {
             const lessonId = realtimeLessonIdRef.current;
-            if (lessonId) {
+            if (lessonId && publishUnexpectedToolError) {
               onToolStatusUpdate({
                 lessonId,
                 turnId: currentTurnId(),
