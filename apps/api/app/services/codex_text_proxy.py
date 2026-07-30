@@ -200,7 +200,7 @@ def _schema_name(schema: type[BaseModel]) -> str:
 
 
 class CodexTextProxyClient:
-    """OpenAI-compatible platform text client backed by CLIProxyAPI."""
+    """Provider-neutral platform text client backed by the Responses API."""
 
     def __init__(
         self,
