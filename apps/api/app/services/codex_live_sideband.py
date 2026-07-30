@@ -110,6 +110,10 @@ def release_codex_live_session(call_id: str) -> None:
         _sessions.pop(call_id, None)
 
 
+def _snapshot_selection(selection: SelectionRef | None) -> SelectionRef | None:
+    return selection.model_copy(deep=True) if selection is not None else None
+
+
 def codex_live_sideband_url(call_id: str) -> str:
     if not _CALL_ID_PATTERN.fullmatch(call_id):
         raise ValueError("Invalid Codex Live call ID")
@@ -386,6 +390,7 @@ async def _handle_client_messages(
                         delegation_id=new_id("typed_delegation"),
                         prompt=text,
                         provider_delegation=False,
+                        selection=_snapshot_selection(session.selection),
                         action=action,
                     )
                 )
@@ -505,7 +510,7 @@ async def _handle_delegations(
                 message=task.prompt,
                 client_session_id=session.client_session_id,
                 delegation_id=task.delegation_id,
-                selection=session.selection,
+                selection=task.selection,
                 on_delta=publish_delta,
                 on_agent_activity=publish_progress,
                 is_cancelled=cancel_event.is_set,
@@ -652,6 +657,7 @@ async def _handle_upstream_messages(
                     delegation_id=event["id"],
                     prompt=event["prompt"],
                     provider_delegation=True,
+                    selection=_snapshot_selection(session.selection),
                 )
             )
             await _publish_task_decision(

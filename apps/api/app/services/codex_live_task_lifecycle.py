@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
 
+from app.models import SelectionRef
+
 
 TaskAction = Literal["auto", "queue", "supplement", "replace", "chat", "dismiss"]
 TaskStatus = Literal["pending", "queued", "running", "completed", "failed", "cancelled", "dismissed"]
@@ -40,6 +42,7 @@ class CodexLiveTask:
     delegation_id: str
     prompt: str
     provider_delegation: bool
+    selection: SelectionRef | None = None
     action: TaskAction = "auto"
     status: TaskStatus = "pending"
     created_at: float = 0
@@ -84,7 +87,8 @@ class CodexLiveTaskCoordinator:
                 return TaskDecision("duplicate", task, duplicate_of=duplicate.delegation_id)
             self._tasks[task.delegation_id] = task
             if task.action == "chat":
-                return await self._enqueue(task)
+                task.status = "dismissed"
+                return TaskDecision("chat", task)
             if task.action == "dismiss":
                 task.status = "dismissed"
                 return TaskDecision("dismissed", task)
@@ -105,7 +109,8 @@ class CodexLiveTaskCoordinator:
                 return None
             task.action = action
             if action == "chat":
-                return await self._enqueue(task)
+                task.status = "dismissed"
+                return TaskDecision("chat", task)
             if action == "dismiss":
                 task.status = "dismissed"
                 return TaskDecision("dismissed", task)

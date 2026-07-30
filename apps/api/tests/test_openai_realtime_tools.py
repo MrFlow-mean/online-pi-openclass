@@ -365,7 +365,7 @@ def test_codex_live_sideband_session_is_bound_and_single_claim() -> None:
         codex_live_sideband.release_codex_live_session("rtc_bound_session")
 
 
-def test_codex_live_typed_input_enters_chatbot_queue() -> None:
+def test_codex_live_typed_input_enters_chatbot_queue_with_selection_snapshot() -> None:
     class _FakeWebSocket:
         def __init__(self):
             self.calls = 0
@@ -391,7 +391,7 @@ def test_codex_live_typed_input_enters_chatbot_queue() -> None:
             user_id=TEST_USER_ID,
             client_session_id="client_typed",
             transport_session_id="transport_typed",
-            selection=None,
+            selection=SelectionRef(kind="board", excerpt="初始选区"),
             created_at=0,
         )
         task = asyncio.create_task(
@@ -405,6 +405,8 @@ def test_codex_live_typed_input_enters_chatbot_queue() -> None:
             )
         )
         queued = await asyncio.wait_for(coordinator.queue.get(), timeout=1)
+        assert session.selection is not None
+        session.selection.excerpt = "后续选区"
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return queued
@@ -413,6 +415,8 @@ def test_codex_live_typed_input_enters_chatbot_queue() -> None:
     assert queued.delegation_id.startswith("typed_delegation_")
     assert queued.prompt == "读取当前板书"
     assert queued.provider_delegation is False
+    assert queued.selection is not None
+    assert queued.selection.excerpt == "初始选区"
 
 
 def test_codex_live_task_matching_deduplicates_repeated_work_but_not_distinct_actions() -> None:
@@ -466,7 +470,7 @@ def test_codex_live_replace_cancels_active_and_clears_older_waiting_work() -> No
     assert coordinator._tasks["task_2"].status == "dismissed"  # noqa: SLF001
 
 
-def test_codex_live_completed_work_can_be_requested_again_and_chat_is_queued() -> None:
+def test_codex_live_completed_work_can_be_requested_again_and_chat_bypasses_queue() -> None:
     async def _exercise():
         coordinator = CodexLiveTaskCoordinator()
         first = CodexLiveTask("task_1", "再次解释这个内容", True)
@@ -476,11 +480,36 @@ def test_codex_live_completed_work_can_be_requested_again_and_chat_is_queued() -
         await coordinator.finish(active, "completed")
         repeated = await coordinator.submit(CodexLiveTask("task_2", "再次解释这个内容", True))
         chat = await coordinator.submit(CodexLiveTask("task_3", "这是普通对话", True, action="chat"))
-        return repeated, chat
+        return coordinator, repeated, chat
 
-    repeated, chat = asyncio.run(_exercise())
+    coordinator, repeated, chat = asyncio.run(_exercise())
     assert repeated.kind == "queued"
-    assert chat.kind == "queued"
+    assert chat.kind == "chat"
+    assert chat.task.status == "dismissed"
+    assert coordinator.snapshot()["queued_count"] == 1
+
+
+def test_codex_live_running_work_treats_resolved_chat_as_conversation_not_document_work() -> None:
+    async def _exercise():
+        coordinator = CodexLiveTaskCoordinator()
+        first = CodexLiveTask("task_1", "处理当前任务", True)
+        await coordinator.submit(first)
+        await coordinator.begin(await coordinator.queue.get())
+
+        pending = await coordinator.submit(CodexLiveTask("task_2", "谢谢你", True))
+        resolved = await coordinator.resolve("task_2", "chat")
+        return coordinator, pending, resolved
+
+    coordinator, pending, resolved = asyncio.run(_exercise())
+    assert pending.kind == "pending"
+    assert resolved is not None and resolved.kind == "chat"
+    assert resolved.task.status == "dismissed"
+    assert coordinator.snapshot() == {
+        "running_count": 1,
+        "queued_count": 0,
+        "pending_count": 0,
+        "active_delegation_id": "task_1",
+    }
 
 
 def test_codex_live_typed_result_uses_speakable_session_context() -> None:
