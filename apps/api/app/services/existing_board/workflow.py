@@ -5,8 +5,8 @@ from collections.abc import Callable
 from typing import Literal
 
 from app.models import (
-    AIModelSelection,
     AgentActivityEvent,
+    AIModelSelection,
     BoardDecision,
     BoardDocument,
     BoardFocusRef,
@@ -23,6 +23,9 @@ from app.models import (
 from app.services import workspace_state
 from app.services.ai_execution_adapter import AIExecutionAdapter
 from app.services.existing_board import task_manager
+from app.services.existing_board.document_destination_workflow import (
+    run_document_destination_workflow,
+)
 from app.services.existing_board.explanation_workflow import (
     BoardFreeRecentConversation,
     run_existing_board_explanation,
@@ -43,7 +46,6 @@ from app.services.existing_board.mutation_planner import (
 )
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
-
 
 TASK_CHATBOT_INSTRUCTIONS = """
 You are the learner-facing Chatbot for an existing-board task. Use only the
@@ -159,6 +161,7 @@ def process_existing_board_workflow(
     draft = task_manager.BoardTaskManagerDraft.model_validate(
         manager_response.output_parsed
     )
+    draft = _apply_explicit_controls(draft, manager_input.explicit_controls)
     decision = task_manager._finalize_decision(draft)
     activity = list(getattr(manager_response, "activity", []))
     resolution = _resolve_target(lesson, request, decision.target_hint)
@@ -424,13 +427,46 @@ def _restore_active_task(lesson: Lesson, head) -> BoardTaskRequirementSheet | No
 
 
 def _explicit_controls(request: ChatRequest) -> task_manager.BoardTaskExplicitControls:
-    action = "edit" if request.interaction_mode == "direct_edit" else None
+    whole_board = request.board_generation_action == "start"
+    action = (
+        "edit"
+        if request.interaction_mode == "direct_edit" or whole_board
+        else None
+    )
     location_kind = None
     for reference in _frozen_references(request):
         if reference.location_kind in {"target_range", "insertion_anchor"}:
             location_kind = reference.location_kind
             break
-    return task_manager.BoardTaskExplicitControls(action=action, location_kind=location_kind)
+    return task_manager.BoardTaskExplicitControls(
+        action=action,
+        location_kind=location_kind,
+        extent=("whole_board" if whole_board else None),
+        destination=("current_lesson" if whole_board else None),
+        topic_relation=("current_document" if whole_board else None),
+    )
+
+
+def _apply_explicit_controls(
+    draft: task_manager.BoardTaskManagerDraft,
+    controls: task_manager.BoardTaskExplicitControls,
+) -> task_manager.BoardTaskManagerDraft:
+    updates: dict[str, object] = {}
+    for field_name in (
+        "action",
+        "location_kind",
+        "extent",
+        "destination",
+        "topic_relation",
+        "special_interaction_requirements",
+    ):
+        value = getattr(controls, field_name)
+        if value is not None:
+            updates[field_name] = value
+    if controls.extent == "whole_board":
+        updates["target_hint"] = ""
+        updates["location_kind"] = "unresolved"
+    return draft.model_copy(update=updates)
 
 
 def _frozen_references(request: ChatRequest) -> list[SelectionRef]:
@@ -498,7 +534,8 @@ def _build_task_sheet(
     base_commit_id: str,
 ) -> BoardTaskRequirementSheet:
     missing = list(dict.fromkeys(decision.missing_items))
-    if resolution.status == "resolved":
+    target_required = _decision_requires_resolved_target(decision)
+    if not target_required or resolution.status == "resolved":
         missing = [item for item in missing if item != "target"]
     elif "target" not in missing:
         missing.append("target")
@@ -512,11 +549,16 @@ def _build_task_sheet(
     )
     candidates = [_safe_focus(item) for item in resolution.candidates[:5]]
     focus = resolution.focus.model_copy(deep=True) if resolution.focus is not None else None
-    location_status = (
-        "resolved"
-        if focus is not None
-        else ("ambiguous" if candidates else "missing")
-    )
+    if decision.destination == "new_lesson" and focus is None:
+        location_status = "content_absent"
+    elif decision.extent == "whole_board" and focus is None:
+        location_status = "resolved"
+    else:
+        location_status = (
+            "resolved"
+            if focus is not None
+            else ("ambiguous" if candidates else "missing")
+        )
     return BoardTaskRequirementSheet(
         task_id=task_id,
         location_kind=location_kind,
@@ -543,9 +585,25 @@ def _next_phase(
     task: BoardTaskRequirementSheet,
     requires_confirmation: bool,
 ) -> BoardTaskRunStatus:
-    if task.missing_items or task.location_status != "resolved" or task.requested_action is None:
+    target_required = not (
+        task.document_destination == "new_lesson"
+        or task.content_extent == "whole_board"
+    )
+    if (
+        task.missing_items
+        or (target_required and task.location_status != "resolved")
+        or task.requested_action is None
+    ):
         return "collecting"
     return "awaiting_confirmation" if requires_confirmation else "ready"
+
+
+def _decision_requires_resolved_target(
+    decision: task_manager.BoardTaskManagerDecision,
+) -> bool:
+    return not (
+        decision.destination == "new_lesson" or decision.extent == "whole_board"
+    )
 
 
 def _process_active_task_confirmation(
@@ -586,6 +644,25 @@ def _process_active_task_confirmation(
         )
     ]
     if confirmed:
+        if (
+            task.document_destination == "new_lesson"
+            or task.content_extent == "whole_board"
+        ):
+            return _execute_confirmed_document_destination(
+                lesson_id=lesson_id,
+                request=request,
+                user_id=user_id,
+                adapter=adapter,
+                selected_model=selected_model,
+                decision=decision,
+                task=task,
+                base_head_id=base_head_id,
+                run_id=run_id,
+                version_id=version_id,
+                on_delta=on_delta,
+                on_board_task_update=on_board_task_update,
+                on_agent_activity=on_agent_activity,
+            )
         return _execute_ready_mutation(
             lesson_id=lesson_id,
             lesson=lesson,
@@ -693,6 +770,72 @@ def _decision_from_task(
     )
     decision = task_manager._finalize_decision(draft)
     return decision.model_copy(update={"execution_allowed": execution_allowed})
+
+
+def _execute_confirmed_document_destination(
+    *,
+    lesson_id: str,
+    request: ChatRequest,
+    user_id: str,
+    adapter: AIExecutionAdapter,
+    selected_model: AIModelSelection,
+    decision: task_manager.BoardTaskManagerDecision,
+    task: BoardTaskRequirementSheet,
+    base_head_id: str,
+    run_id: str,
+    version_id: str,
+    on_delta: Callable[[str], None] | None,
+    on_board_task_update: Callable[[dict[str, object]], None] | None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None,
+) -> ChatResponse:
+    workspace_revision = None
+    if task.document_destination == "new_lesson":
+        _workspace, workspace_revision = (
+            workspace_state.load_workspace_for_user_with_revision(user_id)
+        )
+    result = run_document_destination_workflow(
+        user_id=user_id,
+        source_lesson_id=lesson_id,
+        user_message=request.message,
+        board_task=task,
+        adapter=adapter,
+        selected_model=selected_model,
+        expected_source_head_commit_id=base_head_id,
+        expected_workspace_revision=workspace_revision,
+        on_activity=on_agent_activity,
+    )
+    if result.status != "succeeded":
+        raise ExistingBoardWorkflowError(
+            f"The confirmed document destination was not persisted: {result.reason}"
+        )
+    phase: BoardTaskRunStatus = (
+        "archived" if result.destination == "new_lesson" else "consumed"
+    )
+    trace = _decision_trace(decision, task, phase, role="chatbot")
+    trace["document_changed"] = True
+    _publish_task_update(
+        on_board_task_update,
+        task,
+        run_id,
+        version_id,
+        phase,
+    )
+    _publish_delta(on_delta, result.chatbot_message)
+    return _build_response(
+        lesson_id=lesson_id,
+        user_id=user_id,
+        task=task,
+        active_task=None,
+        phase=phase,
+        run_id=run_id,
+        version_id=version_id,
+        chatbot_message=result.chatbot_message,
+        activity=result.activity,
+        decision_reason=decision.reason,
+        needs_clarification=False,
+        document_changed=True,
+        document_operation_status="succeeded",
+    )
 
 
 def _execute_ready_mutation(

@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
+from collections.abc import Callable
 from concurrent.futures import Future
 from threading import Lock
-from typing import Callable
 
 from app.models import (
     AgentActivityEvent,
@@ -24,7 +24,6 @@ from app.services.existing_board.interaction_workflow import (
 from app.services.existing_board.workflow import process_existing_board_workflow
 from app.services.history import bind_commit_metadata
 from app.services.lesson_title import maybe_generate_lesson_title
-
 
 _IDEMPOTENCY_CACHE_LIMIT = 256
 _idempotency_lock = Lock()
@@ -204,7 +203,7 @@ def _should_use_bounded_existing_board_workflow(
         return False
     if request.source_query_scope is not None:
         return False
-    if request.teaching_action is not None or request.board_generation_action is not None:
+    if request.teaching_action is not None:
         return False
     references = [
         *([request.selection] if request.selection is not None else []),

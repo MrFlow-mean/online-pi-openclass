@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from app.models import (
     AIModelSelection,
     BoardExplanationDirective,
@@ -15,6 +14,10 @@ from app.models import (
 from app.services import workspace_state
 from app.services.board_segment_index import build_board_segment_index
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.existing_board.document_destination_workflow import (
+    NewLessonArtifact,
+    WholeBoardReplacement,
+)
 from app.services.existing_board.mutation_planner import MutationPlannerModelDraft
 from app.services.existing_board.task_manager import BoardTaskManagerDraft
 from app.services.existing_board.workflow import (
@@ -24,7 +27,6 @@ from app.services.existing_board.workflow import (
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document
-
 
 TEST_USER_ID = "existing_board_workflow_user"
 FULL_BOARD_SENTINEL = "FULL_BOARD_SENTINEL_MUST_STAY_OUTSIDE_MODEL_PROMPTS"
@@ -116,6 +118,15 @@ class RecordingAdapter:
                     reason="the Board Manager needs a narrower boundary",
                 )
             )
+        elif kwargs["schema"] is NewLessonArtifact:
+            parsed = NewLessonArtifact(
+                title="Generated destination lesson",
+                markdown="# Generated destination\n\nComplete article content.",
+            )
+        elif kwargs["schema"] is WholeBoardReplacement:
+            parsed = WholeBoardReplacement(
+                markdown="# Complete replacement\n\nRebuilt board content."
+            )
         else:
             raise AssertionError(f"Unexpected schema: {kwargs['schema']}")
         return SimpleNamespace(output_parsed=parsed, activity=[])
@@ -123,7 +134,12 @@ class RecordingAdapter:
     def complete_text(self, **kwargs):
         self.text_calls.append(kwargs)
         payload = json.loads(str(kwargs["user_prompt"]))
-        mode = payload["response_mode"]
+        mode = payload.get("response_mode")
+        if mode is None:
+            return SimpleNamespace(
+                output_text="model generated destination completion",
+                activity=[],
+            )
         messages = {
             "task_clarification": "model generated one clarification question",
             "future_action_status": "model generated pending-stage status",
@@ -327,6 +343,39 @@ def test_non_explain_actions_persist_pending_state_with_zero_document_mutation(
     )
 
 
+def test_explicit_board_generation_controls_override_model_draft(
+    workflow_store,
+) -> None:
+    _store, lesson = workflow_store
+    adapter = RecordingAdapter(
+        _draft(
+            action="explain",
+            extent="section",
+            destination="new_lesson",
+            topic_relation="independent",
+        )
+    )
+
+    response = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="Rebuild the complete current board.",
+            board_generation_action="start",
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert response.board_task_phase == "awaiting_confirmation"
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.requested_action == "edit"
+    assert response.active_board_task_sheet.content_extent == "whole_board"
+    assert response.active_board_task_sheet.document_destination == "current_lesson"
+    assert response.active_board_task_sheet.topic_relation == "current_document"
+    assert response.active_board_task_sheet.target_location is None
+
+
 def test_bounded_edit_and_write_execute_atomically_in_one_history_version(
     workflow_store,
 ) -> None:
@@ -459,6 +508,122 @@ def test_confirmed_delete_revalidates_and_mutates_only_the_frozen_target(
     assert [call["schema"] for call in adapter.parse_calls] == [
         BoardTaskManagerDraft,
         MutationPlannerModelDraft,
+    ]
+
+
+def test_confirmed_whole_board_replacement_needs_no_segment_target(
+    workflow_store,
+) -> None:
+    store, lesson = workflow_store
+    before_count = len(lesson.history_graph.commits)
+    adapter = RecordingAdapter(
+        _draft(
+            action="edit",
+            target_hint="",
+            location_kind="unresolved",
+            question_or_topic="Rebuild the complete current board",
+            extent="whole_board",
+            missing_items=["target"],
+        )
+    )
+
+    waiting = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(message="Rebuild the complete current board."),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert waiting.board_task_phase == "awaiting_confirmation"
+    assert waiting.active_board_task_sheet is not None
+    assert waiting.active_board_task_sheet.location_status == "resolved"
+    assert "target" not in waiting.active_board_task_sheet.missing_items
+
+    confirmed = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="Confirm the whole-board replacement.",
+            board_task_confirmation="confirm",
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert confirmed.board_task_phase == "consumed"
+    assert confirmed.chatbot_message == "model generated destination completion"
+    assert confirmed.board_document_operation_status == "succeeded"
+    persisted = store.load_for_user(TEST_USER_ID)
+    _package, saved = workspace_state.find_lesson_package(persisted, lesson.id)
+    assert saved.board_document.content_text == (
+        "# Complete replacement\n\nRebuilt board content."
+    )
+    assert len(saved.history_graph.commits) == before_count + 2
+    assert current_head_commit(saved).metadata["board_content_extent"] == "whole_board"
+    assert [call["schema"] for call in adapter.parse_calls] == [
+        BoardTaskManagerDraft,
+        WholeBoardReplacement,
+    ]
+
+
+def test_confirmed_new_lesson_destination_creates_one_lesson_without_board_target(
+    workflow_store,
+) -> None:
+    store, lesson = workflow_store
+    adapter = RecordingAdapter(
+        _draft(
+            action="write",
+            target_hint="",
+            location_kind="unresolved",
+            question_or_topic="Create a complete independent learning document",
+            extent="article",
+            destination="new_lesson",
+            topic_relation="independent",
+            relation_to_active="new_task",
+            missing_items=["target"],
+        )
+    )
+
+    waiting = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(message="Create this independent topic as a new lesson."),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert waiting.board_task_phase == "awaiting_confirmation"
+    assert waiting.active_board_task_sheet is not None
+    assert waiting.active_board_task_sheet.location_status == "content_absent"
+    assert "target" not in waiting.active_board_task_sheet.missing_items
+
+    confirmed = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="Confirm creating the new lesson.",
+            board_task_confirmation="confirm",
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert confirmed.board_task_phase == "archived"
+    assert confirmed.chatbot_message == "model generated destination completion"
+    assert confirmed.board_document_operation_status == "succeeded"
+    persisted = store.load_for_user(TEST_USER_ID)
+    package, source = workspace_state.find_lesson_package(persisted, lesson.id)
+    generated = [item for item in package.lessons if item.id != source.id]
+    assert len(generated) == 1
+    assert package.active_lesson_id == generated[0].id
+    assert generated[0].board_document.content_text == (
+        "# Generated destination\n\nComplete article content."
+    )
+    assert confirmed.course_package.active_lesson_id == generated[0].id
+    assert [call["schema"] for call in adapter.parse_calls] == [
+        BoardTaskManagerDraft,
+        NewLessonArtifact,
     ]
 
 

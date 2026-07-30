@@ -6,7 +6,6 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
-
 from app.models import (
     AIModelSelection,
     BoardDecision,
@@ -20,13 +19,12 @@ from app.models import (
 )
 from app.services import chat_service, chat_turn_gate, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.history import commit_operations, current_head_commit
 from app.services.existing_board.interaction_workflow import (
     ExistingBoardInteractionReroute,
 )
+from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.rich_document import build_document
-
 
 TEST_USER_ID = "user_turn_gate"
 BOARD_SENTINEL = "BOARD_SENTINEL_MUST_NOT_REACH_THE_GATE"
@@ -441,12 +439,24 @@ def test_non_learning_turn_short_circuits_before_workspace_and_preserves_active_
     assert "board_state_before" not in commit.metadata
 
 
+@pytest.mark.parametrize(
+    "chat_request",
+    [
+        ChatRequest(message="Explain the selected concept."),
+        ChatRequest(
+            message="Rebuild the complete board.",
+            board_generation_action="start",
+        ),
+    ],
+    ids=["ordinary_board_task", "explicit_whole_board"],
+)
 def test_learning_need_is_the_only_route_into_existing_workflow(
     monkeypatch: pytest.MonkeyPatch,
     turn_gate_store: SqliteCourseStore,
+    chat_request: ChatRequest,
 ) -> None:
     lesson = _seed_workspace(turn_gate_store)
-    request = ChatRequest(message="Explain the selected concept.")
+    request = chat_request
     workflow_calls: list[str] = []
     title_calls: list[str] = []
 
