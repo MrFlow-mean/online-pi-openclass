@@ -635,7 +635,7 @@ def test_stale_workspace_revision_cannot_overwrite_atomic_lesson_save(tmp_path) 
     store = SqliteCourseStore(db_path, legacy_json_path=None)
 
     workspace = build_initial_workspace_state()
-    lesson = _append_lesson(workspace, "并发保护")
+    _append_lesson(workspace, "并发保护")
     store.save_for_user("user_a", workspace)
 
     stale_workspace, stale_revision = store.load_for_user_with_revision("user_a")

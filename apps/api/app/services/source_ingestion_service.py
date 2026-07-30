@@ -49,7 +49,6 @@ from app.services.source_ingestion_jobs import (
 from app.services.source_codex_progress import SourceCodexProgressTracker
 from app.services.source_structure_indexer import (
     SourceStructureIndexer,
-    source_structure_indexer,
 )
 from app.services.source_structure_store import (
     SourceStructureStore,

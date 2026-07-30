@@ -10,6 +10,7 @@ from app.services.docx_quality_check import DocxExportQualityError, assert_docx_
 from app.services.docx_styles import apply_textbook_docx_styles
 from app.services.latex_to_omml import append_omml_math
 from app.services.rich_document import build_document, export_docx
+from app.services.rich_document import core as rich_document_core
 
 _NS = {
     "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
@@ -45,6 +46,12 @@ def test_latex_to_omml_converts_core_math_structures(tmp_path) -> None:
     assert "‖P‖" in math_text
     assert "ξ" in math_text
     assert "∑" in math_text
+
+
+def test_rich_document_latex_fallback_reads_nested_braces() -> None:
+    assert rich_document_core._latex_inline_text(
+        r"\frac{1 + \sqrt{x}}{2}"
+    ) == "(1 + √(x))/2"
 
 
 def test_docx_quality_check_rejects_raw_latex_text(tmp_path) -> None:

@@ -1779,7 +1779,6 @@ def rich_structure_counts(document: BoardDocument) -> dict[str, int]:
         "table": 0,
         "resourceVisualBlock": 0,
         "blockquote": 0,
-        "resourceVisualBlock": 0,
         "paragraph": 0,
     }
 
@@ -2695,6 +2694,24 @@ def _script_text(value: str, *, subscript: bool = False) -> str:
             if original.isalpha() and original == converted:
                 return f"_{parsed}"
     return translated
+
+
+def _read_braced(value: str, index: int) -> tuple[str, int]:
+    while index < len(value) and value[index].isspace():
+        index += 1
+    if index >= len(value):
+        return "", index
+    if value[index] != "{":
+        return value[index], index + 1
+    depth = 0
+    for position in range(index, len(value)):
+        if value[position] == "{":
+            depth += 1
+        elif value[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return value[index + 1 : position], position + 1
+    return value[index + 1 :], len(value)
 
 
 class _InlineLatexParser:

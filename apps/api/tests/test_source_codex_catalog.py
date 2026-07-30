@@ -12,9 +12,7 @@ import pytest
 from app.models import (
     AgentActivityEvent,
     AIModelSelection,
-    SourceChapter,
     SourceIngestionRecord,
-    SourceRange,
 )
 from app.routers.sources import _parse_catalog_model
 from app.services import source_directory_processor as directory_processor_module
