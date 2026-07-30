@@ -52,6 +52,7 @@ from app.services.publication_review import (
     PublicationReviewProgressUpdate,
     review_project_publication,
 )
+from app.services.published_courses import upload_lesson_version, upload_package_version
 from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
     find_lesson_package,
@@ -81,6 +82,9 @@ def _require_registered_project_publisher(
 
 
 def _public_lesson_view(lesson) -> PublicLessonView:
+    version = lesson.published_version
+    if version is None:
+        raise HTTPException(status_code=404, detail="Published lesson version not found")
     return PublicLessonView(
         id=lesson.id,
         title=lesson.title,
@@ -88,6 +92,9 @@ def _public_lesson_view(lesson) -> PublicLessonView:
         tags=lesson.tags,
         board_document=lesson.board_document,
         updated_at=lesson.updated_at,
+        published_revision_id=version.revision_id,
+        source_commit_id=version.source_commit_id,
+        published_at=version.published_at,
     )
 
 
@@ -197,9 +204,8 @@ def update_package(
                 owner_user_id=user.id,
                 package=package,
             )
-            package.visibility = (
-                "public" if package.publication_review.status == "approved" else "private"
-            )
+            if package.publication_review.status == "approved":
+                upload_package_version(package)
 
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
@@ -224,9 +230,8 @@ def update_lesson_visibility(
             package=package,
             lesson_id=lesson.id,
         )
-        lesson.visibility = (
-            "public" if lesson.publication_review.status == "approved" else "private"
-        )
+        if lesson.publication_review.status == "approved":
+            upload_lesson_version(lesson)
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
@@ -264,9 +269,8 @@ def stream_lesson_visibility_update(
                 lesson_id=lesson.id,
                 progress_callback=report_progress,
             )
-            lesson.visibility = (
-                "public" if lesson.publication_review.status == "approved" else "private"
-            )
+            if lesson.publication_review.status == "approved":
+                upload_lesson_version(lesson)
             save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
             event_queue.put(
                 {
@@ -501,6 +505,8 @@ def get_public_package(package_id: str) -> PublicCoursePackageView:
         title=package.title,
         summary=package.summary,
         lessons=[_public_lesson_view(lesson) for lesson in package.lessons],
+        published_revision_id=package.published_version.revision_id,
+        published_at=package.published_version.published_at,
     )
 
 

@@ -658,6 +658,18 @@ class LessonHistoryGraph(BaseModel):
     current_branch: str = "main"
 
 
+class PublishedLessonVersion(BaseModel):
+    revision_id: str = Field(default_factory=lambda: new_id("lessonversion"))
+    lesson_id: str
+    source_commit_id: str
+    title: str
+    slug: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    board_document: BoardDocument
+    published_at: str = Field(default_factory=now_iso)
+
+
 class Lesson(BaseModel):
     id: str = Field(default_factory=lambda: new_id("lesson"))
     title: str
@@ -666,6 +678,7 @@ class Lesson(BaseModel):
     tags: list[str] = Field(default_factory=list)
     visibility: PublicationVisibility = "private"
     publication_review: PublicationReview = Field(default_factory=PublicationReview)
+    published_version: PublishedLessonVersion | None = None
     board_document: BoardDocument
     board_teaching_guide: BoardTeachingGuide | None = None
     board_teaching_progress: BoardTeachingProgress | None = None
@@ -1613,12 +1626,22 @@ class CoursePackage(BaseModel):
     summary: str
     visibility: PublicationVisibility = "private"
     publication_review: PublicationReview = Field(default_factory=PublicationReview)
+    published_version: "PublishedCoursePackageVersion | None" = None
     lessons: list[Lesson]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
     resources: list[ResourceLibraryItem] = Field(default_factory=list)
     open_lesson_ids: list[str] = Field(default_factory=list)
     active_lesson_id: str | None = None
     workspace_tab_order: list[str] = Field(default_factory=list)
+
+
+class PublishedCoursePackageVersion(BaseModel):
+    revision_id: str = Field(default_factory=lambda: new_id("packageversion"))
+    title: str
+    summary: str
+    lessons: list[PublishedLessonVersion] = Field(default_factory=list)
+    course_graph: list[CourseGraphEdge] = Field(default_factory=list)
+    published_at: str = Field(default_factory=now_iso)
 
 
 class WorkspaceState(BaseModel):
@@ -2010,6 +2033,7 @@ class LessonView(BaseModel):
     tags: list[str] = Field(default_factory=list)
     visibility: PublicationVisibility = "private"
     publication_review: PublicationReview = Field(default_factory=PublicationReview)
+    published_version: PublishedLessonVersion | None = None
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
     board_task_requirements: BoardTaskRequirementSheet | None = None
@@ -2024,6 +2048,7 @@ class CoursePackageView(BaseModel):
     summary: str
     visibility: PublicationVisibility = "private"
     publication_review: PublicationReview = Field(default_factory=PublicationReview)
+    published_version: PublishedCoursePackageVersion | None = None
     is_standalone: bool = False
     lessons: list[LessonView]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
@@ -2040,6 +2065,9 @@ class PublicLessonView(BaseModel):
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
     updated_at: str
+    published_revision_id: str
+    source_commit_id: str
+    published_at: str
 
 
 class PublicCoursePackageView(BaseModel):
@@ -2047,6 +2075,8 @@ class PublicCoursePackageView(BaseModel):
     title: str
     summary: str
     lessons: list[PublicLessonView] = Field(default_factory=list)
+    published_revision_id: str
+    published_at: str
 
 
 class PublicCourseSearchResult(BaseModel):

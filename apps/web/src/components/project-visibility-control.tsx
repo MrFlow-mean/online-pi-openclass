@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { CircleCheckBig, Globe2, LoaderCircle, LockKeyhole, ShieldAlert } from "lucide-react";
+import { CircleCheckBig, LoaderCircle, ShieldAlert, UploadCloud } from "lucide-react";
 
 import type { ProjectVisibility } from "@/lib/project-visibility";
 import type { PublicationReview } from "@/types";
@@ -34,55 +34,45 @@ export function ProjectVisibilityControl({
   review,
   reviewing = false,
 }: ProjectVisibilityControlProps) {
-  const buttons = (["private", "public"] as const).map((option) => {
-    const selected = visibility === option;
-    const optionLabel = option === "public" && reviewing ? "AI 扫描中" : option === "public" ? "Public" : "Private";
-    const Icon = option === "public" ? Globe2 : LockKeyhole;
-    return (
-      <button
-        key={option}
-        type="button"
-        onClick={() => onChange(option)}
-        disabled={disabled}
-        aria-label={ariaLabelPrefix ? `${ariaLabelPrefix} ${optionLabel}` : optionLabel}
-        aria-pressed={selected}
-        className={clsx(
-          "font-semibold transition disabled:cursor-wait disabled:opacity-50",
-          compact
-            ? "inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border px-1 text-[8px] font-normal leading-none"
-            : "rounded-lg px-2 py-1.5 text-xs",
-          selected
-            ? option === "public"
-              ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
-              : "border-stone-950 bg-stone-950 text-white shadow-sm"
-            : compact
-              ? "border-stone-200 bg-white text-stone-500 hover:border-stone-300"
-              : "text-stone-500 hover:bg-white"
-        )}
-      >
-        {compact ? (
-          option === "public" && reviewing ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Icon className="h-2 w-2" />
-        ) : null}
-        {optionLabel}
-      </button>
-    );
-  });
+  const buttonLabel = reviewing ? "AI 审查中" : compact ? "上传" : "上传课程";
+  const uploadButton = (
+    <button
+      type="button"
+      onClick={() => onChange("public")}
+      disabled={disabled}
+      aria-label={ariaLabelPrefix ? `${ariaLabelPrefix} ${buttonLabel}` : buttonLabel}
+      className={clsx(
+        "inline-flex items-center justify-center gap-2 font-semibold transition disabled:cursor-wait disabled:opacity-50",
+        compact
+          ? "h-3.5 shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-1 text-[8px] font-normal leading-none text-emerald-700 hover:bg-emerald-100"
+          : "w-full rounded-xl bg-stone-950 px-3 py-2 text-xs text-white shadow-sm hover:bg-stone-800",
+      )}
+    >
+      {reviewing ? (
+        <LoaderCircle className={clsx("animate-spin", compact ? "h-2 w-2" : "h-3.5 w-3.5")} />
+      ) : (
+        <UploadCloud className={compact ? "h-2 w-2" : "h-3.5 w-3.5"} />
+      )}
+      {buttonLabel}
+    </button>
+  );
 
   if (compact) {
-    return <>{buttons}</>;
+    return uploadButton;
   }
 
   return (
     <div className="px-2 py-1.5">
       <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-stone-500">
-        {visibility === "public" ? (
-          <Globe2 className="h-3.5 w-3.5 text-emerald-600" />
-        ) : (
-          <LockKeyhole className="h-3.5 w-3.5" />
-        )}
-        {label}
+        <UploadCloud className="h-3.5 w-3.5" />
+        {label === "可见权限" || label === "Visibility" ? "课程发布" : label}
       </div>
-      <div className="grid grid-cols-2 gap-1 rounded-xl bg-stone-100 p-1">{buttons}</div>
+      {uploadButton}
+      <p className="mt-2 text-[10px] leading-4 text-stone-500">
+        {visibility === "public"
+          ? "当前公开版本保持不变；再次上传后才会更新。"
+          : "上传当前版本；后续编辑不会自动更新公开课程。"}
+      </p>
       <PublicationReviewNotice review={review} reviewing={reviewing} />
     </div>
   );
@@ -99,7 +89,7 @@ export function PublicationReviewNotice({
     return (
       <div className="mt-2 flex items-start gap-2 rounded-xl bg-blue-50 px-2.5 py-2 text-[11px] leading-4 text-blue-700">
         <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-        AI 正在核对课程实际引用资料的非正文范围。扫描完成前课程保持 Private。
+        AI 正在核对课程实际引用资料的非正文范围。审查通过后才会生成新的公开版本。
       </div>
     );
   }

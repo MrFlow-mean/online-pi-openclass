@@ -1577,9 +1577,11 @@ test("manages standalone lessons from the profile project list", async ({ page }
 
   const lessonMenu = page.locator(`div[aria-label="管理课程 ${lessonTitle}"]`);
   await expect(lessonMenu).toBeVisible();
-  await expect(lessonMenu.getByRole("button", { name: "课程设为 Private", exact: true })).toBeVisible();
-  await lessonMenu.getByRole("button", { name: "课程设为 Public", exact: true }).click();
+  await expect(lessonMenu.getByRole("button", { name: "课程设为 Private", exact: true })).toHaveCount(0);
+  await expect(lessonMenu.getByRole("button", { name: "课程设为 Public", exact: true })).toHaveCount(0);
+  await lessonMenu.getByRole("button", { name: "课程 上传课程", exact: true }).click();
   await expect(lessonMenu.getByText("课程没有上传资料，可以公开。")).toBeVisible();
+  await expect(lessonMenu.getByText("当前公开版本保持不变；再次上传后才会更新。")).toBeVisible();
   await expect(lessonMenu.getByRole("button", { name: "分享", exact: true })).toBeEnabled();
   await expect(lessonMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
   await expect(lessonMenu.getByRole("button", { name: "导出课程包", exact: true })).toBeVisible();
@@ -1607,8 +1609,9 @@ test("manages standalone lessons from the profile project list", async ({ page }
   await page.getByRole("button", { name: `管理课程包 ${targetPackageTitle}` }).click();
   const packageMenu = page.locator(`div[aria-label="管理课程包 ${targetPackageTitle}"]`);
   await expect(packageMenu).toBeVisible();
-  await expect(packageMenu.getByRole("button", { name: "课程包设为 Private", exact: true })).toBeVisible();
-  await expect(packageMenu.getByRole("button", { name: "课程包设为 Public", exact: true })).toBeVisible();
+  await expect(packageMenu.getByRole("button", { name: "课程包设为 Private", exact: true })).toHaveCount(0);
+  await expect(packageMenu.getByRole("button", { name: "课程包设为 Public", exact: true })).toHaveCount(0);
+  await expect(packageMenu.getByRole("button", { name: "课程包 上传课程", exact: true })).toBeVisible();
   await expect(packageMenu.getByRole("button", { name: "分享", exact: true })).toBeDisabled();
   await expect(packageMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
 });

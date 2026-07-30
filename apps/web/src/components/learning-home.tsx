@@ -1159,7 +1159,7 @@ export function LearningHome() {
                     const isBatchSelected = lessonBatch.selectedLessonIds.has(lesson.id);
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
                     const isReviewingPublication =
-                      busyKey === `visibility:lesson:${lesson.id}` && lesson.visibility === "private";
+                      busyKey === `visibility:lesson:${lesson.id}`;
                     const reviewProgressText =
                       isReviewingPublication && publicationReviewProgress
                         ? publicationReviewProgressText(publicationReviewProgress, h)
@@ -1241,9 +1241,9 @@ export function LearningHome() {
                                 <p className="truncate text-sm font-medium text-stone-950">{lesson.title}</p>
                                 <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-stone-400">
                                   {lesson.visibility === "public" ? (
-                                    <Globe2 className="h-3 w-3 text-emerald-600" aria-label="Public" />
+                                    <Globe2 className="h-3 w-3 text-emerald-600" aria-label="已上传" />
                                   ) : (
-                                    <LockKeyhole className="h-3 w-3" aria-label="Private" />
+                                    <LockKeyhole className="h-3 w-3" aria-label="未上传" />
                                   )}
                                   {homeRelFmt(lesson.updated_at)}
                                 </span>
@@ -1468,7 +1468,7 @@ export function LearningHome() {
               visibility={lessonMenuLesson.visibility}
               onChange={(visibility) => void handleSetLessonVisibility(lessonMenuLesson, visibility)}
               disabled={busyKey !== null}
-              label={language === "en" ? "Visibility" : "可见权限"}
+              label={language === "en" ? "Course upload" : "课程发布"}
               review={
                 lessonMenuLesson.visibility === "public" ||
                 ["blocked", "error"].includes(lessonMenuLesson.publication_review.status)
@@ -1476,8 +1476,7 @@ export function LearningHome() {
                   : undefined
               }
               reviewing={
-                busyKey === `visibility:lesson:${lessonMenuLesson.id}` &&
-                lessonMenuLesson.visibility === "private"
+                busyKey === `visibility:lesson:${lessonMenuLesson.id}`
               }
             />
 
@@ -1488,7 +1487,7 @@ export function LearningHome() {
               onClick={() => void handleShareLesson(lessonMenuLesson)}
               disabled={lessonMenuLesson.visibility !== "public" || busyKey !== null}
               className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
-              title={lessonMenuLesson.visibility === "public" ? h.sharePackageTitle : "设为 Public 后可分享"}
+              title={lessonMenuLesson.visibility === "public" ? h.sharePackageTitle : "上传课程后可分享"}
             >
               <Share2 className="h-4 w-4" />
               {h.share}
@@ -1782,7 +1781,7 @@ export function LearningHome() {
     const isDeletingPackage = busyKey === `package:delete:${selectedCoursePackage.id}`;
     const isRenamingPackage = busyKey === `package:rename:${selectedCoursePackage.id}`;
     const isUpdatingVisibility = busyKey === `visibility:package:${selectedCoursePackage.id}`;
-    const isReviewingPublication = isUpdatingVisibility && selectedCoursePackage.visibility === "private";
+    const isReviewingPublication = isUpdatingVisibility;
     const packageActionBusy = isDeletingPackage || isRenamingPackage || isUpdatingVisibility;
 
     return (
@@ -1799,7 +1798,7 @@ export function LearningHome() {
                 visibility={selectedCoursePackage.visibility}
                 onChange={(visibility) => void handleSetSelectedPackageVisibility(visibility)}
                 disabled={packageActionBusy}
-                ariaLabelPrefix="课程包设为"
+                ariaLabelPrefix="课程包"
                 reviewing={isReviewingPublication}
               />
               <button
@@ -1817,7 +1816,7 @@ export function LearningHome() {
                 onClick={() => void handleShareSelectedPackage()}
                 disabled={packageActionBusy || selectedCoursePackage.visibility !== "public"}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title={selectedCoursePackage.visibility === "public" ? h.sharePackageTitle : "设为 Public 后可分享"}
+                title={selectedCoursePackage.visibility === "public" ? h.sharePackageTitle : "上传课程包后可分享"}
               >
                 <Share2 className="h-2 w-2" />
                 {h.share}

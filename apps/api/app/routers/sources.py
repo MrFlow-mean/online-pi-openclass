@@ -47,13 +47,15 @@ class SourceContentUpdateRequest(BaseModel):
 def _invalidate_publication_for_source_change(*, owner_user_id: str, package_id: str):
     workspace, revision = workspace_state.load_workspace_for_user_with_revision(owner_user_id)
     package = workspace_state.get_package(workspace, package_id)
-    package.publication_review = PublicationReview()
     if workspace_state.is_standalone_package(workspace, package):
         for lesson in package.lessons:
-            lesson.visibility = "private"
-            lesson.publication_review = PublicationReview()
+            if lesson.published_version is None:
+                lesson.visibility = "private"
+                lesson.publication_review = PublicationReview()
     else:
-        package.visibility = "private"
+        if package.published_version is None:
+            package.visibility = "private"
+            package.publication_review = PublicationReview()
     workspace_state.save_workspace_for_user_if_revision(
         owner_user_id,
         workspace,

@@ -24,6 +24,9 @@ export interface PublicLesson {
   tags: string[];
   board_document: BoardDocument;
   updated_at: string;
+  published_revision_id: string;
+  source_commit_id: string;
+  published_at: string;
 }
 
 export interface PublicCoursePackage {
@@ -31,6 +34,8 @@ export interface PublicCoursePackage {
   title: string;
   summary: string;
   lessons: PublicLesson[];
+  published_revision_id: string;
+  published_at: string;
 }
 
 export interface PublicCourseSearchResult {

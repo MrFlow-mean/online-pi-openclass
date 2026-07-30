@@ -788,7 +788,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
 
   function renderLessonProjectMenu(lesson: Lesson) {
     const isUpdatingVisibility = busyKey === `visibility:lesson:${lesson.id}`;
-    const isReviewingPublication = isUpdatingVisibility && lesson.visibility === "private";
+    const isReviewingPublication = isUpdatingVisibility;
     const isMoving = busyKey === `move:lesson:${lesson.id}`;
     const isExporting = busyKey === `export:lesson:${lesson.id}`;
     const actionBusy = busyKey !== null;
@@ -802,8 +802,8 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           visibility={lesson.visibility}
           onChange={(visibility) => void handleSetLessonVisibility(lesson, visibility)}
           disabled={actionBusy}
-          label="可见权限"
-          ariaLabelPrefix="课程设为"
+          label="课程发布"
+          ariaLabelPrefix="课程"
           review={lesson.publication_review.status === "not_started" ? undefined : lesson.publication_review}
           reviewing={isReviewingPublication}
         />
@@ -815,7 +815,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           onClick={() => void handleShareProject("lesson", lesson)}
           disabled={lesson.visibility !== "public" || actionBusy}
           className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
-          title={lesson.visibility === "public" ? "分享公开课程" : "设为 Public 后可分享"}
+          title={lesson.visibility === "public" ? "分享已上传课程" : "上传课程后可分享"}
         >
           <Share2 className="h-4 w-4" />
           分享
@@ -876,7 +876,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
 
   function renderPackageProjectMenu(coursePackage: CoursePackage) {
     const isUpdatingVisibility = busyKey === `visibility:package:${coursePackage.id}`;
-    const isReviewingPublication = isUpdatingVisibility && coursePackage.visibility === "private";
+    const isReviewingPublication = isUpdatingVisibility;
     const actionBusy = busyKey !== null;
 
     return (
@@ -888,8 +888,8 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           visibility={coursePackage.visibility}
           onChange={(visibility) => void handleSetPackageVisibility(coursePackage, visibility)}
           disabled={actionBusy}
-          label="可见权限"
-          ariaLabelPrefix="课程包设为"
+          label="课程发布"
+          ariaLabelPrefix="课程包"
           review={coursePackage.publication_review.status === "not_started" ? undefined : coursePackage.publication_review}
           reviewing={isReviewingPublication}
         />
@@ -901,7 +901,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           onClick={() => void handleShareProject("package", coursePackage)}
           disabled={coursePackage.visibility !== "public" || actionBusy}
           className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
-          title={coursePackage.visibility === "public" ? "分享公开课程包" : "设为 Public 后可分享"}
+          title={coursePackage.visibility === "public" ? "分享已上传课程包" : "上传课程包后可分享"}
         >
           <Share2 className="h-4 w-4" />
           分享
@@ -948,7 +948,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                     : "border-stone-200 bg-stone-50 text-stone-500"
                 )}
               >
-                {lesson.visibility === "public" ? "Public" : "Private"}
+                {lesson.visibility === "public" ? "已上传" : "未上传"}
               </span>
             </div>
             {summary ? <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">{summary}</p> : null}
@@ -1057,7 +1057,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                     : "border-stone-200 bg-stone-50 text-stone-500"
                 )}
               >
-                {coursePackage.visibility === "public" ? "Public" : "Private"}
+                {coursePackage.visibility === "public" ? "已上传" : "未上传"}
               </span>
             </div>
             <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">

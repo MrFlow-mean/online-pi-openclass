@@ -25,6 +25,8 @@ from app.models import (
     LessonRuntimeSnapshot,
     LibraryChapter,
     PublicationReview,
+    PublishedCoursePackageVersion,
+    PublishedLessonVersion,
     PublicCourseSearchResult,
     ResourceLibraryItem,
     ResourcePageStructure,
@@ -33,9 +35,15 @@ from app.models import (
     WorkspaceState,
 )
 from app.services.document_segment_store import DocumentSegmentStore
+from app.services.published_courses import (
+    capture_lesson_version,
+    published_lesson_copy,
+    published_package_copy,
+    upload_package_version,
+)
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -54,6 +62,11 @@ def _escaped_like_pattern(value: str) -> str:
 
 
 def _course_search_result(row: sqlite3.Row) -> PublicCourseSearchResult:
+    published = (
+        _loads(row["published_version_json"], {})
+        if "published_version_json" in row.keys()
+        else {}
+    )
     tags: list[str] = []
     seen: set[str] = set()
     for raw_tags in (row["tags_group"] or "").split(chr(31)):
@@ -67,16 +80,40 @@ def _course_search_result(row: sqlite3.Row) -> PublicCourseSearchResult:
             if isinstance(value, str) and value and value not in seen:
                 seen.add(value)
                 tags.append(value)
+    title = row["title"]
+    summary = row["summary"]
+    lesson_count = int(row["lesson_count"])
+    updated_at = row["updated_at"]
+    if isinstance(published, dict) and published:
+        title = str(published.get("title") or title)
+        summary = str(published.get("summary") or summary)
+        updated_at = published.get("published_at") or updated_at
+        if row["kind"] == "lesson":
+            tags = [value for value in published.get("tags", []) if isinstance(value, str)][:8]
+            lesson_count = 1
+        else:
+            published_lessons = published.get("lessons", [])
+            if isinstance(published_lessons, list):
+                lesson_count = len(published_lessons)
+                seen.clear()
+                tags = []
+                for lesson in published_lessons:
+                    if not isinstance(lesson, dict):
+                        continue
+                    for value in lesson.get("tags", []):
+                        if isinstance(value, str) and value and value not in seen:
+                            seen.add(value)
+                            tags.append(value)
     return PublicCourseSearchResult(
         id=row["id"],
         kind=row["kind"],
         owner_display_name=row["owner_display_name"],
         owner_avatar_url=row["owner_avatar_url"],
-        title=row["title"],
-        summary=row["summary"],
+        title=title,
+        summary=summary,
         tags=tags[:8],
-        lesson_count=int(row["lesson_count"]),
-        updated_at=row["updated_at"],
+        lesson_count=lesson_count,
+        updated_at=updated_at,
         visibility=row["visibility"],
         star_count=int(row["star_count"]) if "star_count" in row.keys() else 0,
     )
@@ -120,13 +157,18 @@ class SqliteCourseStore:
                 row = conn.execute(
                     """
                     SELECT * FROM course_packages
-                    WHERE id = ? AND visibility = 'public' AND sort_order > 0
+                    WHERE id = ?
+                      AND visibility = 'public'
+                      AND published_version_json IS NOT NULL
+                      AND sort_order > 0
                     """,
                     (package_id,),
                 ).fetchone()
                 if row is None:
                     return None
-                return self._read_package(conn, row, owner_user_id=row["owner_user_id"])
+                return published_package_copy(
+                    self._read_package(conn, row, owner_user_id=row["owner_user_id"])
+                )
 
     def load_public_lesson(self, lesson_id: str) -> Lesson | None:
         with self._lock:
@@ -135,18 +177,30 @@ class SqliteCourseStore:
                     """
                     SELECT lessons.*
                     FROM lessons
-                    JOIN course_packages ON course_packages.id = lessons.package_id
                     WHERE lessons.id = ?
-                      AND (
-                        (lessons.visibility = 'public' AND course_packages.sort_order = 0)
-                        OR course_packages.visibility = 'public'
-                      )
                     """,
                     (lesson_id,),
                 ).fetchone()
                 if row is None:
                     return None
-                return self._read_lesson(conn, row)
+                package_row = conn.execute(
+                    "SELECT * FROM course_packages WHERE id = ?",
+                    (row["package_id"],),
+                ).fetchone()
+                if package_row is None:
+                    return None
+                if package_row["sort_order"] == 0:
+                    if row["visibility"] != "public" or not row["published_version_json"]:
+                        return None
+                    return published_lesson_copy(self._read_lesson(conn, row))
+                if package_row["visibility"] != "public" or not package_row["published_version_json"]:
+                    return None
+                package = published_package_copy(
+                    self._read_package(conn, package_row, owner_user_id=package_row["owner_user_id"])
+                )
+                if package is None:
+                    return None
+                return next((lesson for lesson in package.lessons if lesson.id == lesson_id), None)
 
     def search_public_courses(
         self,
@@ -187,38 +241,21 @@ class SqliteCourseStore:
                     package_term_clauses.append(
                         f"""
                         (
-                            LOWER(course_packages.title) LIKE ? ESCAPE '!'
-                            OR LOWER(course_packages.summary) LIKE ? ESCAPE '!'
+                            LOWER(course_packages.published_version_json) LIKE ? ESCAPE '!'
                             OR LOWER({owner_name}) LIKE ? ESCAPE '!'
-                            OR EXISTS (
-                                SELECT 1
-                                FROM lessons AS search_lessons
-                                WHERE search_lessons.package_id = course_packages.id
-                                  AND (
-                                      LOWER(search_lessons.title) LIKE ? ESCAPE '!'
-                                      OR LOWER(search_lessons.summary) LIKE ? ESCAPE '!'
-                                      OR LOWER(search_lessons.tags_json) LIKE ? ESCAPE '!'
-                                      OR LOWER(search_lessons.board_document_title) LIKE ? ESCAPE '!'
-                                      OR LOWER(search_lessons.board_content_text) LIKE ? ESCAPE '!'
-                                  )
-                            )
                         )
                         """
                     )
-                    package_params.extend([pattern] * 8)
+                    package_params.extend([pattern] * 2)
                     lesson_term_clauses.append(
                         f"""
                         (
-                            LOWER(lessons.title) LIKE ? ESCAPE '!'
-                            OR LOWER(lessons.summary) LIKE ? ESCAPE '!'
-                            OR LOWER(lessons.tags_json) LIKE ? ESCAPE '!'
-                            OR LOWER(lessons.board_document_title) LIKE ? ESCAPE '!'
-                            OR LOWER(lessons.board_content_text) LIKE ? ESCAPE '!'
+                            LOWER(lessons.published_version_json) LIKE ? ESCAPE '!'
                             OR LOWER({owner_name}) LIKE ? ESCAPE '!'
                         )
                         """
                     )
-                    lesson_params.extend([pattern] * 6)
+                    lesson_params.extend([pattern] * 2)
 
                 package_params.append(limit)
                 package_rows = conn.execute(
@@ -228,12 +265,13 @@ class SqliteCourseStore:
                         'package' AS kind,
                         {owner_name} AS owner_display_name,
                         {owner_avatar} AS owner_avatar_url,
-                        course_packages.title,
-                        course_packages.summary,
-                        COUNT(lessons.id) AS lesson_count,
-                        MAX(lessons.updated_at) AS updated_at,
+                        COALESCE(json_extract(course_packages.published_version_json, '$.title'), course_packages.title) AS title,
+                        COALESCE(json_extract(course_packages.published_version_json, '$.summary'), course_packages.summary) AS summary,
+                        json_array_length(json_extract(course_packages.published_version_json, '$.lessons')) AS lesson_count,
+                        json_extract(course_packages.published_version_json, '$.published_at') AS updated_at,
                         GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
                         course_packages.visibility,
+                        course_packages.published_version_json,
                         (
                             SELECT COUNT(*)
                             FROM public_course_stars
@@ -244,6 +282,7 @@ class SqliteCourseStore:
                     {user_join}
                     LEFT JOIN lessons ON lessons.package_id = course_packages.id
                     WHERE course_packages.visibility = 'public'
+                      AND course_packages.published_version_json IS NOT NULL
                       AND course_packages.sort_order > 0
                       AND (
                           course_packages.owner_user_id IS NULL
@@ -256,7 +295,7 @@ class SqliteCourseStore:
                         owner_avatar_url,
                         course_packages.title,
                         course_packages.summary
-                    ORDER BY COALESCE(MAX(lessons.updated_at), '') DESC
+                    ORDER BY updated_at DESC
                     LIMIT ?
                     """,
                     package_params,
@@ -270,12 +309,13 @@ class SqliteCourseStore:
                         'lesson' AS kind,
                         {owner_name} AS owner_display_name,
                         {owner_avatar} AS owner_avatar_url,
-                        lessons.title,
-                        lessons.summary,
+                        COALESCE(json_extract(lessons.published_version_json, '$.title'), lessons.title) AS title,
+                        COALESCE(json_extract(lessons.published_version_json, '$.summary'), lessons.summary) AS summary,
                         1 AS lesson_count,
-                        lessons.updated_at,
+                        json_extract(lessons.published_version_json, '$.published_at') AS updated_at,
                         lessons.tags_json AS tags_group,
                         lessons.visibility,
+                        lessons.published_version_json,
                         (
                             SELECT COUNT(*)
                             FROM public_course_stars
@@ -287,12 +327,13 @@ class SqliteCourseStore:
                     {user_join}
                     WHERE course_packages.sort_order = 0
                       AND lessons.visibility = 'public'
+                      AND lessons.published_version_json IS NOT NULL
                       AND (
                           course_packages.owner_user_id IS NULL
                           OR course_packages.owner_user_id != ?
                       )
                       AND {" AND ".join(lesson_term_clauses)}
-                    ORDER BY lessons.updated_at DESC
+                    ORDER BY updated_at DESC
                     LIMIT ?
                     """,
                     lesson_params,
@@ -362,12 +403,13 @@ class SqliteCourseStore:
                             'package' AS kind,
                             {owner_name} AS owner_display_name,
                             {owner_avatar} AS owner_avatar_url,
-                            course_packages.title,
-                            course_packages.summary,
-                            COUNT(lessons.id) AS lesson_count,
-                            COALESCE(MAX(lessons.updated_at), '') AS updated_at,
+                            COALESCE(json_extract(course_packages.published_version_json, '$.title'), course_packages.title) AS title,
+                            COALESCE(json_extract(course_packages.published_version_json, '$.summary'), course_packages.summary) AS summary,
+                            json_array_length(json_extract(course_packages.published_version_json, '$.lessons')) AS lesson_count,
+                            json_extract(course_packages.published_version_json, '$.published_at') AS updated_at,
                             GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
                             course_packages.visibility,
+                            course_packages.published_version_json,
                             (
                                 SELECT COUNT(*)
                                 FROM public_course_stars
@@ -378,6 +420,7 @@ class SqliteCourseStore:
                         {user_join}
                         LEFT JOIN lessons ON lessons.package_id = course_packages.id
                         WHERE course_packages.visibility = 'public'
+                          AND course_packages.published_version_json IS NOT NULL
                           AND course_packages.sort_order > 0
                           AND (
                               ? IS NULL
@@ -398,12 +441,13 @@ class SqliteCourseStore:
                             'lesson' AS kind,
                             {owner_name} AS owner_display_name,
                             {owner_avatar} AS owner_avatar_url,
-                            lessons.title,
-                            lessons.summary,
+                            COALESCE(json_extract(lessons.published_version_json, '$.title'), lessons.title) AS title,
+                            COALESCE(json_extract(lessons.published_version_json, '$.summary'), lessons.summary) AS summary,
                             1 AS lesson_count,
-                            lessons.updated_at,
+                            json_extract(lessons.published_version_json, '$.published_at') AS updated_at,
                             lessons.tags_json AS tags_group,
                             lessons.visibility,
+                            lessons.published_version_json,
                             (
                                 SELECT COUNT(*)
                                 FROM public_course_stars
@@ -415,6 +459,7 @@ class SqliteCourseStore:
                         {user_join}
                         WHERE course_packages.sort_order = 0
                           AND lessons.visibility = 'public'
+                          AND lessons.published_version_json IS NOT NULL
                           AND (
                               ? IS NULL
                               OR course_packages.owner_user_id IS NULL
@@ -476,6 +521,7 @@ class SqliteCourseStore:
                         FROM course_packages
                         WHERE id = ?
                           AND visibility = 'public'
+                          AND published_version_json IS NOT NULL
                           AND sort_order > 0
                           AND (owner_user_id IS NULL OR owner_user_id != ?)
                         """,
@@ -490,6 +536,7 @@ class SqliteCourseStore:
                         WHERE lessons.id = ?
                           AND course_packages.sort_order = 0
                           AND lessons.visibility = 'public'
+                          AND lessons.published_version_json IS NOT NULL
                           AND (
                               course_packages.owner_user_id IS NULL
                               OR course_packages.owner_user_id != ?
@@ -554,12 +601,13 @@ class SqliteCourseStore:
                             'package' AS kind,
                             {owner_name} AS owner_display_name,
                             {owner_avatar} AS owner_avatar_url,
-                            course_packages.title,
-                            course_packages.summary,
-                            COUNT(lessons.id) AS lesson_count,
-                            MAX(lessons.updated_at) AS updated_at,
+                            COALESCE(json_extract(course_packages.published_version_json, '$.title'), course_packages.title) AS title,
+                            COALESCE(json_extract(course_packages.published_version_json, '$.summary'), course_packages.summary) AS summary,
+                            json_array_length(json_extract(course_packages.published_version_json, '$.lessons')) AS lesson_count,
+                            json_extract(course_packages.published_version_json, '$.published_at') AS updated_at,
                             GROUP_CONCAT(lessons.tags_json, CHAR(31)) AS tags_group,
                             course_packages.visibility,
+                            course_packages.published_version_json,
                             stars.created_at AS starred_at
                         FROM public_course_stars AS stars
                         JOIN course_packages
@@ -569,6 +617,7 @@ class SqliteCourseStore:
                         LEFT JOIN lessons ON lessons.package_id = course_packages.id
                         WHERE stars.owner_user_id = ?
                           AND course_packages.visibility = 'public'
+                          AND course_packages.published_version_json IS NOT NULL
                           AND course_packages.sort_order > 0
                         GROUP BY course_packages.id, stars.created_at
 
@@ -579,12 +628,13 @@ class SqliteCourseStore:
                             'lesson' AS kind,
                             {owner_name} AS owner_display_name,
                             {owner_avatar} AS owner_avatar_url,
-                            lessons.title,
-                            lessons.summary,
+                            COALESCE(json_extract(lessons.published_version_json, '$.title'), lessons.title) AS title,
+                            COALESCE(json_extract(lessons.published_version_json, '$.summary'), lessons.summary) AS summary,
                             1 AS lesson_count,
-                            lessons.updated_at,
+                            json_extract(lessons.published_version_json, '$.published_at') AS updated_at,
                             lessons.tags_json AS tags_group,
                             lessons.visibility,
+                            lessons.published_version_json,
                             stars.created_at AS starred_at
                         FROM public_course_stars AS stars
                         JOIN lessons
@@ -595,6 +645,7 @@ class SqliteCourseStore:
                         WHERE stars.owner_user_id = ?
                           AND course_packages.sort_order = 0
                           AND lessons.visibility = 'public'
+                          AND lessons.published_version_json IS NOT NULL
                     )
                     ORDER BY starred_at DESC
                     LIMIT ?
@@ -1330,6 +1381,7 @@ class SqliteCourseStore:
                 summary TEXT NOT NULL,
                 visibility TEXT NOT NULL DEFAULT 'private',
                 publication_review_json TEXT,
+                published_version_json TEXT,
                 sort_order INTEGER NOT NULL,
                 active_lesson_id TEXT
             );
@@ -1344,6 +1396,7 @@ class SqliteCourseStore:
                 tags_json TEXT NOT NULL,
                 visibility TEXT NOT NULL DEFAULT 'private',
                 publication_review_json TEXT,
+                published_version_json TEXT,
                 board_document_id TEXT NOT NULL,
                 board_document_title TEXT NOT NULL,
                 board_content_json TEXT NOT NULL,
@@ -1600,6 +1653,12 @@ class SqliteCourseStore:
         )
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        package_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
+        }
+        if "published_version_json" not in package_columns:
+            conn.execute("ALTER TABLE course_packages ADD COLUMN published_version_json TEXT")
         lesson_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(lessons)").fetchall()
@@ -1608,6 +1667,8 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_teaching_progress_json TEXT")
         if "board_task_requirements_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_task_requirements_json TEXT")
+        if "published_version_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN published_version_json TEXT")
         commit_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(lesson_commits)").fetchall()
@@ -1680,6 +1741,42 @@ class SqliteCourseStore:
         if "publication_review_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN publication_review_json TEXT")
             conn.execute("UPDATE lessons SET visibility = 'private'")
+        self._backfill_published_versions(conn)
+
+    def _backfill_published_versions(self, conn: sqlite3.Connection) -> None:
+        standalone_rows = conn.execute(
+            """
+            SELECT lessons.*
+            FROM lessons
+            JOIN course_packages ON course_packages.id = lessons.package_id
+            WHERE course_packages.sort_order = 0
+              AND lessons.visibility = 'public'
+              AND lessons.published_version_json IS NULL
+            """
+        ).fetchall()
+        for row in standalone_rows:
+            lesson = self._read_lesson(conn, row)
+            version = capture_lesson_version(lesson)
+            conn.execute(
+                "UPDATE lessons SET published_version_json = ? WHERE id = ?",
+                (_dumps(version.model_dump(mode="json")), lesson.id),
+            )
+
+        package_rows = conn.execute(
+            """
+            SELECT * FROM course_packages
+            WHERE sort_order > 0
+              AND visibility = 'public'
+              AND published_version_json IS NULL
+            """
+        ).fetchall()
+        for row in package_rows:
+            package = self._read_package(conn, row, owner_user_id=row["owner_user_id"])
+            upload_package_version(package)
+            conn.execute(
+                "UPDATE course_packages SET published_version_json = ? WHERE id = ?",
+                (_dumps(package.published_version.model_dump(mode="json")), package.id),
+            )
 
     def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
@@ -1831,6 +1928,13 @@ class SqliteCourseStore:
             publication_review=PublicationReview.model_validate(
                 _loads(row["publication_review_json"], {})
             ),
+            published_version=(
+                PublishedCoursePackageVersion.model_validate(
+                    _loads(row["published_version_json"], {})
+                )
+                if row["published_version_json"]
+                else None
+            ),
             lessons=lessons,
             course_graph=course_graph,
             resources=resources,
@@ -1888,6 +1992,13 @@ class SqliteCourseStore:
             visibility=row["visibility"],
             publication_review=PublicationReview.model_validate(
                 _loads(row["publication_review_json"], {})
+            ),
+            published_version=(
+                PublishedLessonVersion.model_validate(
+                    _loads(row["published_version_json"], {})
+                )
+                if row["published_version_json"]
+                else None
             ),
             board_document=_document_from_row(row, "board"),
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
@@ -2040,8 +2151,8 @@ class SqliteCourseStore:
             """
             INSERT INTO course_packages(
                 id, owner_user_id, title, summary, visibility, publication_review_json,
-                sort_order, active_lesson_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                published_version_json, sort_order, active_lesson_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 package.id,
@@ -2050,6 +2161,7 @@ class SqliteCourseStore:
                 package.summary,
                 package.visibility,
                 _dumps(package.publication_review.model_dump(mode="json")),
+                _dumps_optional(package.published_version),
                 package_index,
                 package.active_lesson_id,
             ),
@@ -2103,13 +2215,13 @@ class SqliteCourseStore:
             """
             INSERT INTO lessons(
                 id, package_id, sort_order, title, slug, summary, tags_json, visibility,
-                publication_review_json,
+                publication_review_json, published_version_json,
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json,
                 board_task_requirements_json, teaching_guide_json,
                 current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -2121,6 +2233,7 @@ class SqliteCourseStore:
                 _dumps(lesson.tags),
                 lesson.visibility,
                 _dumps(lesson.publication_review.model_dump(mode="json")),
+                _dumps_optional(lesson.published_version),
                 document.id,
                 document.title,
                 _dumps(document.content_json),

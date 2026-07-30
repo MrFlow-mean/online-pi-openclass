@@ -488,6 +488,18 @@ export interface PublicationReview {
   completed_at?: string | null;
 }
 
+export interface PublishedLessonVersion {
+  revision_id: string;
+  lesson_id: string;
+  source_commit_id: string;
+  title: string;
+  slug: string;
+  summary: string;
+  tags: string[];
+  board_document: BoardDocument;
+  published_at: string;
+}
+
 export interface Lesson {
   id: string;
   title: string;
@@ -496,6 +508,7 @@ export interface Lesson {
   tags: string[];
   visibility: "private" | "public";
   publication_review: PublicationReview;
+  published_version?: PublishedLessonVersion | null;
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
   board_task_requirements?: BoardTaskRequirementSheet | null;
@@ -1010,6 +1023,14 @@ export interface CoursePackage {
   summary: string;
   visibility: "private" | "public";
   publication_review: PublicationReview;
+  published_version?: {
+    revision_id: string;
+    title: string;
+    summary: string;
+    lessons: PublishedLessonVersion[];
+    course_graph: CourseGraphEdge[];
+    published_at: string;
+  } | null;
   is_standalone: boolean;
   lessons: Lesson[];
   course_graph: CourseGraphEdge[];

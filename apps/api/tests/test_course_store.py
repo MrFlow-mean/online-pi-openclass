@@ -13,6 +13,7 @@ from app.models import (
 )
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
+from app.services.published_courses import upload_lesson_version, upload_package_version
 from app.services.rich_document import build_document, rich_structure_counts, would_flatten_rich_document
 
 
@@ -189,7 +190,7 @@ def test_sqlite_store_migrates_and_keeps_contribution_snapshots(tmp_path) -> Non
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "15"
+        ).fetchone()[0] == "16"
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'public_course_stars'"
         ).fetchone() is not None
@@ -283,8 +284,8 @@ def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None
 
     own_workspace = build_initial_workspace_state()
     own_lesson = _append_lesson(own_workspace, "Own public retrieval course")
-    own_lesson.visibility = "public"
     own_lesson.board_document.content_text = "retrieval anchor"
+    upload_lesson_version(own_lesson)
     own_private_lesson = _append_lesson(own_workspace, "Own private retrieval course")
     own_private_lesson.visibility = "private"
     own_private_lesson.board_document.content_text = "retrieval anchor"
@@ -294,8 +295,8 @@ def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None
     public_lesson = _append_lesson(author_workspace, "Other public course")
     public_lesson.summary = "A searchable public summary"
     public_lesson.tags = ["retrieval", "public"]
-    public_lesson.visibility = "public"
     public_lesson.board_document.content_text = "A unique retrieval anchor in the course body."
+    upload_lesson_version(public_lesson)
 
     private_lesson = _append_lesson(author_workspace, "Private retrieval course")
     private_lesson.visibility = "private"
@@ -310,6 +311,7 @@ def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None
         visibility="public",
         lessons=[public_package_lesson],
     )
+    upload_package_version(public_package)
     author_workspace.packages.append(public_package)
     store.save_for_user("author", author_workspace)
 
@@ -362,6 +364,43 @@ def test_sqlite_store_searches_only_other_users_public_courses(tmp_path) -> None
     assert [(result.kind, result.title, result.lesson_count) for result in package_results] == [
         ("package", "Public package", 1)
     ]
+
+
+def test_public_lesson_stays_on_uploaded_version_until_next_upload(tmp_path) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    workspace = build_initial_workspace_state()
+    lesson = _append_lesson(workspace, "Uploaded title")
+    lesson.summary = "Uploaded summary"
+    lesson.board_document.content_text = "uploaded body"
+    upload_lesson_version(lesson)
+    first_revision_id = lesson.published_version.revision_id
+    store.save_for_user("author", workspace)
+
+    working = store.load_for_user("author")
+    working_lesson = working.packages[0].lessons[0]
+    working_lesson.title = "Private working title"
+    working_lesson.summary = "Private working summary"
+    working_lesson.board_document.content_text = "private working body"
+    store.save_for_user("author", working)
+
+    public_lesson = store.load_public_lesson(lesson.id)
+    assert public_lesson is not None
+    assert public_lesson.title == "Uploaded title"
+    assert public_lesson.summary == "Uploaded summary"
+    assert public_lesson.board_document.content_text == "uploaded body"
+    assert public_lesson.published_version.revision_id == first_revision_id
+    assert store.search_public_courses(
+        "Private working title",
+        exclude_owner_user_id="viewer",
+    ) == []
+
+    upload_lesson_version(working_lesson)
+    store.save_for_user("author", working)
+    updated_public_lesson = store.load_public_lesson(lesson.id)
+    assert updated_public_lesson is not None
+    assert updated_public_lesson.title == "Private working title"
+    assert updated_public_lesson.board_document.content_text == "private working body"
+    assert updated_public_lesson.published_version.revision_id != first_revision_id
 
 
 def test_sqlite_store_preserves_rich_json_when_editor_text_is_plain(tmp_path) -> None:

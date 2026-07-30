@@ -1308,7 +1308,7 @@ def test_publication_gate_keeps_project_private_when_review_finds_copyright(
     assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 404
 
 
-def test_source_upload_revokes_publication_and_requires_a_fresh_review(api_client: TestClient) -> None:
+def test_source_upload_keeps_uploaded_version_until_explicit_reupload(api_client: TestClient) -> None:
     created = api_client.post(
         "/api/lessons/generate",
         json={"topic": "Publication invalidation", "start_blank": True},
@@ -1320,7 +1320,9 @@ def test_source_upload_revokes_publication_and_requires_a_fresh_review(api_clien
         json={"visibility": "public"},
     )
     assert published.status_code == 200
-    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 200
+    first_public = api_client.get(f"/api/public/lessons/{lesson['id']}")
+    assert first_public.status_code == 200
+    first_revision_id = first_public.json()["published_revision_id"]
 
     uploaded = api_client.post(
         f"/api/packages/{standalone_package}/sources",
@@ -1335,9 +1337,11 @@ def test_source_upload_revokes_publication_and_requires_a_fresh_review(api_clien
         for item in package["lessons"]
         if item["id"] == lesson["id"]
     )
-    assert updated_lesson["visibility"] == "private"
-    assert updated_lesson["publication_review"]["status"] == "not_started"
-    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 404
+    assert updated_lesson["visibility"] == "public"
+    assert updated_lesson["publication_review"]["status"] == "approved"
+    unchanged_public = api_client.get(f"/api/public/lessons/{lesson['id']}")
+    assert unchanged_public.status_code == 200
+    assert unchanged_public.json()["published_revision_id"] == first_revision_id
 
     republished = api_client.post(
         f"/api/lessons/{lesson['id']}/visibility",
@@ -1354,7 +1358,9 @@ def test_source_upload_revokes_publication_and_requires_a_fresh_review(api_clien
     assert republished_lesson["publication_review"]["status"] == "approved"
     assert republished_lesson["publication_review"]["scanned_source_count"] == 0
     assert republished_lesson["publication_review"]["message"] == "课程没有引用上传资料，可以公开。"
-    assert api_client.get(f"/api/public/lessons/{lesson['id']}").status_code == 200
+    next_public = api_client.get(f"/api/public/lessons/{lesson['id']}")
+    assert next_public.status_code == 200
+    assert next_public.json()["published_revision_id"] != first_revision_id
 
 
 def _docx_text_nodes(content: bytes) -> list[str]:
