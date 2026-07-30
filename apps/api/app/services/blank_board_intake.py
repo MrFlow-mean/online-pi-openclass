@@ -32,6 +32,7 @@ from app.services.codex_app_server import (
 )
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
+from app.services.pending_teaching_offer import build_pending_teaching_offer
 
 BlankBoardIntent = Literal["ordinary_chat", "learning_need", "unclear"]
 BlankBoardRequestedAction = Literal["none", "generate_board"]
@@ -1115,6 +1116,12 @@ def process_blank_board_turn(
             lesson.id,
         )
         handoff_base_commit_id = current_head_commit(handoff_lesson).id
+        pending_teaching_offer = build_pending_teaching_offer(
+            invitation=final_chatbot_message,
+            source_generation_commit_id=handoff_base_commit_id,
+            requirement_run_id=run_id,
+            requirement_version_id=frozen_version_id,
+        )
         commit_operations(
             handoff_lesson,
             operations=[],
@@ -1138,6 +1145,8 @@ def process_blank_board_turn(
                 "requirement_cleared": True,
                 "post_generation_action_requested": request.post_generation_action,
                 "auto_teaching_started": False,
+                "pending_teaching_offer": pending_teaching_offer.model_dump(mode="json"),
+                "pending_teaching_offer_transition": "created",
                 "decision_trace": {
                     "selected_action": "generate_board_handoff",
                     "role_executed": "chatbot",

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from app.models import (
     AgentActivityEvent,
     AIModelSelection,
@@ -1429,6 +1430,14 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     )
     assert saved_lesson.board_document.content_text == "# Focused board\n\nBoard content."
     assert handoff_commit.metadata["kind"] == "board_generation_handoff"
+    assert handoff_commit.metadata["pending_teaching_offer"]["status"] == "pending"
+    assert handoff_commit.metadata["pending_teaching_offer"]["invitation"] == (
+        response.chatbot_message
+    )
+    assert handoff_commit.metadata["pending_teaching_offer"][
+        "source_generation_commit_id"
+    ] == generation_commit.id
+    assert handoff_commit.metadata["pending_teaching_offer_transition"] == "created"
     assert handoff_commit.parent_ids == [generation_commit.id]
     assert generation_commit.metadata["kind"] == "board_document_generation"
     assert generation_commit.metadata["requirement_phase"] == "consumed"

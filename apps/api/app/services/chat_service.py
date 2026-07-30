@@ -32,6 +32,14 @@ from app.services.existing_board.interaction_workflow import (
 from app.services.existing_board.workflow import process_existing_board_workflow
 from app.services.history import bind_commit_metadata
 from app.services.lesson_title import maybe_generate_lesson_title
+from app.services.pending_teaching_offer import (
+    PENDING_TEACHING_OFFER_METADATA_KEY,
+    PendingTeachingOffer,
+    PendingTeachingOfferDecision,
+    PendingTeachingOfferDecisionResult,
+    decide_pending_teaching_offer,
+    pending_teaching_offer_from_runtime_state,
+)
 
 _IDEMPOTENCY_CACHE_LIMIT = 256
 _PERSISTED_IDEMPOTENCY_WAIT_SECONDS = 30.0
@@ -204,11 +212,40 @@ def _process_chat_on_lesson_once(
         )
         if active_interaction:
             gate = _gate_for_active_interaction(gate)
-    with bind_commit_metadata({**(commit_metadata or {}), **_chat_edit_metadata(request)}):
+    effective_request = request
+    pending_offer_metadata: dict[str, object] = {}
+    if not active_interaction:
+        pending_offer = pending_teaching_offer_from_runtime_state(
+            workspace_state.load_lesson_runtime_state_for_user(user_id, lesson_id)
+        )
+        if pending_offer is not None:
+            pending_decision = _decide_pending_teaching_offer(
+                gate,
+                request=request,
+                offer=pending_offer,
+                on_agent_activity=on_agent_activity,
+            )
+            effective_request, gate = _apply_pending_teaching_offer_decision(
+                gate,
+                request=request,
+                offer=pending_offer,
+                result=pending_decision,
+            )
+            pending_offer_metadata = _pending_teaching_offer_commit_metadata(
+                pending_offer,
+                pending_decision.decision,
+            )
+    with bind_commit_metadata(
+        {
+            **(commit_metadata or {}),
+            **_chat_edit_metadata(effective_request),
+            **pending_offer_metadata,
+        }
+    ):
         if gate.decision.intent in {"ordinary_chat", "unclear"}:
             return complete_non_learning_turn(
                 lesson_id,
-                request,
+                effective_request,
                 gate,
                 user_id=user_id,
                 on_delta=on_delta,
@@ -216,12 +253,12 @@ def _process_chat_on_lesson_once(
                 is_cancelled=is_cancelled,
             )
         if active_interaction or _should_use_bounded_existing_board_workflow(
-            lesson_id, request, user_id=user_id
+            lesson_id, effective_request, user_id=user_id
         ):
             try:
                 response = process_existing_board_workflow(
                     lesson_id,
-                    request,
+                    effective_request,
                     user_id=user_id,
                     adapter=gate.adapter,
                     selected_model=gate.envelope.selected_model,
@@ -247,7 +284,7 @@ def _process_chat_on_lesson_once(
         else:
             response = process_codex_chat_on_lesson(
                 lesson_id,
-                request,
+                effective_request,
                 user_id=user_id,
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
@@ -259,7 +296,7 @@ def _process_chat_on_lesson_once(
     response.agent_activity = _merge_activity(gate.activity, response.agent_activity)
     return maybe_generate_lesson_title(
         lesson_id,
-        request,
+        effective_request,
         response,
         user_id=user_id,
     )
@@ -310,16 +347,143 @@ def _require_matching_prepared_gate(
         raise ValueError("The prepared Turn Router result does not match this chat input.")
 
 
+def _decide_pending_teaching_offer(
+    gate: TurnGateResult,
+    *,
+    request: ChatRequest,
+    offer: PendingTeachingOffer,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None,
+) -> PendingTeachingOfferDecisionResult:
+    if request.teaching_action == "restart":
+        return PendingTeachingOfferDecisionResult(
+            decision=PendingTeachingOfferDecision(
+                action="accept",
+                reason="The learner used the explicit restart-teaching control.",
+            )
+        )
+    return decide_pending_teaching_offer(
+        adapter=gate.adapter,
+        request=request,
+        offer=offer,
+        on_activity=on_agent_activity,
+    )
+
+
+def _apply_pending_teaching_offer_decision(
+    gate: TurnGateResult,
+    *,
+    request: ChatRequest,
+    offer: PendingTeachingOffer,
+    result: PendingTeachingOfferDecisionResult,
+) -> tuple[ChatRequest, TurnGateResult]:
+    action = result.decision.action
+    reason = result.decision.reason.strip()
+    effective_request = request
+    envelope = gate.envelope
+    decision = gate.decision
+    trace = gate.trace
+    if action == "accept":
+        effective_request = request.model_copy(update={"teaching_action": "restart"})
+        envelope = gate.envelope.model_copy(
+            update={
+                "teaching_action": "restart",
+                "explicit_action": "teaching_restart",
+            }
+        )
+        decision = gate.decision.model_copy(
+            update={
+                "intent": "learning_need",
+                "continuation": "teaching_sequence",
+                "relation_to_active": "continue",
+                "board_access": "state_check_only",
+                "reason": reason,
+            }
+        )
+    elif action == "decline":
+        conversation = [*gate.envelope.conversation]
+        if not conversation or conversation[-1].content.strip() != offer.invitation:
+            conversation.append(
+                ConversationTurn(role="assistant", content=offer.invitation)
+            )
+        envelope = gate.envelope.model_copy(update={"conversation": conversation})
+        decision = gate.decision.model_copy(
+            update={
+                "intent": "ordinary_chat",
+                "continuation": "none",
+                "relation_to_active": "none",
+                "board_access": "forbidden",
+                "reason": reason,
+            }
+        )
+    elif action == "new_task" and decision.intent == "learning_need":
+        decision = decision.model_copy(
+            update={
+                "continuation": "none",
+                "relation_to_active": "new_task",
+                "reason": reason,
+            }
+        )
+    trace = trace.model_copy(
+        update={
+            "intent_signals": list(
+                dict.fromkeys(
+                    [*trace.intent_signals, f"pending_teaching_offer:{action}"]
+                )
+            ),
+            "matched_rules": list(
+                dict.fromkeys(
+                    [*trace.matched_rules, "pending_teaching_offer_continuation"]
+                )
+            ),
+            "selected_action": decision.intent,
+            "rejected_actions": [
+                intent
+                for intent in ("ordinary_chat", "learning_need", "unclear")
+                if intent != decision.intent
+            ],
+            "sequence_mode": (
+                "teaching_sequence" if action == "accept" else trace.sequence_mode
+            ),
+            "board_access": (
+                "state_check_only"
+                if decision.intent == "learning_need"
+                else "forbidden"
+            ),
+            "requirement_effect": (
+                "eligible" if decision.intent == "learning_need" else "preserved"
+            ),
+            "reason": reason,
+        }
+    )
+    return effective_request, TurnGateResult(
+        envelope=envelope,
+        decision=decision,
+        trace=trace,
+        adapter=gate.adapter,
+        activity=_merge_activity(gate.activity, result.activity),
+    )
+
+
+def _pending_teaching_offer_commit_metadata(
+    offer: PendingTeachingOffer,
+    decision: PendingTeachingOfferDecision,
+) -> dict[str, object]:
+    preserve_offer = decision.action == "unrelated"
+    return {
+        PENDING_TEACHING_OFFER_METADATA_KEY: (
+            offer.model_dump(mode="json") if preserve_offer else None
+        ),
+        "pending_teaching_offer_id": offer.offer_id,
+        "pending_teaching_offer_transition": decision.action,
+    }
+
+
 def _should_use_bounded_existing_board_workflow(
     lesson_id: str,
     request: ChatRequest,
     *,
     user_id: str,
 ) -> bool:
-    workspace = workspace_state.load_workspace_for_user(user_id)
-    _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
-    if not lesson.board_document.content_text.strip():
-        return False
     if request.formula_ink is not None or request.attachments:
         return False
     if request.source_query_scope is not None:
@@ -330,7 +494,11 @@ def _should_use_bounded_existing_board_workflow(
         *([request.selection] if request.selection is not None else []),
         *request.selections,
     ]
-    return all(reference.kind != "source" for reference in references)
+    if any(reference.kind == "source" for reference in references):
+        return False
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    return bool(lesson.board_document.content_text.strip())
 
 
 def _active_interaction_owns_turn(
