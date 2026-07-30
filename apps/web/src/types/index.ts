@@ -1366,6 +1366,12 @@ export interface BoardDecision {
 
 export interface ChatRequestPayload {
   message: string;
+  session_id?: string;
+  turn_id?: string;
+  input_event_id?: string;
+  channel?: "text" | "realtime";
+  input_kind?: "typed" | "voice";
+  provider_reference?: string | null;
   text_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
   selections?: SelectionRef[];

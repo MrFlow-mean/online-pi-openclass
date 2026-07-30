@@ -915,6 +915,7 @@ export function useRealtimeVoice({
                   realtimeBoardReferencesRef.current.map((selection, index) =>
                     api.callRealtimeTool(lessonId, {
                       client_session_id: clientSessionId,
+                      turn_id: turnId,
                       call_id: `${functionCall.callId}_reference_${index + 1}`,
                       name: functionCall.name,
                       arguments: functionCall.arguments,
@@ -926,6 +927,7 @@ export function useRealtimeVoice({
               } else {
                 toolResult = await api.callRealtimeTool(lessonId, {
                   client_session_id: clientSessionId,
+                  turn_id: turnId,
                   call_id: functionCall.callId,
                   name: functionCall.name,
                   arguments: functionCall.arguments,
@@ -1102,12 +1104,19 @@ export function useRealtimeVoice({
       });
     }
     if (usesClientDelegation) {
-      codexLiveSocket?.send(JSON.stringify({ type: "input_text", text: normalized }));
+      codexLiveSocket?.send(JSON.stringify({
+        type: "input_text",
+        text: normalized,
+        client_session_id: realtimeClientSessionIdRef.current,
+        turn_id: turnId,
+        input_event_id: messageId,
+      }));
       setVoiceStatusText("Codex Live 正在处理文字消息");
       return true;
     }
     dataChannel?.send(JSON.stringify({
       type: "conversation.item.create",
+      event_id: messageId,
       item: {
         type: "message",
         role: "user",

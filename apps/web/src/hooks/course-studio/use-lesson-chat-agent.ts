@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type
 
 import { api, isMissingChatStreamFinalError } from "@/lib/api";
 import { publicAgentActivityLabel } from "@/lib/agent-activity";
+import { createTextChatSessionId, freezeTextChatTurnIdentity } from "@/lib/chat-turn-identity";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
   createChatMessage,
@@ -116,6 +117,7 @@ export function useLessonChatAgent({
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
   const chatAbortRequestedRef = useRef(false);
+  const textChatSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     activeLessonIdRef.current = activeLesson?.id ?? null;
@@ -292,11 +294,15 @@ export function useLessonChatAgent({
       return;
     }
     const lessonId = lesson.id;
+    if (!textChatSessionIdRef.current) {
+      textChatSessionIdRef.current = createTextChatSessionId();
+    }
+    const identifiedPayload = freezeTextChatTurnIdentity(payload, textChatSessionIdRef.current);
     const payloadWithConversation: ChatRequestPayload = {
-      ...payload,
-      post_generation_action: payload.post_generation_action ?? "stop_after_generation",
-      text_model: payload.text_model ?? selectedTextModel,
-      conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
+      ...identifiedPayload,
+      post_generation_action: identifiedPayload.post_generation_action ?? "stop_after_generation",
+      text_model: identifiedPayload.text_model ?? selectedTextModel,
+      conversation: identifiedPayload.conversation ?? conversationFromMessages(conversationMessages),
     };
 
     if (!payloadWithConversation.message.trim()) {
