@@ -22,8 +22,13 @@ export type CodexLiveTaskState = {
   runningCount: number;
   queuedCount: number;
   pendingCount: number;
+  responsePendingCount: number;
   pendingTasks: CodexLivePendingTask[];
 };
+
+export function codexLiveTaskIsLoading(state: CodexLiveTaskState) {
+  return state.runningCount > 0 || state.queuedCount > 0 || state.responsePendingCount > 0;
+}
 
 export type CodexLiveBridgeEvent = {
   type?: string;
@@ -164,6 +169,12 @@ export function handleCodexLiveTaskEvent(
     updateQueueState(payload);
     onToolResult(lessonId, payload.result);
     const succeeded = payload.result.status === "ok" && payload.result.model_output.status === "ok";
+    if (succeeded) {
+      setTaskState((current) => ({
+        ...current,
+        responsePendingCount: current.responsePendingCount + 1,
+      }));
+    }
     const label = succeeded ? "Chatbot 工作流已完成" : "Chatbot 工作流执行失败";
     onToolStatusUpdate({
       lessonId,
@@ -194,6 +205,7 @@ export function handleCodexLiveTaskEvent(
   if (payload.type === "codex_live.workflow.error" || payload.type === "codex_live.error") {
     const message = payload.message || "Codex Live Chatbot 工作流通道发生错误";
     const delegationId = payload.delegation_id;
+    setTaskState((current) => ({ ...current, responsePendingCount: 0 }));
     onToolStatusUpdate({
       lessonId,
       turnId: delegationId ? delegationTurnId(delegationId) : `realtime-error-${crypto.randomUUID()}`,

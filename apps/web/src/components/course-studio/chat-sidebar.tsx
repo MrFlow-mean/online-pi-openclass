@@ -28,9 +28,10 @@ import { sourceQuerySelectionLabel } from "@/components/course-studio/source-que
 import { LearningClarityCard } from "@/components/learning-clarity-card";
 import { api } from "@/lib/api";
 import { boardWorkflowLabel } from "@/lib/learning-requirement-display";
-import type {
-  CodexLiveTaskAction,
-  CodexLiveTaskState,
+import {
+  codexLiveTaskIsLoading,
+  type CodexLiveTaskAction,
+  type CodexLiveTaskState,
 } from "@/hooks/course-studio/codex-live-task-ui";
 import type {
   AIModelCatalog,
@@ -261,7 +262,7 @@ function CodexLiveTaskQueuePanel({
   state: CodexLiveTaskState;
   onResolve: (delegationId: string, action: CodexLiveTaskAction) => boolean;
 }) {
-  if (!state.runningCount && !state.queuedCount && !state.pendingCount) {
+  if (!state.runningCount && !state.queuedCount && !state.pendingCount && !state.responsePendingCount) {
     return null;
   }
   const actionLabels: Array<[CodexLiveTaskAction, string]> = [
@@ -276,8 +277,8 @@ function CodexLiveTaskQueuePanel({
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-semibold text-sky-950">Codex Live 任务</p>
         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-700">
-          {state.runningCount ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-          运行 {state.runningCount} · 排队 {state.queuedCount} · 待确认 {state.pendingCount}
+          {state.runningCount || state.responsePendingCount ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+          运行 {state.runningCount} · 回答 {state.responsePendingCount} · 排队 {state.queuedCount} · 待确认 {state.pendingCount}
         </span>
       </div>
       {state.pendingTasks.map((task) => (
@@ -306,6 +307,38 @@ function CodexLiveTaskQueuePanel({
         </div>
       ))}
     </div>
+  );
+}
+
+function CodexLiveLoadingMessage({
+  state,
+  statusText,
+}: {
+  state: CodexLiveTaskState;
+  statusText: string;
+}) {
+  if (!codexLiveTaskIsLoading(state)) {
+    return null;
+  }
+  return (
+    <article className="flex gap-3" aria-live="polite" aria-label="Codex Live 正在加载">
+      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-700 shadow-sm">
+        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+      </div>
+      <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 space-y-2">
+        <p className="text-[11px] font-semibold text-sky-800">Codex Live 正在加载</p>
+        <div className="rounded-2xl rounded-tl-md border border-sky-200 bg-sky-50 px-4 py-3 text-[12px] leading-5 text-sky-900 shadow-sm">
+          <div className="flex items-center gap-2">
+            <span className="flex gap-1" aria-hidden="true">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 [animation-delay:120ms]" />
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 [animation-delay:240ms]" />
+            </span>
+            <span>{statusText || "任务仍在运行，请稍候"}</span>
+          </div>
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -564,6 +597,7 @@ export function CourseStudioChatSidebar({
                 ) : null}
               </div>
             ))}
+            <CodexLiveLoadingMessage state={codexLiveTaskState} statusText={voiceStatusText} />
             <div ref={chatScrollEndRef} aria-hidden="true" />
           </div>
 
@@ -634,7 +668,10 @@ export function CourseStudioChatSidebar({
         <p
           className={clsx(
             "mb-2 rounded-lg px-2 py-1.5 text-center text-xs leading-5",
-            codexLiveTaskState.runningCount || codexLiveTaskState.queuedCount || codexLiveTaskState.pendingCount
+            codexLiveTaskState.runningCount ||
+              codexLiveTaskState.queuedCount ||
+              codexLiveTaskState.pendingCount ||
+              codexLiveTaskState.responsePendingCount
               ? "bg-sky-50 font-medium text-sky-800"
               : "text-gray-500"
           )}

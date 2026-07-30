@@ -209,6 +209,7 @@ export function useRealtimeVoice({
     runningCount: 0,
     queuedCount: 0,
     pendingCount: 0,
+    responsePendingCount: 0,
     pendingTasks: [],
   });
 
@@ -365,7 +366,13 @@ export function useRealtimeVoice({
     realtimeBoardReferencesRef.current = [];
     realtimeTurnIdRef.current = null;
     codexLiveDelegationTurnIdsRef.current.clear();
-    setCodexLiveTaskState({ runningCount: 0, queuedCount: 0, pendingCount: 0, pendingTasks: [] });
+    setCodexLiveTaskState({
+      runningCount: 0,
+      queuedCount: 0,
+      pendingCount: 0,
+      responsePendingCount: 0,
+      pendingTasks: [],
+    });
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -730,6 +737,10 @@ export function useRealtimeVoice({
                   text: transcript,
                   final: true,
                 });
+                setCodexLiveTaskState((current) => ({
+                  ...current,
+                  responsePendingCount: Math.max(0, current.responsePendingCount - 1),
+                }));
                 openAIAssistantTranscriptRef.current = "";
                 openAIAssistantMessageIdRef.current = null;
                 realtimeTurnIdRef.current = null;
