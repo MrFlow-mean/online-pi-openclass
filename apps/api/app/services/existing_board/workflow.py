@@ -52,15 +52,17 @@ resolves the most important missing field or candidate choice. In pending-stage
 modes, generate only the status or confirmation response appropriate to the
 structured task. In mutation_completed mode, state that the authorized mutation
 completed and ask whether the learner wants the changed content explained. Do
-not explain lesson content, perform another action, invent board text, or reuse
-fixed wording. Claim a document change only when the supplied execution status
-explicitly says it succeeded.
+In confirmation_declined mode, acknowledge that the pending task was cancelled
+without claiming a document change. Do not explain lesson content, perform
+another action, invent board text, or reuse fixed wording. Claim a document
+change only when the supplied execution status explicitly says it succeeded.
 """.strip()
 
 TaskResponseMode = Literal[
     "task_clarification",
     "future_action_status",
     "confirmation_required",
+    "confirmation_declined",
     "mutation_completed",
 ]
 
@@ -89,6 +91,23 @@ def process_existing_board_workflow(
     branch_name = lesson.history_graph.current_branch
     base_head = current_head_commit(lesson)
     active_task = _restore_active_task(lesson, base_head)
+    if request.board_task_confirmation is not None:
+        return _process_active_task_confirmation(
+            lesson_id=lesson_id,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            adapter=adapter,
+            selected_model=selected_model,
+            active_task=active_task,
+            branch_name=branch_name,
+            base_head_id=base_head.id,
+            base_metadata=base_head.metadata,
+            on_delta=on_delta,
+            on_board_task_update=on_board_task_update,
+            on_agent_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
+        )
     manager_input = task_manager.build_task_manager_input(
         message=request.message,
         conversation=request.conversation,
@@ -476,6 +495,153 @@ def _next_phase(
     if task.missing_items or task.location_status != "resolved" or task.requested_action is None:
         return "collecting"
     return "awaiting_confirmation" if requires_confirmation else "ready"
+
+
+def _process_active_task_confirmation(
+    *,
+    lesson_id: str,
+    lesson: Lesson,
+    request: ChatRequest,
+    user_id: str,
+    adapter: AIExecutionAdapter,
+    selected_model: AIModelSelection,
+    active_task: BoardTaskRequirementSheet | None,
+    branch_name: str,
+    base_head_id: str,
+    base_metadata: dict[str, object],
+    on_delta: Callable[[str], None] | None,
+    on_board_task_update: Callable[[dict[str, object]], None] | None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> ChatResponse:
+    if active_task is None or active_task.confirmation_status != "awaiting":
+        raise ExistingBoardWorkflowError(
+            "Board task confirmation requires one active awaiting-confirmation task"
+        )
+    task = active_task.model_copy(deep=True)
+    run_id = _task_run_id(base_metadata, active_task, "continue")
+    version_id = new_id("boardtaskver")
+    confirmed = request.board_task_confirmation == "confirm"
+    task.confirmation_status = "confirmed" if confirmed else "declined"
+    task.base_commit_id = base_head_id
+    task.base_document_hash = _document_hash(lesson)
+    task.mutation_plan = None
+    decision = _decision_from_task(task, execution_allowed=confirmed)
+    roles = [
+        _role_execution(
+            "confirmation_gate",
+            None,
+            ["explicit_confirmation", "active_board_task", "current_version_identity"],
+        )
+    ]
+    if confirmed:
+        return _execute_ready_mutation(
+            lesson_id=lesson_id,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            adapter=adapter,
+            selected_model=selected_model,
+            decision=decision,
+            task=task,
+            branch_name=branch_name,
+            base_head_id=base_head_id,
+            run_id=run_id,
+            version_id=version_id,
+            roles=roles,
+            activity=[],
+            on_delta=on_delta,
+            on_board_task_update=on_board_task_update,
+            on_agent_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
+        )
+
+    chatbot_message, chatbot_activity = _generate_task_message(
+        adapter,
+        task,
+        mode="confirmation_declined",
+        on_activity=on_agent_activity,
+        is_cancelled=is_cancelled,
+        status_context={"execution_status": "declined", "document_changed": False},
+    )
+    roles.append(
+        _role_execution(
+            "chatbot",
+            selected_model,
+            ["board_task_sheet", "confirmation_status"],
+        )
+    )
+    trace = _decision_trace(decision, task, "archived", role="chatbot")
+    _persist_task_phase(
+        lesson,
+        user_id=user_id,
+        expected_branch=branch_name,
+        expected_head=base_head_id,
+        task=task,
+        phase="archived",
+        run_id=run_id,
+        version_id=version_id,
+        request=request,
+        chatbot_message=chatbot_message,
+        selected_model=selected_model,
+        decision=decision,
+        trace=trace,
+        roles=roles,
+        clear_active=True,
+    )
+    _publish_task_update(
+        on_board_task_update,
+        task,
+        run_id,
+        version_id,
+        "archived",
+    )
+    _publish_delta(on_delta, chatbot_message)
+    return _build_response(
+        lesson_id=lesson_id,
+        user_id=user_id,
+        task=task,
+        active_task=None,
+        phase="archived",
+        run_id=run_id,
+        version_id=version_id,
+        chatbot_message=chatbot_message,
+        activity=chatbot_activity,
+        decision_reason=decision.reason,
+        needs_clarification=False,
+    )
+
+
+def _decision_from_task(
+    task: BoardTaskRequirementSheet,
+    *,
+    execution_allowed: bool,
+) -> task_manager.BoardTaskManagerDecision:
+    draft = task_manager.BoardTaskManagerDraft(
+        action=(
+            "interact"
+            if task.requested_action == "chat"
+            else (task.requested_action or "unresolved")
+        ),
+        target_hint=task.target_hint,
+        location_kind=(
+            task.location_kind
+            if task.location_kind in {"target_range", "insertion_anchor"}
+            else "unresolved"
+        ),
+        question_or_topic=task.question_or_topic,
+        special_interaction_requirements=(
+            task.special_interaction_requirements or "none"
+        ),
+        extent=task.content_extent or "unresolved",
+        destination=task.document_destination,
+        topic_relation=task.topic_relation,
+        relation_to_active="continue",
+        missing_items=list(task.missing_items),
+        reason="An explicit confirmation was applied to the active board task.",
+    )
+    decision = task_manager._finalize_decision(draft)
+    return decision.model_copy(update={"execution_allowed": execution_allowed})
 
 
 def _execute_ready_mutation(
@@ -958,7 +1124,11 @@ def _publish_task_update(
         callback(
             {
                 "board_task_sheet": task.model_dump(mode="json"),
-                "active_board_task_sheet": (None if phase in {"consumed", "not_executed"} else task.model_dump(mode="json")),
+                "active_board_task_sheet": (
+                    None
+                    if phase in {"consumed", "not_executed", "archived"}
+                    else task.model_dump(mode="json")
+                ),
                 "board_task_run_id": run_id,
                 "board_task_version_id": version_id,
                 "board_task_phase": phase,

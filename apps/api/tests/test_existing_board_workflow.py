@@ -128,6 +128,7 @@ class RecordingAdapter:
             "task_clarification": "model generated one clarification question",
             "future_action_status": "model generated pending-stage status",
             "confirmation_required": "model generated confirmation request",
+            "confirmation_declined": "model generated cancellation acknowledgement",
             "mutation_completed": "model generated mutation completion",
             "approved_bounded_explanation": "model generated bounded explanation",
             "directive_status_only": "model generated directive status",
@@ -387,6 +388,128 @@ def test_bounded_edit_and_write_execute_atomically_in_one_history_version(
         MutationPlannerModelDraft,
     ]
     assert all(FULL_BOARD_SENTINEL not in str(call["user_prompt"]) for call in adapter.parse_calls)
+
+
+def test_confirmed_delete_revalidates_and_mutates_only_the_frozen_target(
+    workflow_store,
+) -> None:
+    store, lesson = workflow_store
+    adapter = RecordingAdapter(
+        _draft(
+            action="delete",
+            target_hint="Authorized paragraph.",
+            extent="paragraph",
+        ),
+        mutation_draft=_mutation_draft(
+            operations=[
+                {
+                    "operation_id": "delete_target",
+                    "action": "delete",
+                    "binding": {"kind": "target_range", "position": "replace"},
+                    "content_markdown": "",
+                }
+            ],
+            requires_confirmation=True,
+        ),
+    )
+    first = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="current request",
+            selection=_selection_for_text(lesson, "Authorized paragraph."),
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert first.board_task_phase == "awaiting_confirmation"
+    assert first.active_board_task_sheet is not None
+    assert first.active_board_task_sheet.confirmation_status == "awaiting"
+    before_confirmation = store.load_for_user(TEST_USER_ID)
+    _package, waiting_lesson = workspace_state.find_lesson_package(
+        before_confirmation,
+        lesson.id,
+    )
+    assert "Authorized paragraph." in waiting_lesson.board_document.content_text
+
+    confirmed = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="confirm visible operation",
+            board_task_confirmation="confirm",
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert confirmed.board_task_phase == "consumed"
+    assert confirmed.active_board_task_sheet is None
+    assert confirmed.board_document_operation_status == "succeeded"
+    persisted = store.load_for_user(TEST_USER_ID)
+    _package, saved = workspace_state.find_lesson_package(persisted, lesson.id)
+    assert "Authorized paragraph." not in saved.board_document.content_text
+    assert FULL_BOARD_SENTINEL in saved.board_document.content_text
+    head = current_head_commit(saved)
+    assert head.metadata["board_mutation_audit"]["applied_operation_ids"] == [
+        "delete_target"
+    ]
+    assert head.metadata["role_executions"][0]["role"] == "confirmation_gate"
+    assert [call["schema"] for call in adapter.parse_calls] == [
+        BoardTaskManagerDraft,
+        MutationPlannerModelDraft,
+    ]
+
+
+def test_declined_dangerous_task_archives_with_zero_document_change(
+    workflow_store,
+) -> None:
+    store, lesson = workflow_store
+    before_text = lesson.board_document.content_text
+    adapter = RecordingAdapter(
+        _draft(
+            action="delete",
+            target_hint="Authorized paragraph.",
+            extent="paragraph",
+        )
+    )
+    process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="current request",
+            selection=_selection_for_text(lesson, "Authorized paragraph."),
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    declined = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="decline visible operation",
+            board_task_confirmation="decline",
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert declined.chatbot_message == "model generated cancellation acknowledgement"
+    assert declined.board_task_phase == "archived"
+    assert declined.active_board_task_sheet is None
+    assert declined.board_document_operation_status == "none"
+    persisted = store.load_for_user(TEST_USER_ID)
+    _package, saved = workspace_state.find_lesson_package(persisted, lesson.id)
+    assert saved.board_document.content_text == before_text
+    head = current_head_commit(saved)
+    assert head.metadata["document_changed"] is False
+    assert head.runtime_snapshot is not None
+    assert head.runtime_snapshot.board_task_requirements is None
+    assert [call["schema"] for call in adapter.parse_calls] == [
+        BoardTaskManagerDraft
+    ]
 
 
 def test_board_manager_clarification_keeps_the_task_active_for_refinement(

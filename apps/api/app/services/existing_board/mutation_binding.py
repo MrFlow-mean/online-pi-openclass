@@ -262,6 +262,9 @@ def _bind_target_operation(
             return None, "whole_board_scope_not_authorized"
         start, end = 0, len(markdown)
         excerpt = markdown
+    elif operation.action == "delete":
+        start, end = _expand_delete_span_over_separator(markdown, start, end)
+        excerpt = markdown[start:end]
 
     target = BoardMutationTargetRange(
         start=start,
@@ -279,6 +282,18 @@ def _bind_target_operation(
         ),
         None,
     )
+
+
+def _expand_delete_span_over_separator(
+    markdown: str,
+    start: int,
+    end: int,
+) -> tuple[int, int]:
+    if markdown[end:].startswith("\n\n"):
+        return start, end + 2
+    if markdown[:start].endswith("\n\n"):
+        return start - 2, end
+    return start, end
 
 
 def _bind_write_operation(

@@ -386,3 +386,36 @@ def test_confirmed_whole_board_requires_the_focus_to_cover_the_exact_document() 
     assert result.status == "rejected"
     assert result.reason == "whole_board_scope_not_authorized"
     assert result.document.model_dump(mode="json") == document.model_dump(mode="json")
+
+
+def test_confirmed_delete_includes_only_the_adjacent_markdown_separator() -> None:
+    document = _document("# Section\n\nAuthorized target.\n\nOutside content.")
+    focus = _focus(document, "Authorized target.")
+    draft = _draft(
+        document,
+        [
+            _operation(
+                "delete_target",
+                "delete",
+                focus,
+                position="replace",
+                content="",
+            )
+        ],
+        extent="paragraph",
+        requires_confirmation=True,
+        confirmation_status="confirmed",
+        execution_allowed=True,
+    )
+
+    result = bind_and_execute_board_mutation(
+        draft=draft,
+        document=document,
+        current_commit_id="commit_current",
+        resolved_focus=focus,
+    )
+
+    assert result.status == "applied"
+    assert document_to_markdown(result.document) == "# Section\n\nOutside content."
+    assert result.execution_audit is not None
+    assert result.execution_audit.authorized_scopes[0].start == len("# Section\n\n")
