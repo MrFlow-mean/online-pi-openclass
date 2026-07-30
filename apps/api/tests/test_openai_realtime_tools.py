@@ -607,6 +607,266 @@ def test_codex_live_provider_delegation_consumes_the_frozen_input_snapshot(
     assert routed_requests[0][0].text_model == TEST_TEXT_MODEL
 
 
+def test_codex_live_provider_delegation_waits_for_a_late_frozen_input_snapshot() -> None:
+    snapshot = codex_live_sideband._input_snapshot_from_payload(
+        {
+            "turn_id": "voice_turn_race",
+            "input_event_id": "voice_event_race",
+            "input_kind": "voice",
+            "selections": [{"kind": "board", "excerpt": "Frozen selection"}],
+            "text_model": TEST_TEXT_MODEL.model_dump(mode="json"),
+        },
+    )
+    session = codex_live_sideband.CodexLiveSession(
+        call_id="rtc_provider_race",
+        lesson_id="lesson_provider_race",
+        user_id=TEST_USER_ID,
+        client_session_id="client_provider_race",
+        transport_session_id="transport_provider_race",
+        selection=None,
+        created_at=0,
+    )
+
+    async def _exercise():
+        pending = asyncio.create_task(
+            codex_live_sideband._await_pending_input_snapshot(
+                session,
+                timeout_seconds=0.25,
+            )
+        )
+        await asyncio.sleep(0)
+        codex_live_sideband._store_pending_input_snapshot(session, snapshot)
+        return await pending
+
+    resolved = asyncio.run(_exercise())
+
+    assert resolved == snapshot
+    assert session.pending_input_snapshots == []
+
+
+def test_codex_live_provider_delegation_still_fails_closed_without_a_snapshot() -> None:
+    session = codex_live_sideband.CodexLiveSession(
+        call_id="rtc_provider_missing",
+        lesson_id="lesson_provider_missing",
+        user_id=TEST_USER_ID,
+        client_session_id="client_provider_missing",
+        transport_session_id="transport_provider_missing",
+        selection=None,
+        created_at=0,
+    )
+
+    resolved = asyncio.run(
+        codex_live_sideband._await_pending_input_snapshot(
+            session,
+            timeout_seconds=0.001,
+        )
+    )
+
+    assert resolved is None
+
+
+def test_codex_live_provider_delegation_accepts_snapshot_from_client_handler_after_arrival(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routed_requests = []
+
+    def _route(_lesson_id, request, *, user_id):
+        routed_requests.append((request, user_id))
+        return SimpleNamespace(
+            decision=TurnDecision(
+                intent="learning_need",
+                reason="The backend confirmed a learning request.",
+            )
+        )
+
+    monkeypatch.setattr(chat_service, "route_chat_request", _route)
+
+    class _FakeWebSocket:
+        def __init__(self):
+            self.client_messages = asyncio.Queue()
+            self.sent = []
+
+        async def receive_json(self):
+            return await self.client_messages.get()
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    class _FakeUpstream:
+        def __init__(self):
+            self.provider_messages = asyncio.Queue()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            payload = await self.provider_messages.get()
+            if payload is None:
+                raise StopAsyncIteration
+            return payload
+
+        async def send(self, _payload):
+            return None
+
+    async def _exercise():
+        websocket = _FakeWebSocket()
+        upstream = _FakeUpstream()
+        coordinator = CodexLiveTaskCoordinator()
+        session = codex_live_sideband.CodexLiveSession(
+            call_id="rtc_provider_handler_race",
+            lesson_id="lesson_provider_handler_race",
+            user_id=TEST_USER_ID,
+            client_session_id="client_provider_handler_race",
+            transport_session_id="transport_provider_handler_race",
+            selection=None,
+            created_at=0,
+        )
+        client_handler = asyncio.create_task(
+            codex_live_sideband._handle_client_messages(
+                websocket,
+                upstream,
+                session,
+                asyncio.Lock(),
+                asyncio.Lock(),
+                coordinator,
+            )
+        )
+        upstream_handler = asyncio.create_task(
+            codex_live_sideband._handle_upstream_messages(
+                websocket,
+                upstream,
+                session,
+                asyncio.Lock(),
+                asyncio.Lock(),
+                coordinator,
+            )
+        )
+        await upstream.provider_messages.put(
+            json.dumps(
+                {
+                    "type": "delegation.created",
+                    "item": {
+                        "type": "delegation",
+                        "target": "client",
+                        "id": "provider_handler_race",
+                        "content": [
+                            {"type": "input_text", "text": "Use the frozen turn."}
+                        ],
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        await websocket.client_messages.put(
+            {
+                "type": "input_snapshot.update",
+                "turn_id": "voice_turn_handler_race",
+                "input_event_id": "voice_event_handler_race",
+                "input_kind": "voice",
+                "selections": [{"kind": "board", "excerpt": "Frozen handler range"}],
+                "text_model": TEST_TEXT_MODEL.model_dump(mode="json"),
+            }
+        )
+        queued = await asyncio.wait_for(coordinator.queue.get(), timeout=1)
+        await upstream.provider_messages.put(None)
+        await asyncio.wait_for(upstream_handler, timeout=1)
+        client_handler.cancel()
+        await asyncio.gather(client_handler, return_exceptions=True)
+        return queued, session, websocket
+
+    queued, session, websocket = asyncio.run(_exercise())
+
+    assert queued.turn_id == "voice_turn_handler_race"
+    assert queued.input_event_id == "voice_event_handler_race"
+    assert queued.input_kind == "voice"
+    assert queued.selection is not None
+    assert queued.selection.excerpt == "Frozen handler range"
+    assert queued.text_model == TEST_TEXT_MODEL
+    assert session.pending_input_snapshots == []
+    assert routed_requests[0][0].message == "Use the frozen turn."
+    assert not any(
+        event.get("type") == "codex_live.workflow.error"
+        for event in websocket.sent
+    )
+
+
+def test_codex_live_missing_snapshot_rejects_only_that_delegation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_live_sideband, "_INPUT_SNAPSHOT_WAIT_SECONDS", 0.001)
+
+    class _FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    class _FakeUpstream:
+        def __init__(self):
+            self.pending = [
+                json.dumps(
+                    {
+                        "type": "delegation.created",
+                        "item": {
+                            "type": "delegation",
+                            "target": "client",
+                            "id": "provider_missing_snapshot",
+                            "content": [
+                                {"type": "input_text", "text": "Must be rejected."}
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.done",
+                        "turn": {
+                            "role": "assistant",
+                            "transcript": "The sideband remains alive.",
+                        },
+                    }
+                ),
+            ]
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.pending:
+                raise StopAsyncIteration
+            return self.pending.pop(0)
+
+        async def send(self, _payload):
+            return None
+
+    async def _exercise():
+        websocket = _FakeWebSocket()
+        session = codex_live_sideband.CodexLiveSession(
+            call_id="rtc_provider_missing_continue",
+            lesson_id="lesson_provider_missing_continue",
+            user_id=TEST_USER_ID,
+            client_session_id="client_provider_missing_continue",
+            transport_session_id="transport_provider_missing_continue",
+            selection=None,
+            created_at=0,
+        )
+        await codex_live_sideband._handle_upstream_messages(
+            websocket,
+            _FakeUpstream(),
+            session,
+            asyncio.Lock(),
+            asyncio.Lock(),
+            CodexLiveTaskCoordinator(),
+        )
+        return websocket.sent
+
+    sent = asyncio.run(_exercise())
+
+    assert any(event.get("type") == "codex_live.workflow.error" for event in sent)
+    assert any(event.get("type") == "codex_live.transcript.done" for event in sent)
+
+
 @pytest.mark.parametrize(
     ("authoritative_intent", "client_intent"),
     [
@@ -651,6 +911,8 @@ def test_codex_live_non_learning_route_bypasses_queue_and_speaks_only_backend_re
         def __init__(self):
             self.calls = 0
             self.sent = []
+            self.result_ready = asyncio.Event()
+            self.duplicate_ready = asyncio.Event()
 
         async def receive_json(self):
             self.calls += 1
@@ -675,6 +937,10 @@ def test_codex_live_non_learning_route_bypasses_queue_and_speaks_only_backend_re
 
         async def send_json(self, payload):
             self.sent.append(payload)
+            if payload.get("type") == "codex_live.workflow.result":
+                self.result_ready.set()
+            if payload.get("type") == "codex_live.workflow.duplicate":
+                self.duplicate_ready.set()
 
     class _FakeUpstream:
         def __init__(self):
@@ -711,18 +977,13 @@ def test_codex_live_non_learning_route_bypasses_queue_and_speaks_only_backend_re
                 coordinator,
             )
         )
-        for _ in range(50):
-            has_result = any(
-                item.get("type") == "codex_live.workflow.result"
-                for item in websocket.sent
-            )
-            has_duplicate = any(
-                item.get("type") == "codex_live.workflow.duplicate"
-                for item in websocket.sent
-            )
-            if has_result and has_duplicate:
-                break
-            await asyncio.sleep(0)
+        await asyncio.wait_for(
+            asyncio.gather(
+                websocket.result_ready.wait(),
+                websocket.duplicate_ready.wait(),
+            ),
+            timeout=1,
+        )
         handler.cancel()
         await asyncio.gather(handler, return_exceptions=True)
         return websocket, upstream, coordinator

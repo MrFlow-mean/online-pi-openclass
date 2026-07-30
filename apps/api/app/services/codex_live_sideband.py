@@ -39,6 +39,7 @@ from app.services.realtime_tool_bridge import execute_realtime_delegation
 _CALL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SESSION_TTL_SECONDS = 60 * 60
 _APPEND_MAX_BYTES = 500
+_INPUT_SNAPSHOT_WAIT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class CodexLiveSession:
     selection: SelectionRef | None
     created_at: float
     pending_input_snapshots: list[CodexLiveInputSnapshot] = field(default_factory=list)
+    input_snapshot_ready: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     claimed: bool = False
 
 
@@ -188,7 +190,60 @@ def _input_snapshot_from_payload(
 def _take_pending_input_snapshot(
     session: CodexLiveSession,
 ) -> CodexLiveInputSnapshot | None:
-    return session.pending_input_snapshots.pop(0) if session.pending_input_snapshots else None
+    if not session.pending_input_snapshots:
+        session.input_snapshot_ready.clear()
+        return None
+    snapshot = session.pending_input_snapshots.pop(0)
+    if not session.pending_input_snapshots:
+        session.input_snapshot_ready.clear()
+    return snapshot
+
+
+def _store_pending_input_snapshot(
+    session: CodexLiveSession,
+    snapshot: CodexLiveInputSnapshot,
+) -> None:
+    existing = next(
+        (
+            item
+            for item in session.pending_input_snapshots
+            if item.input_event_id == snapshot.input_event_id
+        ),
+        None,
+    )
+    if existing is not None:
+        if existing != snapshot:
+            raise ValueError("Codex Live input_event_id was reused with another snapshot")
+        session.input_snapshot_ready.set()
+        return
+    if len(session.pending_input_snapshots) >= 8:
+        raise ValueError("Codex Live has too many pending input snapshots")
+    session.pending_input_snapshots.append(snapshot)
+    session.input_snapshot_ready.set()
+
+
+async def _await_pending_input_snapshot(
+    session: CodexLiveSession,
+    *,
+    timeout_seconds: float | None = None,
+) -> CodexLiveInputSnapshot | None:
+    effective_timeout = (
+        _INPUT_SNAPSHOT_WAIT_SECONDS
+        if timeout_seconds is None
+        else timeout_seconds
+    )
+    snapshot = _take_pending_input_snapshot(session)
+    if snapshot is not None:
+        return snapshot
+    session.input_snapshot_ready.clear()
+    snapshot = _take_pending_input_snapshot(session)
+    if snapshot is not None:
+        return snapshot
+    try:
+        await asyncio.wait_for(session.input_snapshot_ready.wait(), effective_timeout)
+    except TimeoutError:
+        return None
+    return _take_pending_input_snapshot(session)
 
 
 def codex_live_sideband_url(call_id: str) -> str:
@@ -870,23 +925,7 @@ async def _handle_client_messages(
                 snapshot = _input_snapshot_from_payload(
                     payload,
                 )
-                existing = next(
-                    (
-                        item
-                        for item in session.pending_input_snapshots
-                        if item.input_event_id == snapshot.input_event_id
-                    ),
-                    None,
-                )
-                if existing is not None:
-                    if existing != snapshot:
-                        raise ValueError(
-                            "Codex Live input_event_id was reused with another snapshot"
-                        )
-                    continue
-                if len(session.pending_input_snapshots) >= 8:
-                    raise ValueError("Codex Live has too many pending input snapshots")
-                session.pending_input_snapshots.append(snapshot)
+                _store_pending_input_snapshot(session, snapshot)
             except (TypeError, ValueError) as exc:
                 await _send_client_event(
                     websocket,
@@ -1231,7 +1270,7 @@ async def _handle_upstream_messages(
                 },
             )
         elif kind == "delegation":
-            input_snapshot = _take_pending_input_snapshot(session)
+            input_snapshot = await _await_pending_input_snapshot(session)
             if input_snapshot is None:
                 await _send_client_event(
                     websocket,
@@ -1248,9 +1287,7 @@ async def _handle_upstream_messages(
                         ),
                     },
                 )
-                raise RuntimeError(
-                    "Codex Live provider delegation arrived without a frozen input snapshot"
-                )
+                continue
             mismatched_identifiers = [
                 name
                 for name, provider_value, snapshot_value in (
@@ -1280,9 +1317,7 @@ async def _handle_upstream_messages(
                         ),
                     },
                 )
-                raise RuntimeError(
-                    "Codex Live provider identifiers do not match the frozen input snapshot"
-                )
+                continue
             references = input_snapshot.references
             task = _RoutedCodexLiveTask(
                 delegation_id=event["id"],

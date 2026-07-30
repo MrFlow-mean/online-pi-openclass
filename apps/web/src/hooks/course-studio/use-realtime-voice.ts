@@ -201,6 +201,24 @@ export function freezeRealtimeTurnSnapshot(
   };
 }
 
+export function resolveRealtimeTurnSnapshot(
+  currentSnapshot: RealtimeTurnSnapshot | null,
+  currentIdentity: RealtimeTurnIdentity | null,
+  inputKind: RealtimeInputKind,
+  references: SelectionRef[],
+  textModel: AIModelSelection,
+  createId: RealtimeIdentityFactory = createClientSessionId
+): RealtimeTurnSnapshot {
+  if (currentSnapshot) {
+    return currentSnapshot;
+  }
+  return freezeRealtimeTurnSnapshot(
+    resolveRealtimeTurnIdentity(currentIdentity, inputKind, createId),
+    references,
+    textModel
+  );
+}
+
 export function useRealtimeVoice({
   activeLesson,
   latestAssistantMessageContent,
@@ -305,21 +323,40 @@ export function useRealtimeVoice({
   }
 
   function beginRealtimeTurn(inputKind: RealtimeInputKind = "voice") {
-    const identity = resolveRealtimeTurnIdentity(null, inputKind);
     const references = currentSelectionsRef.current.length
       ? currentSelectionsRef.current
       : currentSelectionRef.current
         ? [currentSelectionRef.current]
         : [];
-    const snapshot = freezeRealtimeTurnSnapshot(
-      identity,
+    const snapshot = resolveRealtimeTurnSnapshot(
+      null,
+      null,
+      inputKind,
       references,
       selectedTextModelRef.current
     );
-    realtimeTurnIdentityRef.current = identity;
+    realtimeTurnIdentityRef.current = snapshot.identity;
     realtimeTurnSnapshotRef.current = snapshot;
     openAIAssistantTranscriptRef.current = "";
     openAIAssistantMessageIdRef.current = null;
+    return snapshot;
+  }
+
+  function ensureRealtimeTurnSnapshot(inputKind: RealtimeInputKind = "voice") {
+    const references = currentSelectionsRef.current.length
+      ? currentSelectionsRef.current
+      : currentSelectionRef.current
+        ? [currentSelectionRef.current]
+        : [];
+    const snapshot = resolveRealtimeTurnSnapshot(
+      realtimeTurnSnapshotRef.current,
+      realtimeTurnIdentityRef.current,
+      inputKind,
+      references,
+      selectedTextModelRef.current
+    );
+    realtimeTurnIdentityRef.current = snapshot.identity;
+    realtimeTurnSnapshotRef.current = snapshot;
     return snapshot;
   }
 
@@ -780,14 +817,15 @@ export function useRealtimeVoice({
             }
             if (payload.type === "codex_live.transcript.delta" && payload.role && payload.text) {
               if (payload.role === "user") {
+                const snapshot = ensureRealtimeTurnSnapshot();
                 sendCodexLiveSnapshot(
                   codexLiveSocketRef.current,
-                  realtimeTurnSnapshotRef.current
+                  snapshot
                 );
                 const transcriptKey = "codex-live-user";
                 const transcript = `${openAIInputTranscriptsRef.current.get(transcriptKey) ?? ""}${payload.text}`;
                 openAIInputTranscriptsRef.current.set(transcriptKey, transcript);
-                const turnId = currentTurnId();
+                const turnId = snapshot.identity.turnId;
                 onTranscriptUpdate({
                   lessonId,
                   turnId,
@@ -812,6 +850,8 @@ export function useRealtimeVoice({
             if (payload.type === "codex_live.transcript.done" && payload.role) {
               const transcript = (payload.text ?? "").trim();
               if (payload.role === "user") {
+                const snapshot = ensureRealtimeTurnSnapshot();
+                sendCodexLiveSnapshot(codexLiveSocketRef.current, snapshot);
                 openAIInputTranscriptsRef.current.delete("codex-live-user");
                 handleRealtimeUserTranscript(lessonId, transcript, payload.type);
               } else if (transcript) {
@@ -956,7 +996,9 @@ export function useRealtimeVoice({
             openAIResponseInProgressRef.current = false;
           }
           if (payload.type === "input_audio_buffer.speech_started") {
-            const snapshot = beginRealtimeTurn();
+            const snapshot = openAIClientDelegationEnabledRef.current
+              ? ensureRealtimeTurnSnapshot()
+              : beginRealtimeTurn();
             sendCodexLiveSnapshot(codexLiveSocketRef.current, snapshot);
             if (openAIResponseInProgressRef.current && dataChannel.readyState === "open") {
               dataChannel.send(JSON.stringify({ type: "response.cancel" }));

@@ -4,8 +4,11 @@ import {
   addRealtimeBoardReference,
   mergeRealtimeBoardReferenceResults,
 } from "../src/lib/realtime-board-references";
-import { resolveRealtimeTurnIdentity } from "../src/hooks/course-studio/use-realtime-voice";
-import type { RealtimeToolCallResponse, SelectionRef } from "../src/types";
+import {
+  resolveRealtimeTurnIdentity,
+  resolveRealtimeTurnSnapshot,
+} from "../src/hooks/course-studio/use-realtime-voice";
+import type { AIModelSelection, RealtimeToolCallResponse, SelectionRef } from "../src/types";
 
 function selection(excerpt: string, lessonId = "lesson_one"): SelectionRef {
   return {
@@ -121,4 +124,33 @@ test("keeps realtime turn and input event identities stable and independent", ()
   expect(first.inputEventId).not.toBe(first.turnId);
   expect(repeated).toBe(first);
   expect(generatedPrefixes).toEqual(["turn", "input-event"]);
+});
+
+test("freezes a realtime input snapshot when the transcript arrives before speech-start", () => {
+  const identity = {
+    turnId: "turn_from_transcript",
+    inputEventId: "event_from_transcript",
+    inputKind: "voice" as const,
+  };
+  const references = [selection("Frozen at the first transcript delta")];
+  const textModel: AIModelSelection = {
+    provider: "openai",
+    model: "gpt-5.5",
+    access_method: "platform_credits",
+  };
+
+  const snapshot = resolveRealtimeTurnSnapshot(
+    null,
+    identity,
+    "voice",
+    references,
+    textModel
+  );
+  references[0].excerpt = "Selection changed after submission";
+
+  expect(snapshot.identity).toEqual(identity);
+  expect(snapshot.references[0].excerpt).toBe("Frozen at the first transcript delta");
+  expect(
+    resolveRealtimeTurnSnapshot(snapshot, null, "typed", [], textModel)
+  ).toBe(snapshot);
 });
