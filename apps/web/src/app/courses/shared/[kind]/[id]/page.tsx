@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 
 import { BrandMark } from "@/components/brand-mark";
-import { CommunityMarkdown } from "@/components/community/community-markdown";
 import {
   forkPublicLesson,
   forkPublicPackage,
@@ -48,13 +47,6 @@ function PublicLessonArticle({
           <h2 className="break-words text-2xl font-semibold tracking-tight text-stone-950">{lesson.title}</h2>
           {lesson.summary ? <p className="mt-2 text-sm leading-6 text-stone-500">{lesson.summary}</p> : null}
         </div>
-      </div>
-      <div className="mt-7 border-t border-stone-100 pt-2">
-        {lesson.board_document.content_text.trim() ? (
-          <CommunityMarkdown content={lesson.board_document.content_text} />
-        ) : (
-          <p className="py-8 text-sm text-stone-400">这节课程暂时还没有公开内容。</p>
-        )}
       </div>
       <div className="mt-8 flex flex-col gap-4 border-t border-stone-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
         <p className="max-w-2xl text-sm leading-6 text-stone-500">
