@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from app.models import (
     AgentActivityEvent,
+    AIModelSelection,
     ChatRequest,
     ChatResponse,
     ConversationTurn,
@@ -19,8 +20,10 @@ from app.models import (
     SelectionRef,
 )
 from app.services import workspace_state
+from app.services.ai_model_catalog import resolve_text_model_selection
 from app.services.chat_turn_gate import (
     TurnGateResult,
+    build_turn_envelope,
     complete_non_learning_turn,
     evaluate_turn_gate,
 )
@@ -72,6 +75,7 @@ def process_chat_on_lesson(
             prepared_gate,
             lesson_id=lesson_id,
             request=request,
+            user_id=user_id,
         )
     idempotency_key = _chat_idempotency_key(request, user_id=user_id)
     if idempotency_key is None:
@@ -252,6 +256,10 @@ def _process_chat_on_lesson_once(
                 on_agent_activity=on_agent_activity,
                 is_cancelled=is_cancelled,
             )
+        downstream_request = _request_with_frozen_text_model(
+            effective_request,
+            gate.envelope.selected_model,
+        )
         if active_interaction or _should_use_bounded_existing_board_workflow(
             lesson_id, effective_request, user_id=user_id
         ):
@@ -284,7 +292,7 @@ def _process_chat_on_lesson_once(
         else:
             response = process_codex_chat_on_lesson(
                 lesson_id,
-                effective_request,
+                downstream_request,
                 user_id=user_id,
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
@@ -296,7 +304,7 @@ def _process_chat_on_lesson_once(
     response.agent_activity = _merge_activity(gate.activity, response.agent_activity)
     return maybe_generate_lesson_title(
         lesson_id,
-        effective_request,
+        downstream_request,
         response,
         user_id=user_id,
     )
@@ -327,24 +335,33 @@ def _require_matching_prepared_gate(
     *,
     lesson_id: str,
     request: ChatRequest,
+    user_id: str,
 ) -> None:
-    envelope = gate.envelope
-    expected_references = request.selections or (
-        [request.selection] if request.selection is not None else []
+    expected_envelope = build_turn_envelope(
+        request,
+        lesson_id=lesson_id,
+        selected_model=gate.envelope.selected_model,
     )
-    if (
-        envelope.lesson_id != lesson_id
-        or envelope.message != request.message
-        or envelope.session_id != request.session_id
-        or envelope.turn_id != request.turn_id
-        or envelope.input_event_id != request.input_event_id
-        or envelope.channel != request.channel
-        or envelope.input_kind != request.input_kind
-        or envelope.provider_reference != request.provider_reference
-        or [item.model_dump(mode="json") for item in envelope.references]
-        != [item.model_dump(mode="json") for item in expected_references]
+    if expected_envelope.model_dump(mode="json") != gate.envelope.model_dump(
+        mode="json"
     ):
         raise ValueError("The prepared Turn Router result does not match this chat input.")
+    if request.text_model is None:
+        return
+    requested_model = resolve_text_model_selection(request.text_model, user_id=user_id)
+    if requested_model.model_dump(mode="json") != gate.envelope.selected_model.model_dump(
+        mode="json"
+    ):
+        raise ValueError("The prepared Turn Router result does not match this chat input.")
+
+
+def _request_with_frozen_text_model(
+    request: ChatRequest,
+    selected_model: AIModelSelection,
+) -> ChatRequest:
+    return request.model_copy(
+        update={"text_model": selected_model.model_copy(deep=True)}
+    )
 
 
 def _decide_pending_teaching_offer(

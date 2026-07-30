@@ -6,16 +6,21 @@ from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
+
 from app.models import (
     AIModelSelection,
     BoardDecision,
     BoardFocusRef,
     BoardTaskRequirementSheet,
+    ChatAttachmentRef,
     ChatRequest,
     ChatResponse,
+    ConversationTurn,
     DecisionTrace,
+    FormulaInkPayload,
     LearningClarificationStatus,
     SelectionRef,
+    SourceQueryScope,
     TurnDecision,
 )
 from app.services import chat_service, chat_turn_gate, workspace_state
@@ -177,16 +182,18 @@ def test_turn_envelope_freezes_the_transport_contract() -> None:
         provider_reference="provider_event_1",
         interaction_mode="direct_edit",
         selection=SelectionRef(kind="board", excerpt="selected secret text"),
+        conversation=[ConversationTurn(role="user", content="frozen conversation")],
+    )
+    selected_model = AIModelSelection(
+        provider="openai_codex",
+        model="test-model",
+        access_method="chatgpt_subscription",
     )
 
     envelope = chat_turn_gate.build_turn_envelope(
         request,
         lesson_id="lesson_1",
-        selected_model=AIModelSelection(
-            provider="openai_codex",
-            model="test-model",
-            access_method="chatgpt_subscription",
-        ),
+        selected_model=selected_model,
     )
     payload = envelope.model_dump(mode="json")
 
@@ -204,7 +211,163 @@ def test_turn_envelope_freezes_the_transport_contract() -> None:
     assert payload["selection_kind"] == "board"
     assert payload["references"][0]["excerpt"] == "selected secret text"
     request.selection.excerpt = "mutated after envelope creation"
+    request.conversation[0].content = "mutated after envelope creation"
+    selected_model.model = "mutated-after-envelope"
     assert envelope.references[0].excerpt == "selected secret text"
+    assert envelope.conversation[0].content == "frozen conversation"
+    assert envelope.selected_model.model == "test-model"
+
+
+def test_prepared_gate_rejects_every_changed_frozen_envelope_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = ChatRequest(
+        message="Handle this exact input.",
+        session_id="session_frozen",
+        turn_id="turn_frozen",
+        input_event_id="event_frozen",
+        channel="realtime",
+        input_kind="voice",
+        provider_reference="provider_frozen",
+        conversation=[ConversationTurn(role="user", content="Earlier context.")],
+        selection=SelectionRef(kind="board", excerpt="Frozen selection."),
+    )
+    gate = _gate_result(request, "learning_need", "unused")
+    chat_service._require_matching_prepared_gate(
+        gate,
+        lesson_id="lesson_gate",
+        request=request,
+        user_id=TEST_USER_ID,
+    )
+    changed_requests = [
+        request.model_copy(update={"message": "Changed input."}),
+        request.model_copy(update={"session_id": "session_changed"}),
+        request.model_copy(update={"turn_id": "turn_changed"}),
+        request.model_copy(update={"input_event_id": "event_changed"}),
+        request.model_copy(update={"channel": "text"}),
+        request.model_copy(update={"input_kind": "typed"}),
+        request.model_copy(update={"provider_reference": "provider_changed"}),
+        request.model_copy(
+            update={
+                "conversation": [
+                    ConversationTurn(role="user", content="Changed context.")
+                ]
+            }
+        ),
+        request.model_copy(
+            update={
+                "selection": SelectionRef(
+                    kind="board",
+                    excerpt="Changed selection.",
+                )
+            }
+        ),
+        request.model_copy(update={"interaction_mode": "direct_edit"}),
+        request.model_copy(update={"board_generation_action": "start"}),
+        request.model_copy(update={"teaching_action": "restart"}),
+        request.model_copy(update={"board_task_confirmation": "confirm"}),
+        request.model_copy(
+            update={
+                "formula_ink": FormulaInkPayload(
+                    image_data_url="data:image/png;base64,AA==",
+                    action="reference",
+                )
+            }
+        ),
+        request.model_copy(
+            update={
+                "attachments": [
+                    ChatAttachmentRef(
+                        source_ingestion_id="source_attachment",
+                        name="attachment.bin",
+                    )
+                ]
+            }
+        ),
+        request.model_copy(
+            update={"source_query_scope": SourceQueryScope(mode="all_ready_sources")}
+        ),
+    ]
+    for changed_request in changed_requests:
+        with pytest.raises(ValueError, match="does not match this chat input"):
+            chat_service._require_matching_prepared_gate(
+                gate,
+                lesson_id="lesson_gate",
+                request=changed_request,
+                user_id=TEST_USER_ID,
+            )
+
+    selected_model = gate.envelope.selected_model
+    request_with_model = request.model_copy(update={"text_model": selected_model})
+    gate_with_model = _gate_result(request_with_model, "learning_need", "unused")
+    monkeypatch.setattr(
+        chat_service,
+        "resolve_text_model_selection",
+        lambda selection, *, user_id: selection,
+    )
+    chat_service._require_matching_prepared_gate(
+        gate_with_model,
+        lesson_id="lesson_gate",
+        request=request_with_model,
+        user_id=TEST_USER_ID,
+    )
+    with pytest.raises(ValueError, match="does not match this chat input"):
+        chat_service._require_matching_prepared_gate(
+            gate_with_model,
+            lesson_id="lesson_gate",
+            request=request_with_model.model_copy(
+                update={
+                    "text_model": selected_model.model_copy(
+                        update={"model": "changed-model"}
+                    )
+                }
+            ),
+            user_id=TEST_USER_ID,
+        )
+
+
+def test_router_selected_model_is_frozen_for_legacy_workflow_and_title(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    request = ChatRequest(message="Run a learning workflow.")
+    gate = _gate_result(request, "learning_need", "unused")
+    downstream_models: list[AIModelSelection | None] = []
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", lambda *_args, **_kwargs: gate)
+    monkeypatch.setattr(
+        chat_service,
+        "_should_use_bounded_existing_board_workflow",
+        lambda *_args, **_kwargs: False,
+    )
+
+    def fake_legacy_workflow(selected_lesson_id, downstream_request, **_kwargs):
+        downstream_models.append(downstream_request.text_model)
+        return _workflow_response(selected_lesson_id)
+
+    def fake_title(_lesson_id, downstream_request, response, *, user_id):
+        assert user_id == TEST_USER_ID
+        downstream_models.append(downstream_request.text_model)
+        return response
+
+    monkeypatch.setattr(
+        chat_service,
+        "process_codex_chat_on_lesson",
+        fake_legacy_workflow,
+    )
+    monkeypatch.setattr(chat_service, "maybe_generate_lesson_title", fake_title)
+
+    chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+
+    assert downstream_models == [
+        gate.envelope.selected_model,
+        gate.envelope.selected_model,
+    ]
 
 
 def test_model_turn_gate_runs_without_workspace_or_selection_content(

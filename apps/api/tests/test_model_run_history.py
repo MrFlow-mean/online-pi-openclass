@@ -6,6 +6,8 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+from fastapi import WebSocketDisconnect
+
 from app.models import TurnDecision, UserView
 from app.routers import chat
 from app.services import codex_live_sideband, pi_agent_runtime
@@ -13,7 +15,6 @@ from app.services.ai_logging import AIUsageLogger, ai_log_context
 from app.services.codex_live_sideband import CodexLiveSession
 from app.services.codex_live_task_lifecycle import CodexLiveTaskCoordinator
 from app.services.pi_agent_runtime import PiTextClient
-from fastapi import WebSocketDisconnect
 
 
 def _pi_stdout(content: str) -> str:
@@ -181,7 +182,19 @@ def test_codex_live_typed_input_is_queued_with_a_correlated_audit_event(
         async def receive_json(self):
             self.calls += 1
             if self.calls == 1:
-                return {"type": "input_text", "text": "继续这个任务"}
+                return {
+                    "type": "input_text",
+                    "text": "继续这个任务",
+                    "turn_id": "turn_a",
+                    "input_event_id": "input_event_a",
+                    "input_kind": "typed",
+                    "selections": [],
+                    "text_model": {
+                        "provider": "openai_codex",
+                        "model": "test-model",
+                        "access_method": "chatgpt_subscription",
+                    },
+                }
             raise WebSocketDisconnect()
 
         async def send_json(self, _payload):

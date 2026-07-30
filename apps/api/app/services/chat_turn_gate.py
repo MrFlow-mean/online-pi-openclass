@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from app.models import (
-    AIModelSelection,
     AgentActivityEvent,
+    AIModelSelection,
     BoardDecision,
     BoardTaskRequirementSheet,
     ChatRequest,
@@ -20,12 +20,14 @@ from app.models import (
     TurnExplicitAction,
 )
 from app.services import workspace_state
-from app.services.ai_execution_adapter import AIExecutionAdapter, build_ai_execution_adapter
+from app.services.ai_execution_adapter import (
+    AIExecutionAdapter,
+    build_ai_execution_adapter,
+)
 from app.services.ai_model_catalog import resolve_text_model_selection
 from app.services.codex_app_server import CodexAppServerError
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
-
 
 TURN_DECISION_INSTRUCTIONS = """
 You are the first TurnDecision role in OpenClass. Classify only whether the learner's current turn
@@ -98,8 +100,8 @@ def build_turn_envelope(
         input_kind=request.input_kind,
         provider_reference=request.provider_reference,
         message=request.message,
-        conversation=request.conversation,
-        selected_model=selected_model,
+        conversation=[turn.model_copy(deep=True) for turn in request.conversation],
+        selected_model=selected_model.model_copy(deep=True),
         references=frozen_references,
         explicit_action=_explicit_action(request),
         interaction_mode=request.interaction_mode,
