@@ -7,6 +7,10 @@ import { publicAgentActivityLabel } from "@/lib/agent-activity";
 import { createTextChatSessionId, freezeTextChatTurnIdentity } from "@/lib/chat-turn-identity";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
+  activeLessonIdForAsyncPackage,
+  resolvedBoardFocusForTurn,
+} from "@/hooks/course-studio/chat-turn-ui-state";
+import {
   createChatMessage,
   isBoardDocumentEmpty,
   learningClarityFromCommit,
@@ -21,6 +25,7 @@ import type {
   AIModelSelection,
   BoardDocument,
   BoardDecision,
+  BoardFocusRef,
   BoardTaskRequirementSheet,
   ChatAttachmentRef,
   ChatRequestPayload,
@@ -53,6 +58,7 @@ type UseLessonChatAgentOptions = {
   updateLessonMessages: (lessonId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   updateLessonComposerState: (lessonId: string, updater: (current: LessonComposerState) => LessonComposerState) => void;
   setStreamingDocumentPreview: (lessonId: string, document: BoardDocument) => boolean;
+  onTransientBoardFocusChange: (lessonId: string, focus: BoardFocusRef | null) => void;
   clearSelection: () => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setBusyAction: Dispatch<SetStateAction<string | null>>;
@@ -103,6 +109,7 @@ export function useLessonChatAgent({
   updateLessonMessages,
   updateLessonComposerState,
   setStreamingDocumentPreview,
+  onTransientBoardFocusChange,
   clearSelection,
   setError,
   setBusyAction,
@@ -112,7 +119,7 @@ export function useLessonChatAgent({
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [streamedRequirementSheet, setStreamedRequirementSheet] = useState<LearningRequirementSheet | null>(null);
   const [streamedBoardTaskSheet, setStreamedBoardTaskSheet] = useState<BoardTaskRequirementSheet | null>(null);
-  const [currentNeedPending, setCurrentNeedPending] = useState(false);
+  const currentNeedPending = false;
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
@@ -221,22 +228,6 @@ export function useLessonChatAgent({
     return coursePackage.lessons.find((item) => item.id === lessonId) ?? null;
   }
 
-  function activeLessonIdForAsyncPackage(
-    coursePackage: CoursePackage,
-    requestLessonId: string,
-    fallbackActiveLessonId?: string | null
-  ) {
-    const currentActiveLessonId = activeLessonIdRef.current;
-    if (
-      currentActiveLessonId &&
-      currentActiveLessonId !== requestLessonId &&
-      coursePackage.workspace_tab_order.includes(currentActiveLessonId)
-    ) {
-      return currentActiveLessonId;
-    }
-    return fallbackActiveLessonId;
-  }
-
   function recoveredCommitForTurn(lesson: Lesson, submittedMessage: string, requestStartedAtMs: number) {
     const earliestCommitMs = requestStartedAtMs - 5000;
     const normalizedMessage = submittedMessage.trim();
@@ -268,7 +259,6 @@ export function useLessonChatAgent({
     setLearningClarity(null);
     setStreamedRequirementSheet(null);
     setStreamedBoardTaskSheet(null);
-    setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     if (options?.clearComposerSelection !== false) {
       clearSelection();
@@ -377,7 +367,6 @@ export function useLessonChatAgent({
           )
           .filter((message) => message.id !== pendingAssistantMessage.id || Boolean(stoppedContent))
       );
-      setCurrentNeedPending(false);
       setError(null);
     }
 
@@ -386,11 +375,11 @@ export function useLessonChatAgent({
     chatRequestInFlightRef.current = true;
     setBusyAction(busyActionName);
     setError(null);
+    onTransientBoardFocusChange(lessonId, null);
     if (!isBoardDocumentEmpty(currentBoardDocument ?? lesson.board_document)) {
       setLearningClarity(null);
       setStreamedRequirementSheet(null);
       setStreamedBoardTaskSheet(null);
-      setCurrentNeedPending(true);
     }
     if (clearComposerInput) {
       updateLessonComposerState(lessonId, (current) => ({
@@ -417,7 +406,6 @@ export function useLessonChatAgent({
         if (restoreComposerInput !== undefined) {
           restoreComposerInputIfUntouched(lessonId, restoreComposerInput);
         }
-        setCurrentNeedPending(false);
         return;
       }
       const beforeRequestResult = await beforeRequest?.({
@@ -483,7 +471,6 @@ export function useLessonChatAgent({
                   payload.requirement_phase === "frozen" ? "正在生成板书" : "学习需求已确认",
               });
             }
-            setCurrentNeedPending(false);
             setClarificationQuestions(payload.clarification_questions);
             setLearningClarity(payload.learning_clarification);
             setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
@@ -492,11 +479,15 @@ export function useLessonChatAgent({
             }
           },
           onBoardTaskUpdate(payload) {
-            setCurrentNeedPending(false);
             setStreamedRequirementSheet(null);
             setLearningClarity(null);
             setClarificationQuestions([]);
-            setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
+            const nextTask = payload.active_board_task_sheet ?? payload.board_task_sheet;
+            setStreamedBoardTaskSheet(nextTask);
+            onTransientBoardFocusChange(
+              lessonId,
+              resolvedBoardFocusForTurn("learning_need", nextTask)
+            );
           },
         },
         { signal: abortController.signal }
@@ -530,7 +521,8 @@ export function useLessonChatAgent({
         activeLessonId: activeLessonIdForAsyncPackage(
           response.course_package,
           requestLesson.id,
-          requestLesson.id
+          activeLessonIdRef.current,
+          response.course_package.active_lesson_id ?? requestLesson.id
         ),
       });
       if (failedStreamingDocumentPreview) {
@@ -550,7 +542,6 @@ export function useLessonChatAgent({
           (response.auto_teaching_operation_failure_reason ?? ""));
       }
       setLatestBoardDecision(response.board_decision);
-      setCurrentNeedPending(false);
       setClarificationQuestions(response.clarification_questions);
       setLearningClarity(response.learning_clarification);
       const nextBoardTaskSheet = response.active_board_task_sheet ?? response.board_task_sheet ?? null;
@@ -560,6 +551,10 @@ export function useLessonChatAgent({
           : response.active_requirement_sheet ?? response.learning_requirement_sheet
       );
       setStreamedBoardTaskSheet(nextBoardTaskSheet);
+      onTransientBoardFocusChange(
+        lessonId,
+        resolvedBoardFocusForTurn(response.turn_decision?.intent, nextBoardTaskSheet)
+      );
       const chatbotMessage = response.chatbot_message.trim();
       const streamedFallbackMessage = streamedChatContent.trim();
       const finalAgentActivity = response.agent_activity?.length ? response.agent_activity : streamedAgentActivity;
@@ -661,7 +656,6 @@ export function useLessonChatAgent({
             setLearningClarity(recoveredCommit ? learningClarityFromCommit(recoveredCommit) : null);
             setClarificationQuestions([]);
           }
-          setCurrentNeedPending(false);
           if (recoveredCommit) {
             setError(recoveredLearningRequirementFailureReason(recoveredCommit));
             return;
@@ -683,7 +677,6 @@ export function useLessonChatAgent({
             )
           );
           setError(`${rawErrorMessage}；刷新最新历史失败：${refreshMessage}`);
-          setCurrentNeedPending(false);
           return;
         }
       }
@@ -704,7 +697,6 @@ export function useLessonChatAgent({
         );
       }
       setError(userFacingError);
-      setCurrentNeedPending(false);
     } finally {
       clearStreamingDocumentPreviewFrame();
       if (chatAbortControllerRef.current === abortController) {

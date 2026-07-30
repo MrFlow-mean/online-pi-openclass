@@ -261,6 +261,9 @@ export function CourseStudio() {
     sourceQueryScope,
     clearSelection: clearTurnSelection,
     setStreamingDocumentPreview: boardDraft.setStreamingDocumentPreview,
+    onTransientBoardFocusChange: (lessonId, focus) => {
+      setRealtimeTeachingFocusState(focus ? { lessonId, focus } : null);
+    },
     setError,
     setBusyAction,
     busyAction,
@@ -345,6 +348,8 @@ export function CourseStudio() {
     }
     if (result.resolved_focus?.source === "board") {
       setRealtimeTeachingFocusState({ lessonId, focus: result.resolved_focus });
+    } else {
+      setRealtimeTeachingFocusState(null);
     }
   }
 
