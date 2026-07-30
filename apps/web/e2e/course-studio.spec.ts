@@ -420,6 +420,21 @@ test("connects a personal API key from the Models panel without exposing it", as
       service_tiers: [],
     },
     {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      access_method: "platform_sponsored",
+      label: "GPT 5.4 Mini",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+      default_reasoning_effort: "low",
+      supported_reasoning_efforts: [
+        { reasoning_effort: "low", description: "" },
+      ],
+      service_tiers: [],
+    },
+    {
       provider: "deepseek",
       model: "deepseek-v4-flash",
       access_method: "personal_api",
@@ -505,6 +520,10 @@ test("connects a personal API key from the Models panel without exposing it", as
   await createLessonFromEmptyStudio(page, `个人 API 测试页面 ${unique}`);
   await page.getByTitle("展开右侧栏").click();
   await page.getByRole("button", { name: "Models" }).click();
+
+  await expect(
+    page.getByRole("button", { name: /OpenClass 免费提供/ })
+  ).toBeEnabled();
 
   const keyInput = page.getByLabel("DeepSeek API Key");
   await expect(keyInput).toBeVisible();

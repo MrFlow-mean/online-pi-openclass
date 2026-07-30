@@ -977,7 +977,7 @@ class PiTextClient:
         ]
         if self.reasoning_effort:
             command.extend(["--thinking", self.reasoning_effort])
-        if self.service_tier:
+        if self.service_tier or self.provider == "openai":
             command.extend(["--extension", str(_runtime_settings_extension_path())])
         command.extend(f"@{path.name}" for path in image_paths or [])
         return command
@@ -1008,7 +1008,7 @@ class PiTextClient:
                 owner_user_id=self.owner_user_id,
                 runtime_root=self.runtime_root,
             )
-        elif self.access_method == "platform_credits":
+        elif self.access_method in {"platform_credits", "platform_sponsored"}:
             persistent_agent_dir = None
         else:
             persistent_agent_dir = pi_agent_directory(

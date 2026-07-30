@@ -30,6 +30,8 @@ from app.routers import (
 from app.services.ai_model_catalog import (
     build_model_catalog_with_pricing,
     realtime_runtime_enabled,
+    sponsored_openai_text_configured,
+    sponsored_openai_text_enabled,
 )
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.deepseek_api import deepseek_provider_configured
@@ -110,6 +112,12 @@ def health() -> dict[str, object]:
         "openrouter": openrouter_provisioning_service.health(
             worker_healthy=openrouter_provisioning_worker.healthy
         ),
+        "sponsored_text": {
+            "provider": "openai",
+            "enabled": sponsored_openai_text_enabled(),
+            "configured": sponsored_openai_text_configured(),
+            "access": "all_studio_users",
+        },
         "workflow": {"status": "provider_neutral_board"},
         "realtime": {
             "status": "enabled" if realtime_runtime_enabled() else "disabled",

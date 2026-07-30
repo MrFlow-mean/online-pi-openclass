@@ -132,7 +132,8 @@ export type AIProvider =
 export type AIModelAccessMethod =
   | "chatgpt_subscription"
   | "personal_api"
-  | "platform_credits";
+  | "platform_credits"
+  | "platform_sponsored";
 export type AIModelCapability = "text" | "realtime";
 export type AIRealtimeTransport = "openai_webrtc" | "gemini_live_websocket";
 export type DocumentMarginPreset = "narrow" | "normal" | "wide";

@@ -128,6 +128,7 @@ AIModelAccessMethod = Literal[
     "chatgpt_subscription",
     "personal_api",
     "platform_credits",
+    "platform_sponsored",
 ]
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
@@ -1795,8 +1796,12 @@ class AIModelSelection(BaseModel):
             set[AIModelAccessMethod],
         ] = {
             "openai_codex": {"chatgpt_subscription", "platform_credits"},
-            "openai": {"platform_credits"},
-            "deepseek": {"personal_api", "platform_credits"},
+            "openai": {"platform_credits", "platform_sponsored"},
+            "deepseek": {
+                "personal_api",
+                "platform_credits",
+                "platform_sponsored",
+            },
         }
         allowed = supported_access_methods.get(self.provider)
         if allowed is not None and self.access_method not in allowed:

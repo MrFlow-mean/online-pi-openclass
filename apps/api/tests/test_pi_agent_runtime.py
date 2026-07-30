@@ -468,6 +468,56 @@ def test_pi_client_separates_platform_and_personal_provider_credentials(
     }
 
 
+def test_platform_sponsored_openai_uses_only_the_server_key_and_skips_wallet_billing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setenv("OPENCLASS_CREDIT_BILLING_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "server-sponsored-key")
+    monkeypatch.setattr(pi_agent_runtime, "load_root_dotenv", lambda: None)
+    observed: dict[str, object] = {}
+
+    class BillingMustNotBeUsed:
+        def reserve_model_call(self, **_kwargs):
+            raise AssertionError("sponsored requests must not reserve user credits")
+
+    def run(command, **kwargs):
+        agent_dir = Path(kwargs["env"]["PI_CODING_AGENT_DIR"])
+        observed["command"] = command
+        observed["openai_key"] = kwargs["env"].get("OPENAI_API_KEY")
+        observed["auth_exists"] = (agent_dir / "auth.json").exists()
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _pi_stdout_with_usage("sponsored answer", cost_usd="0.25"),
+            "",
+        )
+
+    response = PiTextClient(
+        owner_user_id="guest_any_login",
+        provider="openai",
+        model="gpt-5.4-mini",
+        access_method="platform_sponsored",
+        reasoning_effort="low",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+        billing_service=BillingMustNotBeUsed(),
+    ).complete_text(system_prompt="Answer.", user_prompt="Question")
+
+    assert response.output_text == "sponsored answer"
+    command = observed["command"]
+    assert isinstance(command, list)
+    assert command[command.index("--provider") + 1] == "openai"
+    assert command[command.index("--model") + 1] == "gpt-5.4-mini"
+    assert command[command.index("--thinking") + 1] == "low"
+    extension_path = command[command.index("--extension") + 1]
+    assert str(extension_path).endswith("pi_runtime_settings_extension.ts")
+    assert observed["openai_key"] == "server-sponsored-key"
+    assert observed["auth_exists"] is False
+
+
 def test_platform_credit_request_reserves_and_charges_reported_pi_cost(
     monkeypatch,
     tmp_path,
@@ -1131,3 +1181,33 @@ def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypat
     assert [event.status for event in observed_activity] == ["running", "completed"]
     assert observed_activity[0].id == observed_activity[1].id
     assert result.activity == [observed_activity[1]]
+
+
+def test_server_routes_sponsored_openai_through_the_shared_pi_adapter(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePiTextClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(ai_execution_adapter, "PiTextClient", FakePiTextClient)
+
+    adapter = ai_execution_adapter.build_ai_execution_adapter(
+        AIModelSelection(
+            provider="openai",
+            model="gpt-5.4-mini",
+            access_method="platform_sponsored",
+            reasoning_effort="low",
+        ),
+        owner_user_id="guest_any_login",
+    )
+
+    assert isinstance(adapter, ai_execution_adapter.PiAIExecutionAdapter)
+    assert captured == {
+        "owner_user_id": "guest_any_login",
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+        "access_method": "platform_sponsored",
+        "reasoning_effort": "low",
+        "service_tier": None,
+    }

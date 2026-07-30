@@ -100,13 +100,19 @@ export const MODEL_ACCESS_METHODS: ReadonlyArray<{
     shortLabel: "平台 API",
     description: "使用 OpenClass 配置的模型服务。",
   },
+  {
+    id: "platform_sponsored",
+    label: "OpenClass 免费提供",
+    shortLabel: "平台免费",
+    description: "由 OpenClass 承担模型费用，无需充值或连接个人模型账号。",
+  },
 ];
 
 const DEFAULT_ACCESS_METHOD_BY_PROVIDER: Partial<
   Record<AIModelSelection["provider"], AIModelAccessMethod>
 > = {
   openai_codex: "chatgpt_subscription",
-  openai: "platform_credits",
+  openai: "platform_sponsored",
   deepseek: "platform_credits",
 };
 

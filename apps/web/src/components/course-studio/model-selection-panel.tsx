@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Check, Cpu, KeyRound, Landmark, Trash2, UserRound } from "lucide-react";
+import { Check, Cpu, Gift, KeyRound, Landmark, Trash2, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -26,6 +26,7 @@ const ACCESS_METHOD_ICONS = {
   chatgpt_subscription: UserRound,
   personal_api: KeyRound,
   platform_credits: Landmark,
+  platform_sponsored: Gift,
 } satisfies Record<AIModelAccessMethod, typeof UserRound>;
 
 type ModelSelectionPanelProps = {

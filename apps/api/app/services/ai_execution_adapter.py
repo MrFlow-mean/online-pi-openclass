@@ -577,7 +577,7 @@ def build_ai_execution_adapter(
     image_analysis_runner: ImageAnalysisRunner | None = None,
 ) -> AIExecutionAdapter:
     del board_runner, image_analysis_runner
-    if selection.provider not in {"openai_codex", "deepseek"}:
+    if selection.provider not in {"openai", "openai_codex", "deepseek"}:
         raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
     # Runtime selection is server-owned. Cached clients and stored records may
     # still carry agent_backend="codex", but no text task routes back to Codex.
@@ -586,11 +586,11 @@ def build_ai_execution_adapter(
         provider=selection.provider,
         model=selection.model,
         access_method=selection.access_method
-        or (
-            "chatgpt_subscription"
-            if selection.provider == "openai_codex"
-            else "platform_credits"
-        ),
+        or {
+            "openai": "platform_sponsored",
+            "openai_codex": "chatgpt_subscription",
+            "deepseek": "platform_credits",
+        }[selection.provider],
         reasoning_effort=selection.reasoning_effort,
         service_tier=selection.service_tier,
     )
