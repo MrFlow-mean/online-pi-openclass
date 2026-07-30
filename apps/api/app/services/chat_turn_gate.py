@@ -105,6 +105,7 @@ def build_turn_envelope(
         interaction_mode=request.interaction_mode,
         board_generation_action=request.board_generation_action,
         teaching_action=request.teaching_action,
+        board_task_confirmation=request.board_task_confirmation,
         has_selection=bool(frozen_references),
         selection_kind=selection_kind,
         has_multiple_selections=len(frozen_references) > 1,
@@ -128,6 +129,7 @@ def build_routing_payload(envelope: TurnEnvelope) -> dict[str, object]:
         "interaction_mode": envelope.interaction_mode,
         "board_generation_action": envelope.board_generation_action,
         "teaching_action": envelope.teaching_action,
+        "board_task_confirmation": envelope.board_task_confirmation,
         "reference_count": len(envelope.references),
         "reference_kinds": [reference.kind for reference in envelope.references],
         "has_formula_ink": envelope.has_formula_ink,
@@ -359,10 +361,18 @@ def _explicit_learning_signals(envelope: TurnEnvelope) -> list[str]:
         signals.append("teaching_action")
     if envelope.explicit_action in {"formula_reference", "formula_replace"}:
         signals.append("formula_ink_action")
+    if envelope.explicit_action == "board_task_confirm":
+        signals.append("board_task_confirmation:confirm")
+    if envelope.explicit_action == "board_task_decline":
+        signals.append("board_task_confirmation:decline")
     return signals
 
 
 def _explicit_action(request: ChatRequest) -> TurnExplicitAction | None:
+    if request.board_task_confirmation == "confirm":
+        return "board_task_confirm"
+    if request.board_task_confirmation == "decline":
+        return "board_task_decline"
     if request.interaction_mode == "direct_edit":
         return "direct_edit"
     if request.board_generation_action is not None:

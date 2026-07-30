@@ -297,6 +297,70 @@ def test_explicit_document_control_cannot_be_downgraded_by_the_model(
 
 
 @pytest.mark.parametrize(
+    ("confirmation", "explicit_action", "signal"),
+    [
+        ("confirm", "board_task_confirm", "board_task_confirmation:confirm"),
+        ("decline", "board_task_decline", "board_task_confirmation:decline"),
+    ],
+)
+def test_board_task_confirmation_is_frozen_and_bypasses_model_and_board_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    confirmation: str,
+    explicit_action: str,
+    signal: str,
+) -> None:
+    parse_called = False
+
+    class FakeAdapter:
+        def parse_structured(self, **_kwargs):
+            nonlocal parse_called
+            parse_called = True
+            raise AssertionError("Explicit confirmation must not be reclassified")
+
+    monkeypatch.setattr(
+        chat_turn_gate,
+        "resolve_text_model_selection",
+        lambda *_args, **_kwargs: AIModelSelection(
+            provider="openai_codex",
+            model="test-model",
+            access_method="chatgpt_subscription",
+        ),
+    )
+    monkeypatch.setattr(
+        chat_turn_gate,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+    monkeypatch.setattr(
+        workspace_state,
+        "load_workspace_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Confirmation routing must not read the workspace")
+        ),
+    )
+
+    result = chat_turn_gate.evaluate_turn_gate(
+        ChatRequest(
+            message="Use my explicit decision.",
+            board_task_confirmation=confirmation,
+            selection=SelectionRef(kind="board", excerpt="selected secret text"),
+        ),
+        lesson_id="lesson_1",
+        user_id=TEST_USER_ID,
+    )
+    routing_payload = chat_turn_gate.build_routing_payload(result.envelope)
+
+    assert parse_called is False
+    assert result.decision.intent == "learning_need"
+    assert result.envelope.board_task_confirmation == confirmation
+    assert result.envelope.explicit_action == explicit_action
+    assert result.trace.intent_signals == [signal]
+    assert routing_payload["board_task_confirmation"] == confirmation
+    assert "references" not in routing_payload
+    assert "selected secret text" not in str(routing_payload)
+
+
+@pytest.mark.parametrize(
     ("intent", "message", "reply"),
     [
         ("ordinary_chat", "How has your day been?", "A natural conversational reply."),

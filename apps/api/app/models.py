@@ -137,6 +137,7 @@ ChatInteractionMode = Literal["ask", "direct_edit"]
 FormulaInkAction = Literal["reference", "replace"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
+BoardTaskConfirmation = Literal["confirm", "decline"]
 ChatChannel = Literal["text", "realtime"]
 ChatInputKind = Literal["typed", "voice"]
 TurnIntent = Literal["ordinary_chat", "learning_need", "unclear"]
@@ -147,6 +148,8 @@ TurnExplicitAction = Literal[
     "teaching_restart",
     "formula_reference",
     "formula_replace",
+    "board_task_confirm",
+    "board_task_decline",
 ]
 TurnContinuationKind = Literal[
     "none",
@@ -1942,6 +1945,7 @@ class ChatRequest(BaseModel):
     interaction_mode: ChatInteractionMode = "ask"
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
+    board_task_confirmation: BoardTaskConfirmation | None = None
     post_generation_action: PostGenerationAction = "stop_after_generation"
     chat_edit_source_commit_id: str | None = None
     chat_edit_base_commit_id: str | None = None
@@ -1967,6 +1971,7 @@ class TurnEnvelope(BaseModel):
     interaction_mode: ChatInteractionMode = "ask"
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
+    board_task_confirmation: BoardTaskConfirmation | None = None
     has_selection: bool = False
     selection_kind: SelectionKind | None = None
     has_multiple_selections: bool = False
