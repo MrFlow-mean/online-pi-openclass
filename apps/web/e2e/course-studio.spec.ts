@@ -212,7 +212,7 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("课程协作", { exact: true })).toHaveCount(0);
 });
 
-test("sets standalone lessons and course packages to public or private", async ({ page }) => {
+test("uploads immutable standalone lesson and course package versions", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `可见性单课 ${unique}`;
   const packageTitle = `可见性课程包 ${unique}`;
@@ -242,14 +242,14 @@ test("sets standalone lessons and course packages to public or private", async (
   const lessonVisibilityResponse = page.waitForResponse(
     (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility/stream`) && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Public", exact: true }).click();
+  await page.getByRole("button", { name: "上传课程", exact: true }).click();
   await expect(lessonCard.getByText("正在核对课程引用范围")).toBeVisible();
   await expect(lessonCard.getByText("正在定位课程实际引用的资料")).toBeVisible();
   await expect(lessonCard.getByRole("progressbar", { name: "课程发布扫描进度" })).toBeVisible();
   await expect(page.getByText(/AI 正在核对课程实际引用资料的非正文范围/)).toBeVisible();
   expect((await lessonVisibilityResponse).ok()).toBeTruthy();
   await expect(page.getByText("课程没有上传资料，可以公开。")).toBeVisible();
-  await expect(lessonCard.getByLabel("Public")).toBeVisible();
+  await expect(lessonCard.getByLabel("已上传")).toBeVisible();
 
   const publicLessonPath = `/courses/shared/lesson/${lesson.id}`;
   await page.goto(publicLessonPath);
@@ -267,21 +267,6 @@ test("sets standalone lessons and course packages to public or private", async (
   await page.goto(`${publicLessonPath}?history_node=missing-node`);
   expect((await unavailableNodeResponse).status()).toBe(404);
   await expect(page.getByText(/这个项目不存在/)).toBeVisible();
-
-  await page.goto("/home");
-  const privateLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
-  await privateLessonCard.getByLabel("打开课程操作菜单").click();
-  const privateResponse = page.waitForResponse(
-    (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility`) && response.request().method() === "POST"
-  );
-  await page.getByRole("button", { name: "Private", exact: true }).click();
-  expect((await privateResponse).ok()).toBeTruthy();
-  const unavailableLessonResponse = page.waitForResponse(
-    (response) => response.url().endsWith(`/api/public/lessons/${lesson.id}`)
-  );
-  await page.goto(publicLessonPath);
-  expect((await unavailableLessonResponse).status()).toBe(404);
-  await expect(page.getByText(/所有者已将它设为 private/)).toBeVisible();
 
   await page.goto("/home");
   const blockedLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
@@ -338,7 +323,7 @@ test("sets standalone lessons and course packages to public or private", async (
     },
     { times: 1 }
   );
-  await page.getByRole("button", { name: "Public", exact: true }).click();
+  await page.getByRole("button", { name: "上传课程", exact: true }).click();
   await expect(page.getByText("上传资料的非正文内容中发现版权声明，课程保持 Private。").first()).toBeVisible();
   await expect(page.getByText("上传资料.pdf · page 2")).toBeVisible();
   await expect(page.getByText("All rights reserved.")).toBeVisible();
@@ -375,7 +360,7 @@ test("sets standalone lessons and course packages to public or private", async (
   const packageVisibilityResponse = page.waitForResponse(
     (response) => response.url().endsWith(`/api/packages/${packageContext.packageId}`) && response.request().method() === "POST"
   );
-  await page.locator('button[aria-label="课程包设为 Public"]:visible').click();
+  await page.getByRole("button", { name: "课程包 上传", exact: true }).click();
   expect((await packageVisibilityResponse).ok()).toBeTruthy();
 
   await page.goto(`/courses/shared/package/${packageContext.packageId}`);
@@ -2457,14 +2442,7 @@ test("does not show a second board-generation confirmation after learning requir
 
   await enterAsGuest(page);
   await createPackageFromHome(page, `无资料生成测试课程包 ${unique}`);
-  await page.route("**/api/lessons/*/evidence/pending", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: "null" });
-  });
-  const initialEvidenceResponse = page.waitForResponse(
-    (response) => response.url().includes("/evidence/pending") && response.request().method() === "GET"
-  );
   await createLessonFromEmptyStudio(page, `无资料生成测试页面 ${unique}`);
-  await initialEvidenceResponse;
 
   await page.route("**/api/lessons/*/chat/stream", async (route) => {
     const authHeader = route.request().headers().authorization;
@@ -2528,7 +2506,11 @@ test("does not show a second board-generation confirmation after learning requir
   });
 
   await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
+  const chatResponsePromise = page.waitForResponse(
+    (response) => response.url().includes("/chat/stream") && response.request().method() === "POST"
+  );
   await page.getByRole("button", { name: "发送消息" }).click();
+  expect((await chatResponsePromise).ok()).toBeTruthy();
 
   await expect(page.getByText("学习需求已清晰")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "开始生成板书" })).toHaveCount(0);

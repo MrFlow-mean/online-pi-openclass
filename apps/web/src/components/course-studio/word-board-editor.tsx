@@ -589,7 +589,7 @@ function scrollTeachingFocusIntoView(
       const coords = editor.view.coordsAtPos(range.from);
       const containerRect = pageScroll.getBoundingClientRect();
       const targetTop = pageScroll.scrollTop + coords.top - containerRect.top - pageScroll.clientHeight * 0.34;
-      pageScroll.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+      pageScroll.scrollTo({ top: Math.max(0, targetTop), behavior: "auto" });
     } catch {
       editor.commands.scrollIntoView();
     }

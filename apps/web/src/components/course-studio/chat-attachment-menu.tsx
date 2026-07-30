@@ -269,10 +269,23 @@ export function ChatAttachmentMenu({
     await uploadSelectedFiles(files);
   }
 
+  function dataUrlToBlob(dataUrl: string) {
+    const separatorIndex = dataUrl.indexOf(",");
+    if (!dataUrl.startsWith("data:") || separatorIndex < 0) {
+      throw new Error("手写内容不是有效的本地图像数据");
+    }
+    const metadata = dataUrl.slice(5, separatorIndex).split(";");
+    const mimeType = metadata[0] || "application/octet-stream";
+    const payload = dataUrl.slice(separatorIndex + 1);
+    const bytes = metadata.includes("base64")
+      ? Uint8Array.from(atob(payload), (character) => character.charCodeAt(0))
+      : new TextEncoder().encode(decodeURIComponent(payload));
+    return new Blob([bytes], { type: mimeType });
+  }
+
   async function uploadInkImage(imageDataUrl: string) {
     try {
-      const response = await fetch(imageDataUrl);
-      const blob = await response.blob();
+      const blob = dataUrlToBlob(imageDataUrl);
       const file = new File([blob], `handwriting-${Date.now()}.png`, { type: blob.type || "image/png" });
       const importedCount = await uploadSelectedFiles([file]);
       if (importedCount) {
