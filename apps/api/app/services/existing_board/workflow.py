@@ -31,6 +31,7 @@ from app.services.existing_board.focus_resolver import (
     FocusResolver,
     TargetResolution,
 )
+from app.services.existing_board.interaction_workflow import process_interaction_turn
 from app.services.existing_board.mutation_binding import (
     ConfirmedWriteAnchor,
     bind_and_execute_board_mutation,
@@ -103,6 +104,35 @@ def process_existing_board_workflow(
             branch_name=branch_name,
             base_head_id=base_head.id,
             base_metadata=base_head.metadata,
+            on_delta=on_delta,
+            on_board_task_update=on_board_task_update,
+            on_agent_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
+        )
+    if active_task is not None and active_task.interaction_session is not None:
+        return process_interaction_turn(
+            lesson_id=lesson_id,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            adapter=adapter,
+            selected_model=selected_model,
+            task=active_task,
+            expected_branch=branch_name,
+            expected_head=base_head.id,
+            run_id=str(base_head.metadata.get("board_task_run_id") or new_id("boardtaskrun")),
+            version_id=str(
+                base_head.metadata.get("board_task_version_id")
+                or new_id("boardtaskver")
+            ),
+            decision_reason="The active interaction session owns this input until it exits or yields a new task.",
+            prior_roles=[
+                _role_execution(
+                    "interaction_session_restore",
+                    None,
+                    ["persisted_interaction_session", "current_input_event"],
+                )
+            ],
             on_delta=on_delta,
             on_board_task_update=on_board_task_update,
             on_agent_activity=on_agent_activity,
@@ -212,6 +242,27 @@ def process_existing_board_workflow(
             version_id=version_id,
             roles=roles,
             activity=activity,
+            on_delta=on_delta,
+            on_board_task_update=on_board_task_update,
+            on_agent_activity=on_agent_activity,
+            is_cancelled=is_cancelled,
+        )
+
+    if task.requested_action == "interact" and phase == "ready":
+        return process_interaction_turn(
+            lesson_id=lesson_id,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            adapter=adapter,
+            selected_model=selected_model,
+            task=task,
+            expected_branch=branch_name,
+            expected_head=base_head.id,
+            run_id=run_id,
+            version_id=version_id,
+            decision_reason=decision.reason,
+            prior_roles=roles,
             on_delta=on_delta,
             on_board_task_update=on_board_task_update,
             on_agent_activity=on_agent_activity,

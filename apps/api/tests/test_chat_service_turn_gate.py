@@ -21,6 +21,9 @@ from app.models import (
 from app.services import chat_service, chat_turn_gate, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.history import commit_operations, current_head_commit
+from app.services.existing_board.interaction_workflow import (
+    ExistingBoardInteractionReroute,
+)
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.rich_document import build_document
 
@@ -665,3 +668,61 @@ def test_failed_input_event_is_not_cached(
 
     assert calls == 2
     assert response.chatbot_message == "Retry succeeded."
+
+
+def test_interaction_new_task_reroutes_the_original_input_once(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    request = ChatRequest(
+        message="A separate task from the interaction.",
+        session_id="session_interaction_reroute",
+        turn_id="turn_interaction_reroute",
+        input_event_id="event_interaction_reroute",
+    )
+    gate_calls = 0
+    workflow_calls = 0
+
+    def fake_gate(gate_request, **_kwargs):
+        nonlocal gate_calls
+        gate_calls += 1
+        return _gate_result(gate_request, "learning_need", "unused")
+
+    def fake_workflow(lesson_id, workflow_request, **_kwargs):
+        nonlocal workflow_calls
+        workflow_calls += 1
+        if workflow_calls == 1:
+            raise ExistingBoardInteractionReroute(
+                workflow_request,
+                "interaction_session:event_interaction_reroute",
+            )
+        return _workflow_response(lesson_id)
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", fake_gate)
+    monkeypatch.setattr(
+        chat_service,
+        "process_existing_board_workflow",
+        fake_workflow,
+    )
+    monkeypatch.setattr(
+        chat_service,
+        "maybe_generate_lesson_title",
+        lambda _lesson_id, _request, response, *, user_id: response,
+    )
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+    duplicate = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+
+    assert first.chatbot_message == "Existing learning workflow ran."
+    assert duplicate == first
+    assert gate_calls == 2
+    assert workflow_calls == 2

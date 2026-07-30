@@ -18,6 +18,9 @@ from app.models import (
 from app.services import workspace_state
 from app.services.chat_turn_gate import complete_non_learning_turn, evaluate_turn_gate
 from app.services.codex_chat import process_codex_chat_on_lesson
+from app.services.existing_board.interaction_workflow import (
+    ExistingBoardInteractionReroute,
+)
 from app.services.existing_board.workflow import process_existing_board_workflow
 from app.services.history import bind_commit_metadata
 from app.services.lesson_title import maybe_generate_lesson_title
@@ -140,17 +143,32 @@ def _process_chat_on_lesson_once(
             request,
             user_id=user_id,
         ):
-            response = process_existing_board_workflow(
-                lesson_id,
-                request,
-                user_id=user_id,
-                adapter=gate.adapter,
-                selected_model=gate.envelope.selected_model,
-                on_delta=on_delta,
-                on_board_task_update=on_requirement_update,
-                on_agent_activity=on_agent_activity,
-                is_cancelled=is_cancelled,
-            )
+            try:
+                response = process_existing_board_workflow(
+                    lesson_id,
+                    request,
+                    user_id=user_id,
+                    adapter=gate.adapter,
+                    selected_model=gate.envelope.selected_model,
+                    on_delta=on_delta,
+                    on_board_task_update=on_requirement_update,
+                    on_agent_activity=on_agent_activity,
+                    is_cancelled=is_cancelled,
+                )
+            except ExistingBoardInteractionReroute as reroute:
+                return _process_chat_on_lesson_once(
+                    lesson_id,
+                    reroute.request,
+                    user_id=user_id,
+                    on_delta=on_delta,
+                    on_requirement_update=on_requirement_update,
+                    on_agent_activity=on_agent_activity,
+                    is_cancelled=is_cancelled,
+                    commit_metadata={
+                        **(commit_metadata or {}),
+                        "interaction_reroute_dispatch_key": reroute.dispatch_key,
+                    },
+                )
         else:
             response = process_codex_chat_on_lesson(
                 lesson_id,
