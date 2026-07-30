@@ -658,6 +658,11 @@ class LessonHistoryGraph(BaseModel):
     current_branch: str = "main"
 
 
+class PublishedConversationTurn(BaseModel):
+    role: ConversationRole
+    content: str
+
+
 class PublishedLessonVersion(BaseModel):
     revision_id: str = Field(default_factory=lambda: new_id("lessonversion"))
     lesson_id: str
@@ -667,6 +672,7 @@ class PublishedLessonVersion(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
+    conversation: list[PublishedConversationTurn] = Field(default_factory=list)
     published_at: str = Field(default_factory=now_iso)
 
 

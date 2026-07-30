@@ -5,10 +5,96 @@ from app.models import (
     CoursePackage,
     Lesson,
     LessonHistoryGraph,
+    PublishedConversationTurn,
     PublishedCoursePackageVersion,
     PublishedLessonVersion,
 )
 from app.services.history import current_head_commit
+
+
+_LEGACY_DISPLAYABLE_CHAT_COMMIT_KINDS = {
+    "chat_flow",
+    "board_section_teaching",
+    "board_document_generation",
+    "board_document_edit",
+    "basic_chat",
+    "learning_requirement_refinement",
+    "board_task_requirement_refinement",
+}
+
+
+def _metadata_text(metadata: dict[str, object], key: str) -> str:
+    value = metadata.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _published_conversation_target_id(lesson: Lesson) -> str:
+    head = current_head_commit(lesson)
+    restored_commit_id = _metadata_text(head.metadata, "restored_commit_id")
+    if head.metadata.get("kind") == "restore_snapshot" and restored_commit_id:
+        return restored_commit_id
+    return head.id
+
+
+def _published_lineage_ids(lesson: Lesson) -> set[str]:
+    commits_by_id = {commit.id: commit for commit in lesson.history_graph.commits}
+    lineage: set[str] = set()
+    commit_id = _published_conversation_target_id(lesson)
+    while commit_id and commit_id not in lineage:
+        lineage.add(commit_id)
+        commit = commits_by_id.get(commit_id)
+        commit_id = commit.parent_ids[0] if commit and commit.parent_ids else ""
+    return lineage
+
+
+def _commit_contains_public_conversation(metadata: dict[str, object]) -> bool:
+    if _metadata_text(metadata, "chat_visibility") == "hidden":
+        return False
+    if _metadata_text(metadata, "requirement_phase") in {"ready", "frozen"}:
+        return False
+    history_node_kind = _metadata_text(metadata, "history_node_kind")
+    if history_node_kind == "chat":
+        return True
+    if str(metadata.get("kind") or "") in _LEGACY_DISPLAYABLE_CHAT_COMMIT_KINDS:
+        return True
+    return not history_node_kind and bool(
+        _metadata_text(metadata, "user_message")
+        or _metadata_text(metadata, "assistant_message")
+    )
+
+
+def capture_published_conversation(lesson: Lesson) -> list[PublishedConversationTurn]:
+    lineage_ids = _published_lineage_ids(lesson)
+    conversation: list[PublishedConversationTurn] = []
+    for commit in lesson.history_graph.commits:
+        if commit.id not in lineage_ids:
+            continue
+        inherited_conversation = commit.metadata.get("published_conversation")
+        if isinstance(inherited_conversation, list):
+            for item in inherited_conversation:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                content = item.get("content")
+                if (
+                    role in {"user", "assistant"}
+                    and isinstance(content, str)
+                    and content.strip()
+                ):
+                    conversation.append(
+                        PublishedConversationTurn(role=role, content=content.strip())
+                    )
+        if not _commit_contains_public_conversation(commit.metadata):
+            continue
+        user_message = _metadata_text(commit.metadata, "user_message")
+        assistant_message = _metadata_text(commit.metadata, "assistant_message")
+        if user_message:
+            conversation.append(PublishedConversationTurn(role="user", content=user_message))
+        if assistant_message:
+            conversation.append(
+                PublishedConversationTurn(role="assistant", content=assistant_message)
+            )
+    return conversation
 
 
 def capture_lesson_version(lesson: Lesson) -> PublishedLessonVersion:
@@ -20,6 +106,7 @@ def capture_lesson_version(lesson: Lesson) -> PublishedLessonVersion:
         summary=lesson.summary,
         tags=list(lesson.tags),
         board_document=lesson.board_document.model_copy(deep=True),
+        conversation=capture_published_conversation(lesson),
     )
 
 

@@ -497,6 +497,10 @@ export interface PublishedLessonVersion {
   summary: string;
   tags: string[];
   board_document: BoardDocument;
+  conversation: Array<{
+    role: "user" | "assistant";
+    content: string;
+  }>;
   published_at: string;
 }
 

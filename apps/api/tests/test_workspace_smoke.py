@@ -36,6 +36,7 @@ from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
+from app.services.history import commit_operations
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services import publication_review as publication_review_service
 from app.services import source_range_reader
@@ -1114,6 +1115,31 @@ def test_public_lesson_fork_is_personal_idempotent_and_restorable(
         },
     )
     assert saved_source.status_code == 200
+    owner_workspace, owner_revision = workspace_state.load_workspace_for_user_with_revision(
+        TEST_USER.id
+    )
+    source_lesson_model = next(
+        lesson
+        for package in owner_workspace.packages
+        for lesson in package.lessons
+        if lesson.id == source_lesson["id"]
+    )
+    commit_operations(
+        source_lesson_model,
+        [],
+        label="Public conversation",
+        message="Recorded the conversation that belongs to this course version.",
+        metadata={
+            "kind": "basic_chat",
+            "user_message": "Keep this question with the course",
+            "assistant_message": "Keep this answer with the course",
+        },
+    )
+    workspace_state.save_workspace_for_user_if_revision(
+        TEST_USER.id,
+        owner_workspace,
+        expected_revision=owner_revision,
+    )
     published = api_client.post(
         f"/api/lessons/{source_lesson['id']}/visibility",
         json={"visibility": "public"},
@@ -1142,6 +1168,10 @@ def test_public_lesson_fork_is_personal_idempotent_and_restorable(
     assert personal_lesson["board_document"]["content_text"] == "Public source version"
     initial_commit = personal_lesson["history_graph"]["commits"][0]
     assert initial_commit["metadata"]["forked_from_public_lesson_id"] == source_lesson["id"]
+    assert initial_commit["metadata"]["published_conversation"] == [
+        {"role": "user", "content": "Keep this question with the course"},
+        {"role": "assistant", "content": "Keep this answer with the course"},
+    ]
 
     repeated_fork = api_client.post(f"/api/public/lessons/{source_lesson['id']}/fork")
     assert repeated_fork.status_code == 200

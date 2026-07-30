@@ -12,6 +12,7 @@ from app.models import (
     ResourceLibraryItem,
 )
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.history import commit_operations
 from app.services.lesson_factory import create_empty_lesson
 from app.services.published_courses import upload_lesson_version, upload_package_version
 from app.services.rich_document import build_document, rich_structure_counts, would_flatten_rich_document
@@ -372,6 +373,17 @@ def test_public_lesson_stays_on_uploaded_version_until_next_upload(tmp_path) -> 
     lesson = _append_lesson(workspace, "Uploaded title")
     lesson.summary = "Uploaded summary"
     lesson.board_document.content_text = "uploaded body"
+    commit_operations(
+        lesson,
+        [],
+        label="Published conversation",
+        message="Recorded the published conversation.",
+        metadata={
+            "kind": "basic_chat",
+            "user_message": "Published question",
+            "assistant_message": "Published answer",
+        },
+    )
     upload_lesson_version(lesson)
     first_revision_id = lesson.published_version.revision_id
     store.save_for_user("author", workspace)
@@ -381,6 +393,17 @@ def test_public_lesson_stays_on_uploaded_version_until_next_upload(tmp_path) -> 
     working_lesson.title = "Private working title"
     working_lesson.summary = "Private working summary"
     working_lesson.board_document.content_text = "private working body"
+    commit_operations(
+        working_lesson,
+        [],
+        label="Private conversation",
+        message="Recorded a private conversation after publishing.",
+        metadata={
+            "kind": "basic_chat",
+            "user_message": "Private question",
+            "assistant_message": "Private answer",
+        },
+    )
     store.save_for_user("author", working)
 
     public_lesson = store.load_public_lesson(lesson.id)
@@ -389,6 +412,13 @@ def test_public_lesson_stays_on_uploaded_version_until_next_upload(tmp_path) -> 
     assert public_lesson.summary == "Uploaded summary"
     assert public_lesson.board_document.content_text == "uploaded body"
     assert public_lesson.published_version.revision_id == first_revision_id
+    assert [
+        turn.model_dump(mode="json")
+        for turn in public_lesson.published_version.conversation
+    ] == [
+        {"role": "user", "content": "Published question"},
+        {"role": "assistant", "content": "Published answer"},
+    ]
     assert store.search_public_courses(
         "Private working title",
         exclude_owner_user_id="viewer",
@@ -401,6 +431,47 @@ def test_public_lesson_stays_on_uploaded_version_until_next_upload(tmp_path) -> 
     assert updated_public_lesson.title == "Private working title"
     assert updated_public_lesson.board_document.content_text == "private working body"
     assert updated_public_lesson.published_version.revision_id != first_revision_id
+    assert [
+        turn.content
+        for turn in updated_public_lesson.published_version.conversation
+    ] == [
+        "Published question",
+        "Published answer",
+        "Private question",
+        "Private answer",
+    ]
+
+
+def test_publishing_a_personal_copy_keeps_its_inherited_conversation() -> None:
+    workspace = build_initial_workspace_state()
+    lesson = _append_lesson(workspace, "Republished personal copy")
+    lesson.history_graph.commits[0].metadata["published_conversation"] = [
+        {"role": "user", "content": "Inherited question"},
+        {"role": "assistant", "content": "Inherited answer"},
+    ]
+    commit_operations(
+        lesson,
+        [],
+        label="Personal follow-up",
+        message="Recorded the learner's follow-up.",
+        metadata={
+            "kind": "basic_chat",
+            "user_message": "Personal question",
+            "assistant_message": "Personal answer",
+        },
+    )
+
+    upload_lesson_version(lesson)
+
+    assert [
+        turn.content
+        for turn in lesson.published_version.conversation
+    ] == [
+        "Inherited question",
+        "Inherited answer",
+        "Personal question",
+        "Personal answer",
+    ]
 
 
 def test_sqlite_store_preserves_rich_json_when_editor_text_is_plain(tmp_path) -> None:

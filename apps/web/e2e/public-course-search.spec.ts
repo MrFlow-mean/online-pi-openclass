@@ -28,6 +28,100 @@ const workspace = {
   ],
 };
 
+const pageSettings = {
+  margin_preset: "normal",
+  orientation: "portrait",
+  page_size: "a4",
+  columns: 1,
+  page_border: false,
+  background_style: "plain",
+  watermark_text: "",
+  line_numbers: false,
+  show_page_number: true,
+  header_text: "",
+  footer_text: "",
+};
+
+const copiedDocument = {
+  id: "document_personal_copy",
+  title: "真实公开课程",
+  content_json: {
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text: "公开课程讲义" }] }],
+  },
+  content_html: "<p>公开课程讲义</p>",
+  content_text: "公开课程讲义",
+  page_settings: pageSettings,
+};
+
+const copiedLesson = {
+  id: "lesson_personal_copy",
+  title: "真实公开课程",
+  slug: "real-public-course-copy",
+  summary: "这条结果来自课程搜索 API。",
+  tags: ["公开", "可检索"],
+  visibility: "private",
+  publication_review: {
+    id: "review_personal_copy",
+    status: "not_started",
+    source_fingerprint: "",
+    scanned_source_count: 0,
+    scanned_unit_count: 0,
+    findings: [],
+    message: "",
+  },
+  published_version: null,
+  board_document: copiedDocument,
+  learning_requirements: null,
+  board_task_requirements: null,
+  history_graph: {
+    current_branch: "main",
+    branches: {
+      main: {
+        name: "main",
+        head_commit_id: "commit_personal_copy",
+        base_commit_id: "commit_personal_copy",
+        created_at: "2026-07-28T01:00:00+00:00",
+      },
+    },
+    commits: [
+      {
+        id: "commit_personal_copy",
+        label: "Personal copy baseline",
+        message: "Saved a private, editable copy of a public lesson",
+        branch_name: "main",
+        created_at: "2026-07-28T01:00:00+00:00",
+        parent_ids: [],
+        operations: [],
+        snapshot: copiedDocument,
+        metadata: {
+          kind: "initial_document",
+          history_node_kind: "system",
+          published_conversation: [
+            { role: "user", content: "公开课程中的原问题" },
+            { role: "assistant", content: "公开课程中的原回答" },
+          ],
+        },
+      },
+    ],
+  },
+  created_at: "2026-07-28T01:00:00+00:00",
+  updated_at: "2026-07-28T01:00:00+00:00",
+};
+
+const copiedPackage = {
+  ...workspace.packages[0],
+  lessons: [copiedLesson],
+  open_lesson_ids: [copiedLesson.id],
+  active_lesson_id: copiedLesson.id,
+  workspace_tab_order: [copiedLesson.id],
+};
+
+const copiedWorkspace = {
+  active_package_id: copiedPackage.id,
+  packages: [copiedPackage],
+};
+
 test("search mode hides the home chrome and groups owned and public course results", async ({
   context,
   page,
@@ -57,11 +151,19 @@ test("search mode hides the home chrome and groups owned and public course resul
       }),
     }),
   );
+  let downloadedLessonId = "";
   await page.route("**/api/workspace", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(workspace),
+      body: JSON.stringify(downloadedLessonId ? copiedWorkspace : workspace),
+    }),
+  );
+  await page.route("**/api/course-package", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(copiedPackage),
     }),
   );
   await page.route("**/api/contributions?*", (route) =>
@@ -69,7 +171,6 @@ test("search mode hides the home chrome and groups owned and public course resul
   );
 
   let requestedQuery = "";
-  let downloadedLessonId = "";
   let starredLessonId = "";
   await page.route("**/api/courses/search?*", (route) => {
     requestedQuery = new URL(route.request().url()).searchParams.get("q") ?? "";
@@ -117,10 +218,7 @@ test("search mode hides the home chrome and groups owned and public course resul
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ...workspace.packages[0],
-        active_lesson_id: "lesson_personal_copy",
-      }),
+      body: JSON.stringify(copiedPackage),
     });
   });
   await page.route("**/api/public/courses/lesson/lesson_public_search/star", (route) => {
@@ -172,4 +270,49 @@ test("search mode hides the home chrome and groups owned and public course resul
   await search.fill("真实内容");
   await page.getByRole("button", { name: "下载 真实公开课程" }).click();
   await expect.poll(() => downloadedLessonId).toBe("lesson_public_search");
+});
+
+test("downloaded public course conversations render in the personal studio", async ({
+  context,
+  page,
+}) => {
+  await context.addCookies([
+    {
+      name: "openclass.auth.token",
+      value: "public-search-token",
+      domain: "127.0.0.1",
+      path: "/",
+      sameSite: "Lax",
+    },
+  ]);
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "searcher",
+        email: "searcher@example.com",
+        role: "user",
+        display_name: "搜索用户",
+        avatar_url: null,
+        created_at: "2026-07-28T00:00:00+00:00",
+        last_login_at: null,
+        auth_identities: [],
+      }),
+    }),
+  );
+  await page.route("**/api/course-package", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(copiedPackage),
+    }),
+  );
+  await page.route("**/api/contributions?*", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
+
+  await page.goto("/studio");
+  await expect(page.getByText("公开课程中的原问题", { exact: true })).toBeVisible();
+  await expect(page.getByText("公开课程中的原回答", { exact: true })).toBeVisible();
 });

@@ -85,6 +85,11 @@ def _copy_public_lesson(
     initial_commit.snapshot = BoardDocument.model_validate(
         personal_document.model_dump(mode="json")
     )
+    published_conversation = (
+        source_lesson.published_version.conversation
+        if source_lesson.published_version is not None
+        else []
+    )
     initial_commit.metadata.update(
         {
             "kind": "initial_document",
@@ -94,6 +99,10 @@ def _copy_public_lesson(
             PUBLIC_SOURCE_LESSON_ID_KEY: source_lesson.id,
             PUBLIC_SOURCE_COMMIT_ID_KEY: source_commit_id,
             "forked_from_public_at": now_iso(),
+            "published_conversation": [
+                turn.model_dump(mode="json")
+                for turn in published_conversation
+            ],
         }
     )
 

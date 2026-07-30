@@ -518,13 +518,43 @@ function chatInteractionModeFromCommit(commit: CommitRecord): ChatInteractionMod
   return metadataText(commit, "interaction_mode") === "direct_edit" ? "direct_edit" : "ask";
 }
 
+function publishedConversationMessagesFromCommit(commit: CommitRecord): ChatMessage[] {
+  const value = commit.metadata?.published_conversation;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item, index) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const turn = item as Record<string, unknown>;
+    const role = turn.role;
+    const content = typeof turn.content === "string" ? turn.content.trim() : "";
+    if ((role !== "user" && role !== "assistant") || !content) {
+      return [];
+    }
+    return [
+      createChatMessage(
+        role,
+        content,
+        "ready",
+        `${commit.id}:published-conversation:${index}`
+      ),
+    ];
+  });
+}
+
 export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null): ChatMessage[] {
   const targetCommitId = conversationTargetCommitId(lesson, commitId);
   const lineageIds = commitLineageIds(lesson, targetCommitId);
   const messages: ChatMessage[] = [];
 
   lesson.history_graph.commits.forEach((commit) => {
-    if (!lineageIds.has(commit.id) || !commitContainsDisplayableChat(commit)) {
+    if (!lineageIds.has(commit.id)) {
+      return;
+    }
+    messages.push(...publishedConversationMessagesFromCommit(commit));
+    if (!commitContainsDisplayableChat(commit)) {
       return;
     }
 

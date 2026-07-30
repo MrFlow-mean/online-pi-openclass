@@ -126,3 +126,48 @@ test("restores source citations from persisted chat history", () => {
     excerpt: "这是原文定义。",
   })]);
 });
+
+test("restores a downloaded public conversation before the learner's new turns", () => {
+  const lesson = {
+    history_graph: {
+      current_branch: "main",
+      branches: { main: { head_commit_id: "commit-2" } },
+      commits: [
+        {
+          id: "commit-1",
+          parent_ids: [],
+          kind: "initial_document",
+          created_at: new Date().toISOString(),
+          metadata: {
+            history_node_kind: "system",
+            published_conversation: [
+              { role: "user", content: "公开课程中的问题" },
+              { role: "assistant", content: "公开课程中的回答" },
+            ],
+          },
+        },
+        {
+          id: "commit-2",
+          parent_ids: ["commit-1"],
+          kind: "basic_chat",
+          created_at: new Date().toISOString(),
+          metadata: {
+            history_node_kind: "chat",
+            user_message: "下载后的新问题",
+            assistant_message: "下载后的新回答",
+          },
+        },
+      ],
+    },
+  } as unknown as Lesson;
+
+  expect(buildLessonMessagesFromHistory(lesson).map(({ role, content }) => ({
+    role,
+    content,
+  }))).toEqual([
+    { role: "user", content: "公开课程中的问题" },
+    { role: "assistant", content: "公开课程中的回答" },
+    { role: "user", content: "下载后的新问题" },
+    { role: "assistant", content: "下载后的新回答" },
+  ]);
+});
