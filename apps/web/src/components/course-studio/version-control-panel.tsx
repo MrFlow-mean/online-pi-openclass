@@ -1,7 +1,6 @@
 "use client";
 
 import clsx from "clsx";
-import Link from "next/link";
 import {
   Circle,
   Eye,
@@ -9,14 +8,12 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
-  GitPullRequest,
-  LoaderCircle,
   MessageCircle,
   Quote,
   RotateCcw,
   Share2,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 
 import {
   buildLearningRequirementDisplay,
@@ -35,7 +32,6 @@ import {
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
 import { ModelRunHistoryPanel } from "@/components/course-studio/model-run-history-panel";
 import { useAuthenticatedUser } from "@/contexts/auth-session-context";
-import { api } from "@/lib/api";
 import {
   LessonPackageControls,
   type LessonPackageControlsProps,
@@ -44,163 +40,8 @@ import type {
   BoardDecision,
   CommitRecord,
   Lesson,
-  LessonContributionStatus,
-  LessonContributionView,
   SelectionRef,
 } from "@/types";
-
-const CONTRIBUTION_STATUS_LABELS: Record<LessonContributionStatus, string> = {
-  open: "等待审查",
-  merge_draft: "合并处理中",
-  merged: "已合并",
-  closed: "已关闭",
-};
-
-function publicSourceLessonId(lesson: Lesson) {
-  for (const commit of lesson.history_graph.commits) {
-    const sourceId = commit.metadata?.forked_from_public_lesson_id;
-    if (typeof sourceId === "string" && sourceId) {
-      return sourceId;
-    }
-  }
-  return null;
-}
-
-function LessonContributionSection({ activeLesson }: { activeLesson: Lesson }) {
-  const sourceLessonId = useMemo(() => publicSourceLessonId(activeLesson), [activeLesson]);
-  const [received, setReceived] = useState<LessonContributionView[]>([]);
-  const [submitted, setSubmitted] = useState<LessonContributionView[]>([]);
-  const [title, setTitle] = useState(`改进：${activeLesson.title}`);
-  const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    Promise.all([
-      api.listLessonContributions("received"),
-      api.listLessonContributions("submitted"),
-    ])
-      .then(([nextReceived, nextSubmitted]) => {
-        if (!active) return;
-        setReceived(nextReceived.filter((item) => item.source_lesson_id === activeLesson.id));
-        setSubmitted(
-          nextSubmitted.filter((item) => item.source_lesson_id === (sourceLessonId ?? activeLesson.id))
-        );
-        setError(null);
-      })
-      .catch((failure: unknown) => {
-        if (active) setError(failure instanceof Error ? failure.message : "协作记录载入失败");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [activeLesson.id, sourceLessonId]);
-
-  const activeSubmission = submitted.find(
-    (item) => item.status === "open" || item.status === "merge_draft"
-  ) ?? null;
-  const latestSubmission = submitted[0] ?? null;
-
-  async function submitContribution() {
-    if (!title.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await api.createLessonContribution(activeLesson.id, title, description);
-      setSubmitted((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "提交改进方案失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function updateContribution(item: LessonContributionView) {
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await api.updateLessonContribution(item.id, { expected_version: item.version });
-      setSubmitted((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "更新提交版本失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="rounded-xl border border-violet-200 bg-violet-50/60 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-violet-700">
-            <GitPullRequest className="h-3.5 w-3.5" />
-            课程协作
-          </p>
-          <p className="mt-1 text-xs text-gray-600">
-            {sourceLessonId ? "把你的个人学习版本提交给原作者" : `${received.length} 个改进方案提交到这节课`}
-          </p>
-        </div>
-        <Link href="/contributions" className="text-[11px] font-semibold text-violet-700 hover:underline">协作中心</Link>
-      </div>
-
-      {loading ? <p className="mt-4 flex items-center gap-2 text-xs text-gray-500"><LoaderCircle className="h-3.5 w-3.5 animate-spin" />载入中…</p> : null}
-      {error ? <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-700">{error}</p> : null}
-
-      {!loading && sourceLessonId && activeSubmission ? (
-        <div className="mt-4 rounded-lg border border-violet-100 bg-white p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-xs font-semibold text-gray-900">{activeSubmission.title}</p>
-              <p className="mt-1 text-[10px] text-gray-400">
-                {CONTRIBUTION_STATUS_LABELS[activeSubmission.status]} · revision {activeSubmission.current_revision}
-              </p>
-            </div>
-            <Link href={`/contributions/${activeSubmission.id}`} className="shrink-0 text-[11px] font-semibold text-violet-700 hover:underline">查看</Link>
-          </div>
-          {activeSubmission.viewer_permissions.can_update ? (
-            <button type="button" disabled={busy} onClick={() => void updateContribution(activeSubmission)} className="mt-3 w-full rounded-lg bg-violet-700 px-3 py-2 text-[11px] font-semibold text-white disabled:opacity-50">
-              提交当前课程的新版本
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-
-      {!loading && sourceLessonId && !activeSubmission ? (
-        <div className="mt-4 space-y-2">
-          {latestSubmission ? (
-            <Link href={`/contributions/${latestSubmission.id}`} className="block rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] text-gray-600 hover:border-violet-300">
-              上一次提交：{CONTRIBUTION_STATUS_LABELS[latestSubmission.status]} · revision {latestSubmission.current_revision}
-            </Link>
-          ) : null}
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="改进方案标题" className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-500" />
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="向原作者说明这次改进（可选）" rows={3} className="w-full resize-y rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs leading-5 outline-none focus:border-violet-500" />
-          <button type="button" disabled={busy || !title.trim()} onClick={() => void submitContribution()} className="w-full rounded-lg bg-violet-700 px-3 py-2 text-[11px] font-semibold text-white disabled:opacity-50">
-            {busy ? "正在提交…" : "提交课程改进方案"}
-          </button>
-        </div>
-      ) : null}
-
-      {!loading && !sourceLessonId && received.length ? (
-        <div className="mt-4 space-y-2">
-          {received.slice(0, 5).map((item) => (
-            <Link key={item.id} href={`/contributions/${item.id}`} className="block rounded-lg border border-violet-100 bg-white p-3 hover:border-violet-300">
-              <div className="flex items-start justify-between gap-2">
-                <p className="min-w-0 truncate text-xs font-semibold text-gray-900">{item.title}</p>
-                <span className="shrink-0 text-[10px] text-violet-700">{CONTRIBUTION_STATUS_LABELS[item.status]}</span>
-              </div>
-              <p className="mt-1 text-[10px] text-gray-400">{item.contributor.display_name} · revision {item.current_revision}</p>
-            </Link>
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
-}
 
 type VersionControlPanelProps = {
   activeLesson: Lesson;
@@ -508,8 +349,6 @@ export function VersionControlPanel({
   return (
     <div className="space-y-8">
       <LessonPackageControls {...lessonPackageControls} />
-
-      {canUseCommunity ? <LessonContributionSection activeLesson={activeLesson} /> : null}
 
       <ModelRunHistoryPanel lessonId={activeLesson.id} />
 
