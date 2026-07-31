@@ -30,7 +30,6 @@ import {
   type HistoryNodeKind,
 } from "@/components/course-studio/history-graph-utils";
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
-import { ModelRunHistoryPanel } from "@/components/course-studio/model-run-history-panel";
 import { useAuthenticatedUser } from "@/contexts/auth-session-context";
 import {
   LessonPackageControls,
@@ -349,8 +348,6 @@ export function VersionControlPanel({
   return (
     <div className="space-y-8">
       <LessonPackageControls {...lessonPackageControls} />
-
-      <ModelRunHistoryPanel lessonId={activeLesson.id} />
 
       <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <div className="flex items-center justify-between gap-3">
