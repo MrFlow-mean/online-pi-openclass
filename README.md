@@ -120,28 +120,35 @@ OPENCLASS_WEB_ORIGIN=https://your-domain.example
 
 ## 模型与 Provider（模型提供方）
 
-最小配置：
+文本模型由 `/api/ai-models` 根据启用的 provider、服务器凭据和当前用户凭据动态生成。当前文本路径只有 `openai_codex` 和 `deepseek`；旧的 `AI_TEXT_PROVIDER`、`OPENAI_MODEL`、`OPENAI_PM_MODEL`、`OPENAI_BOARD_MODEL` 与 `OPENAI_CHATBOT_MODEL` 不再参与文本模型选择。
 
-```bash
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_COMPAT_API=chat_completions
-AI_TEXT_PROVIDER=openai
-AI_REALTIME_PROVIDER=openai
-OPENAI_MODEL=gpt-5.5
-OPENAI_PM_MODEL=gpt-5.5
-OPENAI_BOARD_MODEL=gpt-5.5
-OPENAI_CHATBOT_MODEL=gpt-5.5
-OPENCLASS_REALTIME_ENABLED=false
-OPENCLASS_REALTIME_TOOLS_ENABLED=true
-OPENAI_REALTIME_MODEL=gpt-realtime-2.1
-OPENAI_REALTIME_REASONING_EFFORT=low
-OPENAI_IMAGE_MODEL=gpt-image-2
-OPENCLASS_SPEECH_PROVIDER=openai_codex
-OPENCLASS_CODEX_REALTIME_VOICE=cove
+首次自托管最简单的方式是配置一个服务器共用的 DeepSeek API key（接口密钥）：
+
+```dotenv
+OPENCLASS_TEXT_MODEL_PROVIDERS=openai_codex,deepseek
+DEEPSEEK_API_KEY=your_deepseek_api_key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
-`.env.example` 还包含 Pi Agent 凭据目录、DeepSeek、OpenAI Realtime 和旧 Codex app-server（Codex 应用服务）回退适配器配置。
+保存 `.env` 后重启 API；模型目录会把可用的 DeepSeek 文本模型标记为已配置。此方式使用服务器账户直接结算，OpenClass 不会为该共享 key 自动执行用户额度限制。
+
+也可以选择以下接入方式：
+
+- 个人 DeepSeek API key：保留 `deepseek` provider，登录 OpenClass 后在 Studio 的模型面板中保存个人 key；key 只写入当前 OpenClass 用户的私有 Pi 目录。
+- ChatGPT / Codex 订阅：保留 `openai_codex` provider，在服务器安装 Codex CLI（Codex 命令行工具）或使用 macOS ChatGPT 应用内置的 Codex，设置 `OPENCLASS_CODEX_APP_SERVER_ENABLED=true`，再前往「设置 → 模型 → 连接 ChatGPT」。Pi 继续负责文本执行，Codex app-server 只负责设备登录与凭据桥接，并保留为回退适配器。
+- OpenClass 平台模型：需要运营方部署 Responses API gateway（Responses API 网关）并配置 `OPENCLASS_CODEX_TEXT_PROXY_API_KEY_FILE`；普通自托管实例不应假设能够使用 `open-classes.com` 的服务器密钥。
+
+`OPENAI_API_KEY` 当前只用于标准 OpenAI Realtime（实时语音）与显式选择的 OpenAI 语音适配器，不会启用普通文本模型。启用标准 OpenAI Realtime 时同时配置：
+
+```dotenv
+OPENCLASS_REALTIME_MODEL_PROVIDERS=openai,openai_codex
+OPENCLASS_REALTIME_ENABLED=true
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_REALTIME_MODEL=gpt-realtime-2.1
+```
+
+不使用实时语音时保持 `OPENCLASS_REALTIME_ENABLED=false`，无需配置 `OPENAI_API_KEY`。`.env.example` 还包含 Pi Agent 凭据目录、OpenClass 模型代理、DeepSeek、OpenAI Realtime 和 Codex app-server 配置。
 
 默认的 `OPENCLASS_SOURCE_BACKEND=native` 使用 OpenClass 本地工具和 Pi 资料 Agent 建立资料目录；OpenClass 负责文件隔离、范围读取、机械校验和持久化。需要接入 Open Notebook 时，可显式设置 `OPENCLASS_SOURCE_BACKEND=open_notebook`。
 
