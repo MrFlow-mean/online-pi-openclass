@@ -39,7 +39,7 @@ StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 PiSourceProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PI_SOURCE_TIMEOUT_SECONDS = 15 * 60
 PI_SOURCE_VALIDATION_ATTEMPTS = 3
-PI_SOURCE_INCOMPLETE_CATALOG_ATTEMPTS = 12
+PI_SOURCE_INCOMPLETE_CATALOG_ATTEMPTS = 60
 PI_SOURCE_PLATFORM_PROVIDER = "openclass-platform"
 PI_SOURCE_PLATFORM_PROXY_KEY_ENV = "OPENCLASS_PI_PLATFORM_PROXY_KEY"
 PI_SOURCE_TOOLS = (
@@ -225,6 +225,9 @@ class PiSourceTextClient:
         ]
         if reasoning_effort:
             command.extend(["--thinking", reasoning_effort])
+        nice_binary = Path("/usr/bin/nice")
+        if nice_binary.is_file() and Path(self.binary).is_file():
+            return [str(nice_binary), "-n", "10", *command]
         return command
 
     def parse_source_file(
@@ -318,8 +321,8 @@ class PiSourceTextClient:
             "catalog_append in parent-before-child batches of at most 100. The submission tool "
             "mechanically places your unchanged Pi-authored parent graph into final preorder, so "
             "you may batch siblings before descendants as long as every parent is already saved. "
-            "For a directory larger than 100 nodes, append the next consecutive source-order batch "
-            "of at most 100 nodes and call write_catalog; the host validator preserves the partial "
+            "For a directory larger than 20 nodes, append the next consecutive source-order batch "
+            "of at most 20 nodes and call write_catalog; the host validator preserves the partial "
             "checkpoint and starts another bounded Pi turn until the directory is complete. Never "
             "try to emit every remaining large-directory node in one turn. Prefer stable ordinal "
             "keys such as nav-000001 so catalog_status identifies the next source entry. When "
@@ -384,7 +387,7 @@ class PiSourceTextClient:
                         attempt_prompt += (
                             "\n\nThe previous attempt left a valid partial checkpoint: "
                             f"{validation_feedback}\nCall catalog_status, preserve every saved node, "
-                            "append the next consecutive source-order batch of at most 100 missing "
+                            "append the next consecutive source-order batch of at most 20 missing "
                             "navigation nodes without duplicates, then call write_catalog so the host "
                             "can validate and schedule another bounded continuation if needed."
                         )
@@ -400,12 +403,7 @@ class PiSourceTextClient:
                         self._command(
                             provider=runtime_provider,
                             model=model,
-                            reasoning_effort=(
-                                "medium"
-                                if resume_checkpoint
-                                and _incomplete_catalog_error(validation_feedback)
-                                else reasoning_effort
-                            ),
+                            reasoning_effort=reasoning_effort,
                             system_prompt=source_system_prompt,
                         ),
                         input=attempt_prompt,

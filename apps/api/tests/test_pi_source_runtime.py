@@ -329,10 +329,10 @@ def test_pi_source_client_resumes_an_incomplete_catalog_checkpoint(
 
     assert len(calls) == 2
     assert "valid partial checkpoint" in str(calls[1][1]["input"])
-    assert "next consecutive source-order batch of at most 100" in str(
+    assert "next consecutive source-order batch of at most 20" in str(
         calls[1][1]["input"]
     )
-    assert calls[1][0][calls[1][0].index("--thinking") + 1] == "medium"
+    assert calls[1][0][calls[1][0].index("--thinking") + 1] == "low"
     assert response.output_parsed.nodes == ["First", "Second"]
 
 
