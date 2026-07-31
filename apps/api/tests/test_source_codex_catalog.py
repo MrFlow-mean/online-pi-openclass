@@ -158,11 +158,13 @@ def _record(path: Path, *, mime_type: str = "application/pdf") -> SourceIngestio
 def _model(
     *,
     provider: str = "openai_codex",
+    access_method: str | None = None,
     reasoning_effort: str | None = "low",
 ) -> AIModelSelection:
     return AIModelSelection(
         provider=provider,
         model="catalog-test-model",
+        access_method=access_method,
         reasoning_effort=reasoning_effort,
         service_tier="priority",
     )
@@ -263,6 +265,7 @@ def test_source_codex_runs_once_and_materializes_unmapped_hierarchy(tmp_path: Pa
     call = client.calls[0]
     assert call["source_path"] == path
     assert call["provider"] == "openai_codex"
+    assert call["access_method"] is None
     assert call["reasoning_effort"] == "low"
     assert call["output_artifact_path"] == "scratch/catalog.json"
     assert "body range" in str(call["system_prompt"])
@@ -290,6 +293,16 @@ def test_source_codex_forwards_a_custom_model_provider(tmp_path: Path) -> None:
     )
 
     assert client.calls[0]["provider"] == "deepseek"
+
+
+def test_source_codex_forwards_platform_credit_access_method(tmp_path: Path) -> None:
+    _result, client, _path, _content_hash = _generate(
+        tmp_path,
+        _catalog(_node("chapter-1")),
+        selection=_model(access_method="platform_credits"),
+    )
+
+    assert client.calls[0]["access_method"] == "platform_credits"
 
 
 def test_source_upload_accepts_any_configured_text_provider() -> None:

@@ -22,6 +22,10 @@ from app.services.codex_app_server import (
     _sha256_path,
     _source_staging_suffix,
 )
+from app.services.codex_text_proxy import (
+    codex_text_proxy_config,
+    codex_text_proxy_user_allowed,
+)
 from app.services.config import load_root_dotenv
 from app.services.pi_agent_runtime import (
     ensure_pi_openai_codex_auth,
@@ -35,6 +39,8 @@ StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 PiSourceProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PI_SOURCE_TIMEOUT_SECONDS = 15 * 60
 PI_SOURCE_VALIDATION_ATTEMPTS = 3
+PI_SOURCE_PLATFORM_PROVIDER = "openclass-platform"
+PI_SOURCE_PLATFORM_PROXY_KEY_ENV = "OPENCLASS_PI_PLATFORM_PROXY_KEY"
 PI_SOURCE_TOOLS = (
     "source_info",
     "pdf_text",
@@ -65,6 +71,47 @@ def _pi_provider(provider: str) -> str:
 
 def _extension_path() -> Path:
     return Path(__file__).with_name("pi_source_agent_extension.ts").resolve()
+
+
+def _write_platform_models_config(
+    *,
+    agent_dir: Path,
+    base_url: str,
+    model: str,
+) -> None:
+    payload = {
+        "providers": {
+            PI_SOURCE_PLATFORM_PROVIDER: {
+                "baseUrl": base_url,
+                "api": "openai-responses",
+                "apiKey": f"${PI_SOURCE_PLATFORM_PROXY_KEY_ENV}",
+                "authHeader": True,
+                "models": [
+                    {
+                        "id": model,
+                        "name": model,
+                        "reasoning": True,
+                        "input": ["text"],
+                        "contextWindow": 128_000,
+                        "maxTokens": 32_000,
+                        "cost": {
+                            "input": 0,
+                            "output": 0,
+                            "cacheRead": 0,
+                            "cacheWrite": 0,
+                        },
+                    }
+                ],
+            }
+        }
+    }
+    agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config_path = agent_dir / "models.json"
+    config_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
 
 
 def _source_timeout_seconds() -> int:
@@ -183,6 +230,7 @@ class PiSourceTextClient:
         user_prompt: str,
         schema: type[StructuredModel],
         on_activity: Callable[[AgentActivityEvent], None] | None = None,
+        access_method: str | None = None,
         reasoning_effort: str | None = None,
         service_tier: str | None = None,
         service_tier_is_set: bool = False,
@@ -203,11 +251,33 @@ class PiSourceTextClient:
 
         load_root_dotenv()
         source_path = Path(source_path)
-        agent_dir = pi_agent_directory(
-            owner_user_id=self.owner_user_id,
-            runtime_root=self.runtime_root,
+        resolved_access_method = access_method or (
+            "chatgpt_subscription"
+            if _pi_provider(provider) == "openai-codex"
+            else "platform_credits"
         )
-        if _pi_provider(provider) == "openai-codex":
+        persistent_agent_dir: Path | None = None
+        platform_proxy = None
+        runtime_provider = provider
+        if resolved_access_method == "platform_credits":
+            if _pi_provider(provider) == "openai-codex":
+                if not codex_text_proxy_user_allowed(self.owner_user_id):
+                    raise RuntimeError(
+                        "The current user is not allowed to use the Codex platform proxy"
+                    )
+                platform_proxy = codex_text_proxy_config()
+                if not platform_proxy.configured:
+                    raise RuntimeError("Codex platform text proxy is not configured")
+                runtime_provider = PI_SOURCE_PLATFORM_PROVIDER
+        else:
+            persistent_agent_dir = pi_agent_directory(
+                owner_user_id=self.owner_user_id,
+                runtime_root=self.runtime_root,
+            )
+        if (
+            resolved_access_method == "chatgpt_subscription"
+            and _pi_provider(provider) == "openai-codex"
+        ):
             if not ensure_pi_openai_codex_auth(
                 owner_user_id=self.owner_user_id,
                 runtime_root=self.runtime_root,
@@ -260,6 +330,18 @@ class PiSourceTextClient:
                 inspection_scope=inspection_scope,
             )
             environment = os.environ.copy()
+            environment.pop(PI_SOURCE_PLATFORM_PROXY_KEY_ENV, None)
+            agent_dir = persistent_agent_dir or cwd / ".pi-platform-agent"
+            agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if platform_proxy is not None:
+                environment[PI_SOURCE_PLATFORM_PROXY_KEY_ENV] = str(
+                    platform_proxy.api_key
+                )
+                _write_platform_models_config(
+                    agent_dir=agent_dir,
+                    base_url=platform_proxy.base_url,
+                    model=model,
+                )
             environment.update(
                 {
                     "PI_CODING_AGENT_DIR": str(agent_dir),
@@ -297,7 +379,7 @@ class PiSourceTextClient:
                 try:
                     result = self._process_runner(
                         self._command(
-                            provider=provider,
+                            provider=runtime_provider,
                             model=model,
                             reasoning_effort=reasoning_effort,
                             system_prompt=source_system_prompt,

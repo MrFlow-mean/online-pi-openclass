@@ -8,7 +8,12 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from app.services import pi_agent_runtime, pi_source_runtime
-from app.services.pi_source_runtime import PI_SOURCE_TOOLS, PiSourceTextClient
+from app.services.pi_source_runtime import (
+    PI_SOURCE_PLATFORM_PROVIDER,
+    PI_SOURCE_PLATFORM_PROXY_KEY_ENV,
+    PI_SOURCE_TOOLS,
+    PiSourceTextClient,
+)
 
 
 class _Catalog(BaseModel):
@@ -72,9 +77,99 @@ def test_pi_source_client_requires_connected_openai_codex_account(
             system_prompt="Build a directory.",
             user_prompt="Inspect the source.",
             schema=_Catalog,
+            access_method="chatgpt_subscription",
             output_artifact_path="scratch/catalog.json",
             inspection_scope="directory_only",
         )
+
+
+def test_pi_source_client_uses_ephemeral_platform_proxy_credentials(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setattr(
+        pi_source_runtime,
+        "ensure_pi_openai_codex_auth",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("platform credits must not read ChatGPT credentials")
+        ),
+    )
+    monkeypatch.setattr(
+        pi_source_runtime,
+        "codex_text_proxy_user_allowed",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        pi_source_runtime,
+        "codex_text_proxy_config",
+        lambda: type(
+            "_ProxyConfig",
+            (),
+            {
+                "configured": True,
+                "api_key": "platform-secret",
+                "base_url": "https://proxy.example/v1",
+            },
+        )(),
+    )
+    source = tmp_path / "source.txt"
+    source.write_text("Contents\nOne\n", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    def run(command, **kwargs):
+        observed["command"] = command
+        observed["environment"] = kwargs["env"]
+        agent_dir = Path(kwargs["env"]["PI_CODING_AGENT_DIR"])
+        observed["agent_dir"] = agent_dir
+        observed["models"] = json.loads(
+            (agent_dir / "models.json").read_text(encoding="utf-8")
+        )
+        scratch = Path(kwargs["cwd"]) / "scratch"
+        (scratch / "catalog.json").write_text(
+            json.dumps({"complete": True, "nodes": ["One"]}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    response = PiSourceTextClient(
+        "user_test",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=run,
+    ).parse_source_file(
+        source_path=source,
+        provider="openai_codex",
+        model="gpt-test",
+        access_method="platform_credits",
+        system_prompt="Build a directory.",
+        user_prompt="Inspect the source.",
+        schema=_Catalog,
+        output_artifact_path="scratch/catalog.json",
+        inspection_scope="directory_only",
+    )
+
+    command = observed["command"]
+    environment = observed["environment"]
+    models = observed["models"]
+    assert isinstance(command, list)
+    assert isinstance(environment, dict)
+    assert isinstance(models, dict)
+    assert command[:5] == [
+        "/test/pi",
+        "--provider",
+        PI_SOURCE_PLATFORM_PROVIDER,
+        "--model",
+        "gpt-test",
+    ]
+    assert environment[PI_SOURCE_PLATFORM_PROXY_KEY_ENV] == "platform-secret"
+    provider_config = models["providers"][PI_SOURCE_PLATFORM_PROVIDER]
+    assert provider_config["baseUrl"] == "https://proxy.example/v1"
+    assert provider_config["api"] == "openai-responses"
+    assert provider_config["apiKey"] == f"${PI_SOURCE_PLATFORM_PROXY_KEY_ENV}"
+    assert "platform-secret" not in json.dumps(models)
+    assert not Path(observed["agent_dir"]).exists()
+    assert response.output_parsed.nodes == ["One"]
 
 
 def _run_with_artifacts(payloads: list[dict[str, object]]):
