@@ -92,8 +92,8 @@ def _write_platform_models_config(
                         "name": model,
                         "reasoning": True,
                         "input": ["text"],
-                        "contextWindow": 128_000,
-                        "maxTokens": 32_000,
+                        "contextWindow": 272_000,
+                        "maxTokens": 128_000,
                         "cost": {
                             "input": 0,
                             "output": 0,
@@ -310,10 +310,11 @@ class PiSourceTextClient:
             "must match this JSON schema exactly. Begin every attempt with catalog_status. If there "
             "is no checkpoint, call catalog_start with the validated PDF coordinate task only for the "
             "directory-only contract, otherwise pass null. Save nodes progressively with "
-            "catalog_append in parent-first "
-            "preorder batches of at most 100. After a parent, append its complete descendant "
-            "subtree before any later sibling; the checkpoint rejects a child appended after its "
-            "parent branch has closed. When archive_read reports complete=false, continue reading "
+            "catalog_append in parent-before-child batches of at most 100. The submission tool "
+            "mechanically places your unchanged Pi-authored parent graph into final preorder, so "
+            "you may batch siblings before descendants as long as every parent is already saved. "
+            "Do not call write_catalog until the checkpoint contains every navigation node you "
+            "observed. When archive_read reports complete=false, continue reading "
             "that same entry from next_start_character until complete=true; never treat the first "
             "segment of a large navigation file as its full contents. Append each directory page "
             "before moving to the next so work "

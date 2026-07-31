@@ -181,24 +181,30 @@ function validateCheckpointNodes(existing: Array<Record<string, unknown>>, addit
     levels.set(key, level as number);
   }
 
-  const activePath: Array<{ key: string; level: number }> = [];
-  for (const node of [...existing, ...additions]) {
-    const key = node.key as string;
-    const level = node.level as number;
+}
+
+export function parentConsistentPreorder(nodes: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const children = new Map<string | null, Array<Record<string, unknown>>>();
+  for (const node of nodes) {
     const parentKey = node.parent_key as string | null;
-    while (activePath.length && activePath[activePath.length - 1].level >= level) {
-      activePath.pop();
-    }
-    const expectedParent = activePath.length ? activePath[activePath.length - 1].key : null;
-    if (parentKey !== expectedParent) {
-      throw new Error(
-        `Checkpoint node ${JSON.stringify(key)} breaks parent-consistent preorder: ` +
-          `expected parent ${JSON.stringify(expectedParent)}, received ${JSON.stringify(parentKey)}. ` +
-          "Append each parent immediately followed by its complete descendant subtree before the next sibling.",
-      );
-    }
-    activePath.push({ key, level });
+    const siblings = children.get(parentKey) ?? [];
+    siblings.push(node);
+    children.set(parentKey, siblings);
   }
+  const ordered: Array<Record<string, unknown>> = [];
+  const visit = (node: Record<string, unknown>): void => {
+    ordered.push(node);
+    for (const child of children.get(node.key as string) ?? []) {
+      visit(child);
+    }
+  };
+  for (const root of children.get(null) ?? []) {
+    visit(root);
+  }
+  if (ordered.length !== nodes.length) {
+    throw new Error("The Pi-authored directory graph contains an unreachable node");
+  }
+  return ordered;
 }
 
 export default function openClassPiSourceTools(pi: ExtensionAPI) {
@@ -418,7 +424,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "catalog_append",
     label: "Append catalog checkpoint nodes",
-    description: "Append 1-100 complete directory nodes in parent-consistent preorder: each parent, then its entire descendant subtree, then its next sibling.",
+    description: "Append 1-100 complete Pi-authored directory nodes in parent-before-child order. Final submission mechanically orders the unchanged parent graph.",
     parameters: Type.Object({
       nodes_json: Type.String({ minLength: 4, maxLength: 4 * 1024 * 1024 }),
     }),
@@ -456,13 +462,14 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         if (!state.started || !state.nodes.length) {
           throw new Error("A non-empty catalog checkpoint is required before final submission");
         }
-        const artifact = inspectionScope === "directory_only" ? { complete: true, pdf: state.pdf, nodes: state.nodes } : { complete: true, nodes: state.nodes };
+        const orderedNodes = parentConsistentPreorder(state.nodes);
+        const artifact = inspectionScope === "directory_only" ? { complete: true, pdf: state.pdf, nodes: orderedNodes } : { complete: true, nodes: orderedNodes };
         const bytes = await atomicJsonWrite(catalogPath, artifact);
         const receipt = {
           artifact_path: "scratch/catalog.json",
           sha256: createHash("sha256").update(bytes).digest("hex"),
           byte_count: bytes.length,
-          node_count: state.nodes.length,
+          node_count: orderedNodes.length,
         };
         return textResult(JSON.stringify(receipt), receipt);
       });
