@@ -894,6 +894,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   let delayedSingleCatalogRequests = 0;
   let releaseDelayedSingleCatalog = () => {};
   let submittedSourceScope: Record<string, unknown> | null = null;
+  let submittedSelection: Record<string, unknown> | null | undefined;
+  let submittedSelections: Array<Record<string, unknown>> | undefined;
   let uploadPostData = "";
   let rebuildPostData = "";
 
@@ -988,7 +990,13 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     await route.continue();
   });
   await page.route("**/api/lessons/*/chat/stream", async (route) => {
-    const payload = route.request().postDataJSON() as { source_query_scope?: Record<string, unknown> | null };
+    const payload = route.request().postDataJSON() as {
+      selection?: Record<string, unknown> | null;
+      selections?: Array<Record<string, unknown>>;
+      source_query_scope?: Record<string, unknown> | null;
+    };
+    submittedSelection = payload.selection;
+    submittedSelections = payload.selections;
     submittedSourceScope = payload.source_query_scope ?? null;
     await route.fulfill({
       status: 503,
@@ -1096,6 +1104,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(singleCatalogRequests).toBe(0);
 
   await page.getByRole("button", { name: `引用章节到输入框 1 ${chapterTitle}` }).click();
+  await expect(page.getByText(/^(?:资料问答范围|Data question and answer scope)$/)).toBeVisible();
+  await expect(page.getByText(/^(?:引用 1 · 资料区段|Quote 1 · Information section)$/)).toHaveCount(0);
   await page.getByPlaceholder("询问选中资料中的内容").fill("请基于这个章节生成板书");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect.poll(() => submittedSourceScope).not.toBeNull();
@@ -1107,6 +1117,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
       source_content_hash: initialContentHash,
     }],
   });
+  expect(submittedSelection).toBeNull();
+  expect(submittedSelections).toEqual([]);
 
   const replacementContentHash = `replacement-hash-${unique}`;
   advertisedContentHash = replacementContentHash;
