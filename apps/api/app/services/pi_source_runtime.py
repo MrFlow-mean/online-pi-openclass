@@ -93,8 +93,8 @@ def _write_platform_models_config(
                         "name": model,
                         "reasoning": True,
                         "input": ["text"],
-                        "contextWindow": 272_000,
-                        "maxTokens": 128_000,
+                        "contextWindow": 128_000,
+                        "maxTokens": 32_000,
                         "cost": {
                             "input": 0,
                             "output": 0,
@@ -318,8 +318,12 @@ class PiSourceTextClient:
             "catalog_append in parent-before-child batches of at most 100. The submission tool "
             "mechanically places your unchanged Pi-authored parent graph into final preorder, so "
             "you may batch siblings before descendants as long as every parent is already saved. "
-            "Do not call write_catalog until the checkpoint contains every navigation node you "
-            "observed. When archive_read reports complete=false, continue reading "
+            "For a directory larger than 100 nodes, append the next consecutive source-order batch "
+            "of at most 100 nodes and call write_catalog; the host validator preserves the partial "
+            "checkpoint and starts another bounded Pi turn until the directory is complete. Never "
+            "try to emit every remaining large-directory node in one turn. Prefer stable ordinal "
+            "keys such as nav-000001 so catalog_status identifies the next source entry. When "
+            "archive_read reports complete=false, continue reading "
             "that same entry from next_start_character until complete=true; never treat the first "
             "segment of a large navigation file as its full contents. Append each directory page "
             "before moving to the next so work "
@@ -380,8 +384,9 @@ class PiSourceTextClient:
                         attempt_prompt += (
                             "\n\nThe previous attempt left a valid partial checkpoint: "
                             f"{validation_feedback}\nCall catalog_status, preserve every saved node, "
-                            "append all missing navigation nodes without duplicates, and submit only "
-                            "when the checkpoint reaches the observed complete directory count."
+                            "append the next consecutive source-order batch of at most 100 missing "
+                            "navigation nodes without duplicates, then call write_catalog so the host "
+                            "can validate and schedule another bounded continuation if needed."
                         )
                     else:
                         attempt_prompt += (
@@ -396,7 +401,7 @@ class PiSourceTextClient:
                             provider=runtime_provider,
                             model=model,
                             reasoning_effort=(
-                                "high"
+                                "medium"
                                 if resume_checkpoint
                                 and _incomplete_catalog_error(validation_feedback)
                                 else reasoning_effort

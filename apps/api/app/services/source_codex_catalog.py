@@ -1349,6 +1349,14 @@ def _catalog_user_prompt(
             "and do not submit fewer nodes. Representative labels from the beginning, middle, and "
             f"end are: {samples}."
         )
+        if witness.expected_node_count > 100:
+            witness_instruction += (
+                " This is a large directory: transcribe it in consecutive source-order batches of "
+                "at most 100 nodes. In the first turn start from the first authored entry, include "
+                "all levels rather than only roots, use stable ordinal keys when possible, save the "
+                "batch, and call write_catalog. OpenClass will preserve the checkpoint and request "
+                "the next bounded batch until the lower bound is reached."
+            )
     return (
         "Investigate the staged source file and write its complete directory, authoritative "
         "body ranges, per-node evidence, and exact unresolved reasons to the fixed catalog "

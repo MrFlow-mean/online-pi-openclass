@@ -391,6 +391,12 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
           started: state.started,
           node_count: state.nodes.length,
           last_keys: state.nodes.slice(-8).map((node) => node.key),
+          last_nodes: state.nodes.slice(-8).map((node) => ({
+            key: node.key,
+            title: node.title,
+            level: node.level,
+            source_locator: node.source_locator,
+          })),
           pdf: state.pdf,
         }),
       );

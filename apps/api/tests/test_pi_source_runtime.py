@@ -167,8 +167,8 @@ def test_pi_source_client_uses_ephemeral_platform_proxy_credentials(
     assert provider_config["baseUrl"] == "https://proxy.example/v1"
     assert provider_config["api"] == "openai-responses"
     assert provider_config["apiKey"] == f"${PI_SOURCE_PLATFORM_PROXY_KEY_ENV}"
-    assert provider_config["models"][0]["contextWindow"] == 272_000
-    assert provider_config["models"][0]["maxTokens"] == 128_000
+    assert provider_config["models"][0]["contextWindow"] == 128_000
+    assert provider_config["models"][0]["maxTokens"] == 32_000
     assert "platform-secret" not in json.dumps(models)
     assert not Path(observed["agent_dir"]).exists()
     assert response.output_parsed.nodes == ["One"]
@@ -329,7 +329,10 @@ def test_pi_source_client_resumes_an_incomplete_catalog_checkpoint(
 
     assert len(calls) == 2
     assert "valid partial checkpoint" in str(calls[1][1]["input"])
-    assert calls[1][0][calls[1][0].index("--thinking") + 1] == "high"
+    assert "next consecutive source-order batch of at most 100" in str(
+        calls[1][1]["input"]
+    )
+    assert calls[1][0][calls[1][0].index("--thinking") + 1] == "medium"
     assert response.output_parsed.nodes == ["First", "Second"]
 
 
