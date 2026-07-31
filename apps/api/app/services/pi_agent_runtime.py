@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from app.models import AgentActivityEvent, new_id, now_iso
 from app.services.ai_logging import ai_usage_logger, current_ai_log_context
 from app.services.billing_service import BillingError, BillingService
-from app.services.config import DATA_DIR, load_root_dotenv
+from app.services.config import DATA_DIR, ROOT_DIR, load_root_dotenv
 from app.services.codex_app_server import CodexTurnCancelledError
 from app.services.openrouter_provisioning import OpenRouterProvisioningService
 from app.services.structured_output import (
@@ -524,11 +524,15 @@ def _run_streaming_pi_process(
 
 def pi_runtime_root() -> Path:
     configured = (os.getenv("OPENCLASS_PI_RUNTIME_ROOT") or "").strip()
-    return (
-        Path(configured).expanduser().resolve()
-        if configured
-        else (DATA_DIR / "pi-runtime").resolve()
-    )
+    if configured:
+        return Path(configured).expanduser().resolve()
+    configured_database = (os.getenv("OPENCLASS_DATABASE_PATH") or "").strip()
+    if configured_database:
+        database_path = Path(configured_database).expanduser()
+        if not database_path.is_absolute():
+            database_path = ROOT_DIR / database_path
+        return (database_path.parent / "pi-runtime").resolve()
+    return (DATA_DIR / "pi-runtime").resolve()
 
 
 def pi_binary_path() -> str | None:

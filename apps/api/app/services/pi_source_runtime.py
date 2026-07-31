@@ -22,11 +22,12 @@ from app.services.codex_app_server import (
     _sha256_path,
     _source_staging_suffix,
 )
-from app.services.config import DATA_DIR, load_root_dotenv
+from app.services.config import load_root_dotenv
 from app.services.pi_agent_runtime import (
     ensure_pi_openai_codex_auth,
     pi_agent_directory,
     pi_binary_path,
+    pi_runtime_root,
 )
 
 
@@ -134,7 +135,7 @@ class PiSourceTextClient:
             raise RuntimeError("Pi is not installed on this server")
         self.owner_user_id = owner_user_id
         self.binary = resolved_binary
-        self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
+        self.runtime_root = runtime_root or pi_runtime_root()
         self._process_runner = process_runner or subprocess.run
 
     def _command(

@@ -223,7 +223,27 @@ export function getApiWebSocketUrl(pathOrUrl: string) {
   return new URL(pathOrUrl, baseUrl).toString();
 }
 
-async function responseErrorMessage(response: Response, fallback: string) {
+const HTML_ERROR_DOCUMENT_PATTERN =
+  /(?:<!doctype\s+html|<html\b|<head\b|<body\b|&lt;html\b|&lt;head\b|&lt;body\b)/i;
+const MODEL_PROXY_FAILURE_PATTERN = /Codex platform proxy request failed/i;
+const GATEWAY_FAILURE_PATTERN =
+  /(?:502|503|504)\s+(?:Bad Gateway|Gateway Time-out|Service Unavailable)/i;
+
+export function userFacingApiErrorMessage(message: string, fallback: string) {
+  const normalized = message.trim();
+  if (!normalized || HTML_ERROR_DOCUMENT_PATTERN.test(normalized)) {
+    return fallback;
+  }
+  if (MODEL_PROXY_FAILURE_PATTERN.test(normalized)) {
+    return "模型服务连接失败，请稍后重试。";
+  }
+  if (GATEWAY_FAILURE_PATTERN.test(normalized)) {
+    return fallback;
+  }
+  return normalized;
+}
+
+export async function responseErrorMessage(response: Response, fallback: string) {
   const text = await response.text();
   let message = text || fallback;
   try {
@@ -232,9 +252,9 @@ async function responseErrorMessage(response: Response, fallback: string) {
       message = parsed.detail;
     }
   } catch {
-    // Keep the raw response text for non-JSON errors.
+    // Non-JSON business errors remain visible unless they are HTML gateway pages.
   }
-  return message;
+  return userFacingApiErrorMessage(message, fallback);
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -427,7 +447,10 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
     return;
   }
   if (parsed.event === "error") {
-    const message = typeof payload.message === "string" ? payload.message : "聊天失败";
+    const message = userFacingApiErrorMessage(
+      typeof payload.message === "string" ? payload.message : "",
+      "聊天失败"
+    );
     throw new ChatStreamTransportError(message, "sse");
   }
 }
@@ -460,8 +483,12 @@ async function streamRequest(
     throw new ChatStreamTransportError(message, "missing_final");
   }
   if (!response.ok || !response.body) {
-    const text = await response.text();
-    throw new ChatStreamTransportError(text || `Request failed with ${response.status}`, "http", response.status);
+    const fallback =
+      response.status >= 500
+        ? `聊天服务连接失败（HTTP ${response.status}），请稍后重试。`
+        : `聊天请求失败（HTTP ${response.status}）。`;
+    const message = await responseErrorMessage(response, fallback);
+    throw new ChatStreamTransportError(message, "http", response.status);
   }
 
   const reader = response.body.getReader();

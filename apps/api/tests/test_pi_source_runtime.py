@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from app.services import pi_source_runtime
+from app.services import pi_agent_runtime, pi_source_runtime
 from app.services.pi_source_runtime import PI_SOURCE_TOOLS, PiSourceTextClient
 
 
@@ -25,6 +25,26 @@ def _allow_fake_pi_credentials(monkeypatch) -> None:
         "ensure_pi_openai_codex_auth",
         lambda **_kwargs: True,
     )
+
+
+def test_pi_source_runtime_defaults_beside_the_configured_database(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    persistent_dir = tmp_path / "persistent"
+    monkeypatch.delenv("OPENCLASS_PI_RUNTIME_ROOT", raising=False)
+    monkeypatch.setenv(
+        "OPENCLASS_DATABASE_PATH",
+        str(persistent_dir / "openclass.sqlite3"),
+    )
+
+    expected_runtime_root = persistent_dir / "pi-runtime"
+
+    assert pi_agent_runtime.pi_runtime_root() == expected_runtime_root
+    assert PiSourceTextClient(
+        "user_test",
+        binary="/test/pi",
+    ).runtime_root == expected_runtime_root
 
 
 def test_pi_source_client_requires_connected_openai_codex_account(
