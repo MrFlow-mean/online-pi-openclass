@@ -12,7 +12,8 @@ import { Type } from "typebox";
 const execFileAsync = promisify(execFile);
 const MAX_TEXT_OUTPUT = 120_000;
 const MAX_ARCHIVE_ENTRIES = 20_000;
-const MAX_ARCHIVE_ENTRY_BYTES = 160_000;
+const MAX_ARCHIVE_ENTRY_CHARACTERS = 120_000;
+const MAX_ARCHIVE_ENTRY_BUFFER_BYTES = 4 * 1024 * 1024;
 const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
 const MAX_TEXT_LINES_PER_CALL = 500;
 const MAX_PDF_PAGE_SPAN = 32;
@@ -315,16 +316,28 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "archive_read",
     label: "Read one source archive entry",
-    description: "Read one exact archive entry, bounded for safe navigation inspection.",
+    description: "Read one bounded character segment from an exact archive entry. Continue from next_start_character until complete=true.",
     parameters: Type.Object({
       entry: Type.String({ minLength: 1, maxLength: 2_048 }),
+      start_character: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_ARCHIVE_ENTRY_BUFFER_BYTES })),
     }),
     async execute(_id, params) {
       const entries = await loadArchiveEntries();
       if (!entries.has(params.entry)) throw new Error("The requested archive entry does not exist");
-      const { stdout } = await runTool("/usr/bin/unzip", ["-p", sourcePath, params.entry], MAX_ARCHIVE_ENTRY_BYTES * 4);
-      return textResult(boundedText(stdout, MAX_ARCHIVE_ENTRY_BYTES), {
+      const { stdout } = await runTool("/usr/bin/unzip", ["-p", sourcePath, params.entry], MAX_ARCHIVE_ENTRY_BUFFER_BYTES);
+      const startCharacter = params.start_character ?? 0;
+      if (startCharacter > stdout.length) {
+        throw new Error("archive_read start_character falls beyond the decoded archive entry");
+      }
+      const endCharacter = Math.min(stdout.length, startCharacter + MAX_ARCHIVE_ENTRY_CHARACTERS);
+      const complete = endCharacter >= stdout.length;
+      return textResult(stdout.slice(startCharacter, endCharacter), {
         entry: params.entry,
+        start_character: startCharacter,
+        end_character: endCharacter,
+        total_character_count: stdout.length,
+        complete,
+        next_start_character: complete ? null : endCharacter,
       });
     },
   });
