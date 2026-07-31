@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
@@ -202,6 +203,49 @@ def _response_output_text(payload: dict[str, Any]) -> str:
     return output_text
 
 
+def _sse_json_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+    data_lines: list[str] = []
+
+    def parsed_event() -> dict[str, Any] | None:
+        if not data_lines:
+            return None
+        raw_data = "\n".join(data_lines)
+        data_lines.clear()
+        if raw_data == "[DONE]":
+            return None
+        try:
+            event = json.loads(raw_data)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                "Codex platform proxy returned an invalid stream event"
+            ) from error
+        if not isinstance(event, dict):
+            raise RuntimeError("Codex platform proxy returned an invalid stream event")
+        return event
+
+    for line in lines:
+        if not line:
+            event = parsed_event()
+            if event is not None:
+                yield event
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[len("data:") :].lstrip())
+    event = parsed_event()
+    if event is not None:
+        yield event
+
+
+def _stream_error_message(event: dict[str, Any]) -> str:
+    error = event.get("error")
+    if not isinstance(error, dict):
+        response = event.get("response")
+        error = response.get("error") if isinstance(response, dict) else None
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"]
+    return "Codex platform proxy stream failed"
+
+
 def _schema_name(schema: type[BaseModel]) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_-]", "_", schema.__name__)[:64]
     return normalized or "openclass_response"
@@ -263,6 +307,7 @@ class CodexTextProxyClient:
         request_kind: str,
         on_activity: Callable[[AgentActivityEvent], None] | None,
         is_cancelled: Callable[[], bool] | None,
+        on_text_delta: Callable[[str], None] | None = None,
         text_format: dict[str, Any] | None = None,
     ) -> str:
         if is_cancelled is not None and is_cancelled():
@@ -299,6 +344,8 @@ class CodexTextProxyClient:
             payload["service_tier"] = self.service_tier
         if text_format is not None:
             payload["text"] = {"format": text_format}
+        if on_text_delta is not None:
+            payload["stream"] = True
 
         client = self._client or httpx.Client(
             base_url=self.config.base_url,
@@ -306,17 +353,51 @@ class CodexTextProxyClient:
             headers={"Authorization": f"Bearer {self.config.api_key}"},
         )
         owns_client = self._client is None
+        streamed_text_parts: list[str] = []
         try:
-            response = client.post(
-                "responses",
-                json=payload,
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
-            )
-            response.raise_for_status()
-            response_payload = response.json()
-            if not isinstance(response_payload, dict):
-                raise TypeError("Codex platform proxy returned an invalid response")
+            if on_text_delta is None:
+                response = client.post(
+                    "responses",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.config.api_key}"},
+                )
+                response.raise_for_status()
+                response_payload = response.json()
+                if not isinstance(response_payload, dict):
+                    raise TypeError("Codex platform proxy returned an invalid response")
+            else:
+                response_payload = None
+                with client.stream(
+                    "POST",
+                    "responses",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.config.api_key}"},
+                ) as response:
+                    response.raise_for_status()
+                    for stream_event in _sse_json_events(response.iter_lines()):
+                        if is_cancelled is not None and is_cancelled():
+                            raise RuntimeError("Codex platform proxy request was cancelled")
+                        event_type = stream_event.get("type")
+                        if event_type == "response.output_text.delta":
+                            delta = stream_event.get("delta")
+                            if isinstance(delta, str) and delta:
+                                streamed_text_parts.append(delta)
+                                on_text_delta(delta)
+                        elif event_type == "response.completed":
+                            completed_response = stream_event.get("response")
+                            if isinstance(completed_response, dict):
+                                response_payload = completed_response
+                        elif event_type in {"error", "response.failed"}:
+                            raise RuntimeError(_stream_error_message(stream_event))
+                if response_payload is None:
+                    raise RuntimeError(
+                        "Codex platform proxy stream ended before response.completed"
+                    )
             output_text = _response_output_text(response_payload)
+            if on_text_delta is not None and not streamed_text_parts:
+                raise RuntimeError(
+                    "Codex platform proxy stream completed without text deltas"
+                )
         except (httpx.HTTPError, TypeError, ValueError, RuntimeError) as error:
             if on_activity is not None:
                 on_activity(
@@ -459,7 +540,6 @@ class CodexTextProxyClient:
             request_kind="text",
             on_activity=publish,
             is_cancelled=is_cancelled,
+            on_text_delta=on_text_delta,
         )
-        if on_text_delta is not None:
-            on_text_delta(output_text)
         return CodexTextProxyResponse(output_text=output_text, activity=activity)

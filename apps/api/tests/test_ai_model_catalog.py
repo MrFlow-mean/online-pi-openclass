@@ -217,16 +217,49 @@ class _ProxyProbe(BaseModel):
     value: str
 
 
+class _TrackedResponsesStream(httpx.SyncByteStream):
+    def __init__(self) -> None:
+        self.completed_yielded = False
+
+    def __iter__(self):
+        yield (
+            b"event: response.created\n"
+            b'data: {"type":"response.created","response":{"id":"resp_2"}}\n\n'
+        )
+        yield (
+            b"event: response.output_text.delta\n"
+            b'data: {"type":"response.output_text.delta","delta":"plain "}\n\n'
+        )
+        yield (
+            b"event: response.output_text.delta\n"
+            b'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+        )
+        self.completed_yielded = True
+        yield (
+            b"event: response.completed\n"
+            b'data: {"type":"response.completed","response":{"id":"resp_2",'
+            b'"status":"completed","output":[{"type":"message","content":'
+            b'[{"type":"output_text","text":"plain OK"}]}],"usage":'
+            b'{"input_tokens":3,"output_tokens":2}}}\n\n'
+        )
+
+
 def test_codex_text_proxy_uses_responses_api_for_structured_and_text_output(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", TEST_USER_ID)
     requests: list[httpx.Request] = []
+    text_stream = _TrackedResponsesStream()
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         payload = json.loads(request.content)
-        output = '{"value":"OK"}' if "text" in payload else "plain OK"
+        if payload.get("stream") is True:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=text_stream,
+            )
         return httpx.Response(
             200,
             json={
@@ -235,7 +268,9 @@ def test_codex_text_proxy_uses_responses_api_for_structured_and_text_output(
                 "output": [
                     {
                         "type": "message",
-                        "content": [{"type": "output_text", "text": output}],
+                        "content": [
+                            {"type": "output_text", "text": '{"value":"OK"}'}
+                        ],
                     }
                 ],
                 "usage": {"input_tokens": 3, "output_tokens": 2},
@@ -264,16 +299,23 @@ def test_codex_text_proxy_uses_responses_api_for_structured_and_text_output(
         schema=_ProxyProbe,
     )
     text_deltas: list[str] = []
+    delta_arrival_states: list[bool] = []
+
+    def record_delta(delta: str) -> None:
+        text_deltas.append(delta)
+        delta_arrival_states.append(text_stream.completed_yielded)
+
     completed = client.complete_text(
         system_prompt="Answer plainly.",
         user_prompt="Say OK.",
-        on_text_delta=text_deltas.append,
+        on_text_delta=record_delta,
     )
     http_client.close()
 
     assert structured.output_parsed == _ProxyProbe(value="OK")
     assert completed.output_text == "plain OK"
-    assert text_deltas == ["plain OK"]
+    assert text_deltas == ["plain ", "OK"]
+    assert delta_arrival_states == [False, False]
     assert [request.url.path for request in requests] == [
         "/v1/responses",
         "/v1/responses",
@@ -290,6 +332,44 @@ def test_codex_text_proxy_uses_responses_api_for_structured_and_text_output(
     assert first_payload["safety_identifier"] == hashlib.sha256(
         TEST_USER_ID.encode("utf-8")
     ).hexdigest()
+    assert "stream" not in first_payload
+    second_payload = json.loads(requests[1].content)
+    assert second_payload["stream"] is True
+
+
+def test_codex_text_proxy_stops_on_stream_error(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_TEXT_PROXY_ALLOWED_USER_IDS", TEST_USER_ID)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                b"event: error\n"
+                b'data: {"type":"error","error":{"message":"gateway unavailable"}}\n\n'
+            ),
+        )
+
+    with httpx.Client(
+        base_url="http://127.0.0.1:8317/v1/",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = CodexTextProxyClient(
+            owner_user_id=TEST_USER_ID,
+            model="gpt-5.6-terra",
+            config=CodexTextProxyConfig(
+                api_key="private-proxy-key",
+                base_url="http://127.0.0.1:8317/v1",
+            ),
+            client=http_client,
+        )
+        with pytest.raises(RuntimeError, match="gateway unavailable"):
+            client.complete_text(
+                system_prompt="Answer plainly.",
+                user_prompt="Say OK.",
+                on_text_delta=lambda _delta: None,
+            )
 
 
 def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypatch) -> None:
