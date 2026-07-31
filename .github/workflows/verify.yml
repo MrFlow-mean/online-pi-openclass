@@ -51,12 +51,18 @@ jobs:
         run: |
           npm ci
           npm run setup:api
+          npx playwright install --with-deps chromium
 
       - name: Prepare local data directories
         run: mkdir -p "$(dirname "$OPENCLASS_DATABASE_PATH")" "$OPENCLASS_UPLOAD_DIR" "$OPENCLASS_EXPORT_DIR"
 
       - name: Run repository verification
         run: npm run verify
+
+      - name: Verify registration remains usable when Turnstile needs attention
+        env:
+          NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
+        run: npm --prefix apps/web run test:e2e -- auth-registration.spec.ts
 
   optional-e2e:
     name: "Optional: Playwright smoke"

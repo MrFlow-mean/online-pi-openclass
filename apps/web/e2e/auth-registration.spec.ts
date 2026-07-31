@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 test("email registration requires username, repeated password, and a verification code", async ({ page }) => {
+  test.skip(Boolean(process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY), "runs without production Turnstile");
+
   await page.route("**/api/auth/me", (route) =>
     route.fulfill({
       status: 401,
@@ -61,7 +63,9 @@ test("email registration requires username, repeated password, and a verificatio
   await page.getByLabel("用户名").fill("学习者");
   await page.getByLabel("密码", { exact: true }).fill("correct-password");
   await page.getByLabel("确认密码").fill("correct-password");
-  await page.getByRole("button", { name: "发送验证码" }).click();
+  const sendCodeButton = page.getByRole("button", { name: "发送验证码" });
+  await expect(sendCodeButton).toBeEnabled();
+  await sendCodeButton.click();
 
   await expect.poll(() => codeRequestBody).toEqual({ email: "student@example.com" });
   await expect(page.getByText("验证码已发送，请检查邮箱")).toBeVisible();
@@ -77,4 +81,57 @@ test("email registration requires username, repeated password, and a verificatio
     code: "123456",
     guest_token: null,
   });
+});
+
+test("registration code action stays usable when Turnstile needs attention", async ({ page }) => {
+  test.skip(!process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY, "requires a production-style Turnstile build");
+
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "未登录" }),
+    })
+  );
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([]),
+    })
+  );
+  await page.route("https://challenges.cloudflare.com/turnstile/v0/api.js**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/javascript",
+      body: `window.turnstile = {
+        render: (_container, options) => {
+          setTimeout(() => options["error-callback"](), 0);
+          return "turnstile-test-widget";
+        },
+        remove: () => {},
+        reset: () => {},
+      };`,
+    })
+  );
+
+  let codeRequestCount = 0;
+  await page.route("**/api/auth/register/email/code", (route) => {
+    codeRequestCount += 1;
+    return route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "验证码请求不应在验证完成前发出" }),
+    });
+  });
+
+  await page.goto("/register");
+  await expect(page.getByLabel("Cloudflare Turnstile 人机验证")).toBeVisible();
+
+  const sendCodeButton = page.getByRole("button", { name: "发送验证码" });
+  await expect(sendCodeButton).toBeEnabled();
+  await sendCodeButton.click();
+
+  await expect(page.getByText("请先完成人机验证，再发送邮箱验证码")).toBeVisible();
+  expect(codeRequestCount).toBe(0);
 });

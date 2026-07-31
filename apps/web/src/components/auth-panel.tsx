@@ -836,6 +836,15 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   }
 
   async function handleRegistrationCodeRequest() {
+    if (!turnstileSubmissionReady(turnstileToken)) {
+      setError("请先完成人机验证，再发送邮箱验证码");
+      setNotice(null);
+      document
+        .querySelector<HTMLElement>('[aria-label="Cloudflare Turnstile 人机验证"]')
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setNotice(null);
@@ -1364,7 +1373,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                       <button
                         type="button"
                         onClick={() => void handleRegistrationCodeRequest()}
-                        disabled={isAuthBusy || !turnstileSubmissionReady(turnstileToken)}
+                        disabled={isAuthBusy}
                         className="h-[50px] whitespace-nowrap rounded-lg border border-[#d2a878] bg-white px-4 text-sm font-semibold text-[#5c4c3c] shadow-sm transition hover:bg-[#f7f3eb] disabled:cursor-wait disabled:opacity-60"
                       >
                         {registrationChallengeId ? "重新发送" : "发送验证码"}
