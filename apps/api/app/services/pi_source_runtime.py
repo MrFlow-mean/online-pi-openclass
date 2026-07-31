@@ -39,6 +39,7 @@ StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 PiSourceProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PI_SOURCE_TIMEOUT_SECONDS = 15 * 60
 PI_SOURCE_VALIDATION_ATTEMPTS = 3
+PI_SOURCE_INCOMPLETE_CATALOG_ATTEMPTS = 12
 PI_SOURCE_PLATFORM_PROVIDER = "openclass-platform"
 PI_SOURCE_PLATFORM_PROXY_KEY_ENV = "OPENCLASS_PI_PLATFORM_PROXY_KEY"
 PI_SOURCE_TOOLS = (
@@ -166,6 +167,10 @@ def _retryable_source_error(message: str) -> bool:
             "status 504",
         )
     )
+
+
+def _incomplete_catalog_error(message: str) -> bool:
+    return message.startswith("The catalog is incomplete:")
 
 
 class PiSourceTextClient:
@@ -367,15 +372,16 @@ class PiSourceTextClient:
             artifact_text = ""
             parsed: StructuredModel | None = None
             attempts = 0
-            for attempts in range(1, PI_SOURCE_VALIDATION_ATTEMPTS + 1):
+            for attempts in range(1, PI_SOURCE_INCOMPLETE_CATALOG_ATTEMPTS + 1):
                 (scratch_path / "catalog.json").unlink(missing_ok=True)
                 attempt_prompt = user_prompt
                 if validation_feedback:
                     if resume_checkpoint:
                         attempt_prompt += (
-                            "\n\nThe previous provider attempt ended before submission: "
-                            f"{validation_feedback}\nCall catalog_status, resume the existing "
-                            "checkpoint without duplicating nodes, and submit the complete artifact."
+                            "\n\nThe previous attempt left a valid partial checkpoint: "
+                            f"{validation_feedback}\nCall catalog_status, preserve every saved node, "
+                            "append all missing navigation nodes without duplicates, and submit only "
+                            "when the checkpoint reaches the observed complete directory count."
                         )
                     else:
                         attempt_prompt += (
@@ -389,7 +395,12 @@ class PiSourceTextClient:
                         self._command(
                             provider=runtime_provider,
                             model=model,
-                            reasoning_effort=reasoning_effort,
+                            reasoning_effort=(
+                                "high"
+                                if resume_checkpoint
+                                and _incomplete_catalog_error(validation_feedback)
+                                else reasoning_effort
+                            ),
                             system_prompt=source_system_prompt,
                         ),
                         input=attempt_prompt,
@@ -444,6 +455,8 @@ class PiSourceTextClient:
                 if not artifact_path.is_file():
                     validation_feedback = "write_catalog did not create scratch/catalog.json"
                     resume_checkpoint = (scratch_path / "catalog-nodes.json").is_file()
+                    if attempts >= PI_SOURCE_VALIDATION_ATTEMPTS:
+                        break
                     continue
                 artifact_bytes = artifact_path.read_bytes()
                 receipt = json.dumps(
@@ -467,9 +480,17 @@ class PiSourceTextClient:
                     break
                 except (CodexAppServerError, RuntimeError, ValueError, TypeError) as exc:
                     validation_feedback = str(exc).strip() or exc.__class__.__name__
+                    if (
+                        _incomplete_catalog_error(validation_feedback)
+                        and attempts < PI_SOURCE_INCOMPLETE_CATALOG_ATTEMPTS
+                    ):
+                        resume_checkpoint = True
+                        continue
                     resume_checkpoint = False
                     (scratch_path / "catalog-header.json").unlink(missing_ok=True)
                     (scratch_path / "catalog-nodes.json").unlink(missing_ok=True)
+                    if attempts >= PI_SOURCE_VALIDATION_ATTEMPTS:
+                        break
 
             if parsed is None:
                 raise RuntimeError(

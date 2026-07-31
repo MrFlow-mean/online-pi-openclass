@@ -272,6 +272,67 @@ def test_pi_source_client_retries_a_mechanically_rejected_artifact(
     assert response.source_turn_count == 2
 
 
+def test_pi_source_client_resumes_an_incomplete_catalog_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    source = tmp_path / "source.md"
+    source.write_text("# First\n# Second\n", encoding="utf-8")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        scratch = Path(kwargs["cwd"]) / "scratch"
+        if len(calls) == 1:
+            (scratch / "catalog-header.json").write_text("null", encoding="utf-8")
+            (scratch / "catalog-nodes.json").write_text(
+                json.dumps(["First"]),
+                encoding="utf-8",
+            )
+            nodes = ["First"]
+        else:
+            assert json.loads(
+                (scratch / "catalog-nodes.json").read_text(encoding="utf-8")
+            ) == ["First"]
+            nodes = ["First", "Second"]
+        (scratch / "catalog.json").write_text(
+            json.dumps({"complete": True, "nodes": nodes}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def validate(payload: object) -> None:
+        if isinstance(payload, dict) and len(payload.get("nodes", [])) < 2:
+            raise RuntimeError(
+                "The catalog is incomplete: it contains 1 nodes, but authored navigation "
+                "exposes at least 2 authored navigation entries."
+            )
+
+    response = PiSourceTextClient(
+        "user_test",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=run,
+    ).parse_source_file(
+        source_path=source,
+        provider="deepseek",
+        model="deepseek-test",
+        reasoning_effort="low",
+        system_prompt="Build a directory.",
+        user_prompt="Inspect the source.",
+        schema=_Catalog,
+        output_artifact_path="scratch/catalog.json",
+        inspection_scope="directory_only",
+        artifact_validator=validate,
+    )
+
+    assert len(calls) == 2
+    assert "valid partial checkpoint" in str(calls[1][1]["input"])
+    assert calls[1][0][calls[1][0].index("--thinking") + 1] == "high"
+    assert response.output_parsed.nodes == ["First", "Second"]
+
+
 def test_pi_source_client_fails_closed_when_no_artifact_is_written(
     monkeypatch,
     tmp_path: Path,
