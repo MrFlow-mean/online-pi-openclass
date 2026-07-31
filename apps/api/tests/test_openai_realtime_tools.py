@@ -365,6 +365,98 @@ def test_codex_live_omits_unsupported_avas_tool_parameters(monkeypatch) -> None:
     assert "tool_choice" not in config.session_payload
 
 
+def test_codex_live_announcement_session_reads_context_without_chatbot_delegation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_VOICE", "cove")
+
+    config = openai_realtime.build_openai_realtime_session_config(
+        lesson_title="Any lesson",
+        request=RealtimeConnectRequest(
+            offer_sdp="v=0",
+            latest_assistant_message="This must not be replayed as initial history",
+            realtime_model=AIModelSelection(
+                provider="openai_codex",
+                model="gpt-live-1-codex",
+                access_method="platform_credits",
+            ),
+            voice="ember",
+            interaction_mode="announcement",
+        ),
+    )
+
+    assert config.voice == "ember"
+    assert config.session_payload["audio"] == {"output": {"voice": "ember"}}
+    assert "initial_items" not in config.session_payload
+    assert "Speak only text supplied by the client" in config.session_payload["instructions"]
+    assert "Never delegate" in config.session_payload["instructions"]
+
+
+def test_codex_live_announcement_message_goes_directly_to_speakable_context() -> None:
+    class _FakeWebSocket:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.sent: list[dict[str, object]] = []
+            self.accepted = asyncio.Event()
+
+        async def receive_json(self):
+            self.calls += 1
+            if self.calls == 1:
+                return {"type": "announcement.play", "text": "需要原样播报的回复"}
+            await asyncio.Future()
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+            if payload.get("type") == "codex_live.announcement.accepted":
+                self.accepted.set()
+
+    class _FakeUpstream:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+    async def _exercise():
+        websocket = _FakeWebSocket()
+        upstream = _FakeUpstream()
+        handler = asyncio.create_task(
+            codex_live_sideband._handle_client_messages(
+                websocket,
+                upstream,
+                codex_live_sideband.CodexLiveSession(
+                    call_id="rtc_announcement",
+                    lesson_id="lesson_announcement",
+                    user_id=TEST_USER_ID,
+                    client_session_id="client_announcement",
+                    transport_session_id="transport_announcement",
+                    selection=None,
+                    created_at=0,
+                ),
+                asyncio.Lock(),
+                asyncio.Lock(),
+                CodexLiveTaskCoordinator(),
+            )
+        )
+        try:
+            await asyncio.wait_for(websocket.accepted.wait(), timeout=1)
+        finally:
+            handler.cancel()
+            await asyncio.gather(handler, return_exceptions=True)
+        return websocket.sent, upstream.sent
+
+    client_events, upstream_events = asyncio.run(_exercise())
+
+    assert client_events[-1] == {"type": "codex_live.announcement.accepted"}
+    assert upstream_events == [
+        {
+            "type": "session.context.append",
+            "content": [{"type": "input_text", "text": "需要原样播报的回复"}],
+            "channel": "speakable",
+        }
+    ]
+
+
 def test_codex_live_sideband_wire_parser_and_utf8_chunking(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_URL", "http://127.0.0.1:8317/v1/live")
 

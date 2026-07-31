@@ -145,7 +145,7 @@ export function VoiceControlPanel({
               <p className="text-sm font-semibold text-gray-900">AI 回复自动播报</p>
             </div>
             <p className="mt-2 text-xs leading-5 text-gray-500">
-              AI 在聊天框中生成新回复后，自动使用豆包语音模型朗读。
+              AI 在聊天框中生成新回复后，自动使用 Codex Live 实时朗读。
             </p>
           </div>
           <button
@@ -173,7 +173,7 @@ export function VoiceControlPanel({
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">当前播放</p>
           <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600">
-            {model || options.model}
+            {model || options.model}{options.delivery === "realtime_audio" ? " · LIVE" : ""}
           </span>
         </div>
 
@@ -181,7 +181,7 @@ export function VoiceControlPanel({
           {currentText || "生成新的 AI 回复后，这里会显示正在播报的内容。"}
         </p>
 
-        <div className="mt-4">
+        {options.supports_seek ? <div className="mt-4">
           <input
             type="range"
             min={0}
@@ -197,7 +197,12 @@ export function VoiceControlPanel({
             <span>{formatPlaybackTime(currentTime)}</span>
             <span>{formatPlaybackTime(duration)}</span>
           </div>
-        </div>
+        </div> : (
+          <div className="mt-4 flex items-center gap-3 text-[10px] tabular-nums text-gray-400">
+            <span className={clsx("h-1.5 flex-1 rounded-full bg-gray-100", isPlaying && "animate-pulse bg-black/70")} />
+            <span>{formatPlaybackTime(currentTime)} · LIVE</span>
+          </div>
+        )}
 
         <div className="mt-3 flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
           <p className="min-w-0 flex-1 text-xs leading-5 text-gray-500" title={statusText}>
@@ -212,6 +217,16 @@ export function VoiceControlPanel({
             >
               <X className="h-3 w-3" />
               取消
+            </button>
+          ) : isPlaying && options.delivery === "realtime_audio" ? (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+              aria-label="停止播报"
+            >
+              <X className="h-3 w-3" />
+              停止
             </button>
           ) : isPlaying ? (
             <button
@@ -265,7 +280,7 @@ export function VoiceControlPanel({
           ))}
         </select>
 
-        <div className="mt-5 flex items-center justify-between gap-3">
+        {options.supports_speech_rate ? <><div className="mt-5 flex items-center justify-between gap-3">
           <label className="text-xs font-medium text-gray-700" htmlFor="speech-rate-range">
             语速
           </label>
@@ -321,6 +336,11 @@ export function VoiceControlPanel({
         <p className="mt-3 text-[11px] leading-5 text-gray-400">
           新设置会在下一次自动播报或重新播放时生效。
         </p>
+        </> : (
+          <p className="mt-4 text-[11px] leading-5 text-gray-400">
+            Codex Live 会按内容自然控制语速；新音色会在下一次播报时生效。
+          </p>
+        )}
       </section>
     </div>
   );

@@ -2588,6 +2588,8 @@ class RealtimeConnectRequest(BaseModel):
     client_session_id: str | None = None
     realtime_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
+    voice: str | None = Field(default=None, min_length=1, max_length=64)
+    interaction_mode: Literal["conversation", "announcement"] = "conversation"
 
 
 class RealtimeConnectResponse(BaseModel):

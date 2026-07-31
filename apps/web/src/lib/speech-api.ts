@@ -20,11 +20,23 @@ export type SpeechOptionsResponse = {
   minimum_speech_rate: number;
   maximum_speech_rate: number;
   default_speech_rate: number;
+  delivery: "buffered_audio" | "realtime_audio";
+  supports_speech_rate: boolean;
+  supports_seek: boolean;
 };
 
 export type SpeechSynthesisOptions = {
   voice?: string;
   speechRate?: number;
+};
+
+export type LiveSpeechConnectResponse = {
+  answer_sdp: string;
+  provider: string;
+  model: string;
+  voice: string;
+  delegation_websocket_url?: string | null;
+  client_session_id?: string | null;
 };
 
 async function speechApiError(response: Response, fallback: string) {
@@ -88,4 +100,34 @@ export async function synthesizeSpeech(
     model: response.headers.get("X-Speech-Model"),
     voice: response.headers.get("X-Speech-Voice"),
   };
+}
+
+export async function connectLiveSpeech(
+  lessonId: string,
+  payload: { offerSdp: string; clientSessionId: string; voice: string },
+  signal?: AbortSignal
+): Promise<LiveSpeechConnectResponse> {
+  const token = readEffectiveAuthToken();
+  const response = await fetch(
+    `${getApiBase()}/api/lessons/${encodeURIComponent(lessonId)}/speech/live/connect`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        offer_sdp: payload.offerSdp,
+        client_session_id: payload.clientSessionId,
+        voice: payload.voice,
+      }),
+      cache: "no-store",
+      credentials: "include",
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await speechApiError(response, "Codex Live 没有成功建立播报连接");
+  }
+  return (await response.json()) as LiveSpeechConnectResponse;
 }

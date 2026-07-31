@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import UserView
+from app.models import RealtimeConnectResponse, UserView
 from app.routers import auth as auth_router
 from app.routers import speech as speech_router
 from app.services.google_cloud_speech import (
@@ -86,6 +86,7 @@ def test_speech_options_expose_doubao_model_voices_and_rate_range(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("OPENCLASS_SPEECH_PROVIDER", "volcengine")
     monkeypatch.setenv("VOLCENGINE_TTS_RESOURCE_ID", "seed-tts-2.0")
     monkeypatch.setenv("VOLCENGINE_TTS_SPEAKER", "zh_female_vv_uranus_bigtts")
     response = api_client.get("/api/speech/options")
@@ -100,6 +101,67 @@ def test_speech_options_expose_doubao_model_voices_and_rate_range(
     assert {voice["id"] for voice in payload["voices"]} >= {
         "zh_female_vv_uranus_bigtts",
         "zh_male_dayi_saturn_bigtts",
+    }
+
+
+def test_speech_options_expose_codex_live_realtime_delivery(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_SPEECH_PROVIDER", "openai_codex")
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_ALLOWED_USER_IDS", TEST_USER.id)
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY", "proxy-key")
+
+    response = api_client.get("/api/speech/options")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "openai_codex"
+    assert payload["model"] == "gpt-live-1-codex"
+    assert payload["default_voice"] == "cove"
+    assert payload["delivery"] == "realtime_audio"
+    assert payload["supports_speech_rate"] is False
+    assert payload["supports_seek"] is False
+    assert {voice["id"] for voice in payload["voices"]} >= {"cove", "ember", "vale"}
+
+
+def test_live_speech_connect_uses_provider_neutral_endpoint(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def connect(lesson_id: str, **kwargs: object) -> RealtimeConnectResponse:
+        captured.update(lesson_id=lesson_id, **kwargs)
+        return RealtimeConnectResponse(
+            answer_sdp="v=0-answer",
+            provider="openai_codex",
+            model="gpt-live-1-codex",
+            voice="ember",
+            client_delegation_enabled=True,
+            delegation_websocket_url="/api/lessons/lesson_1/realtime/codex-sideband/rtc_1",
+        )
+
+    monkeypatch.setattr(speech_router, "connect_live_speech_session", connect)
+    response = api_client.post(
+        "/api/lessons/lesson_1/speech/live/connect",
+        json={
+            "offer_sdp": "v=0-offer",
+            "client_session_id": "speech_session_1",
+            "voice": "ember",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "gpt-live-1-codex"
+    assert captured == {
+        "lesson_id": "lesson_1",
+        "offer_sdp": "v=0-offer",
+        "client_session_id": "speech_session_1",
+        "voice": "ember",
+        "user_id": TEST_USER.id,
     }
 
 

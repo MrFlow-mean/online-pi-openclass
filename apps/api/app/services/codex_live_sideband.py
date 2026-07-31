@@ -935,6 +935,47 @@ async def _handle_client_messages(
                         "message": str(exc),
                     },
                 )
+        elif payload.get("type") == "announcement.play":
+            text = str(payload.get("text") or "").strip()
+            if not text or len(text) > 4096:
+                await _send_client_event(
+                    websocket,
+                    client_send_lock,
+                    {
+                        "type": "codex_live.announcement.error",
+                        "message": "播报内容必须为 1 到 4096 个字符",
+                    },
+                )
+                continue
+            try:
+                await _send_context(
+                    upstream,
+                    upstream_send_lock,
+                    text=text,
+                    channel="speakable",
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate announcement transport failures
+                await _send_client_event(
+                    websocket,
+                    client_send_lock,
+                    {
+                        "type": "codex_live.announcement.error",
+                        "message": str(exc).strip() or "Codex Live 播报请求失败",
+                    },
+                )
+                continue
+            ai_usage_logger.log_event(
+                "codex_live_announcement_requested",
+                lesson_id=session.lesson_id,
+                client_session_id=session.client_session_id,
+                model=OPENAI_CODEX_REALTIME_MODEL,
+                text_length=len(text),
+            )
+            await _send_client_event(
+                websocket,
+                client_send_lock,
+                {"type": "codex_live.announcement.accepted"},
+            )
         elif payload.get("type") == "input_text":
             text = str(payload.get("text") or "").strip()
             if text:

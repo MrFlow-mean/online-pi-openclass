@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import type { ChatMessage } from "@/components/course-studio/history-utils";
 import {
+  startCodexLiveSpeech,
+  type CodexLiveSpeechPlayback,
+} from "@/lib/codex-live-speech";
+import {
   getSpeechOptions,
   synthesizeSpeech,
   type SpeechOptionsResponse,
@@ -16,19 +20,22 @@ const SPEECH_VOICE_STORAGE_KEY = "openclass:studio:speech-voice";
 const SPEECH_RATE_STORAGE_KEY = "openclass:studio:speech-rate";
 
 const DEFAULT_SPEECH_OPTIONS: SpeechOptionsResponse = {
-  provider: "volcengine",
-  model: "seed-tts-2.0",
-  default_voice: "zh_female_vv_uranus_bigtts",
+  provider: "openai_codex",
+  model: "gpt-live-1-codex",
+  default_voice: "cove",
   voices: [
     {
-      id: "zh_female_vv_uranus_bigtts",
-      label: "豆包同款 Vivi 2.0",
-      description: "通用场景女声",
+      id: "cove",
+      label: "Cove",
+      description: "Codex Live 实时音色",
     },
   ],
-  minimum_speech_rate: -50,
-  maximum_speech_rate: 100,
+  minimum_speech_rate: 0,
+  maximum_speech_rate: 0,
   default_speech_rate: 0,
+  delivery: "realtime_audio",
+  supports_speech_rate: false,
+  supports_seek: false,
 };
 
 type SpeechPlaybackStatus = "idle" | "loading" | "playing" | "paused" | "error";
@@ -60,6 +67,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
+  const livePlaybackRef = useRef<CodexLiveSpeechPlayback | null>(null);
   const requestSequenceRef = useRef(0);
   const trackedLessonIdRef = useRef<string | null>(null);
   const latestSeenAssistantIdRef = useRef<string | null>(null);
@@ -87,6 +95,8 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
   );
 
   const releaseAudio = useCallback(() => {
+    livePlaybackRef.current?.stop();
+    livePlaybackRef.current = null;
     const audio = audioRef.current;
     if (audio) {
       audio.onplay = null;
@@ -134,9 +144,69 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       setCurrentTime(0);
       setDuration(0);
       setStatus("loading");
-      setStatusMessage("TTS 正在生成音频…");
+      setStatusMessage(
+        speechOptions.delivery === "realtime_audio"
+          ? "正在连接 Codex Live…"
+          : "TTS 正在生成音频…"
+      );
 
       try {
+        if (speechOptions.delivery === "realtime_audio") {
+          if (!lessonId) {
+            throw new Error("请先打开课程，再使用 Codex Live 播报");
+          }
+          const playback = await startCodexLiveSpeech({
+            lessonId,
+            text: speechText,
+            voice: selectedVoice,
+            signal: controller.signal,
+            onPlaying: (audio, model, voice) => {
+              if (requestSequenceRef.current !== requestSequence) {
+                return;
+              }
+              audioRef.current = audio;
+              setCurrentModel(model);
+              setStatus("playing");
+              setStatusMessage(`Codex Live 正在播报 · ${model} · ${voice}`);
+            },
+            onStatus: (message) => {
+              if (requestSequenceRef.current === requestSequence) {
+                setStatusMessage(message);
+              }
+            },
+            onElapsed: (seconds) => {
+              if (requestSequenceRef.current === requestSequence) {
+                setCurrentTime(seconds);
+              }
+            },
+          });
+          if (requestSequenceRef.current !== requestSequence) {
+            playback.stop();
+            return;
+          }
+          requestRef.current = null;
+          livePlaybackRef.current = playback;
+          audioRef.current = playback.audio;
+          setCurrentModel(playback.model);
+          void playback.done.then(() => {
+            if (requestSequenceRef.current !== requestSequence) {
+              return;
+            }
+            livePlaybackRef.current = null;
+            audioRef.current = null;
+            setStatus("idle");
+            setStatusMessage(autoSpeakEnabled ? "播报完成，等待下一条回复" : "播报完成");
+          }).catch((error: unknown) => {
+            if (requestSequenceRef.current !== requestSequence) {
+              return;
+            }
+            livePlaybackRef.current = null;
+            audioRef.current = null;
+            setStatus("error");
+            setStatusMessage(error instanceof Error ? error.message : "Codex Live 播报失败");
+          });
+          return;
+        }
         const response = await synthesizeSpeech(
           speechText,
           { voice: selectedVoice, speechRate },
@@ -193,7 +263,15 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
         setStatusMessage(error instanceof Error ? error.message : "语音播报失败");
       }
     },
-    [autoSpeakEnabled, releaseAudio, selectedVoice, speechOptions.model, speechRate]
+    [
+      autoSpeakEnabled,
+      lessonId,
+      releaseAudio,
+      selectedVoice,
+      speechOptions.delivery,
+      speechOptions.model,
+      speechRate,
+    ]
   );
 
   const replayCurrentSpeech = useCallback(() => {
@@ -372,7 +450,10 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     currentSpeechText,
     currentTime,
     duration,
-    canSeekSpeech: (status === "playing" || status === "paused") && duration > 0,
+    canSeekSpeech:
+      speechOptions.supports_seek &&
+      (status === "playing" || status === "paused") &&
+      duration > 0,
     canReplaySpeech: Boolean(currentSpeechText) && (status === "idle" || status === "error"),
     speakMessage,
     replayCurrentSpeech,

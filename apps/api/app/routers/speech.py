@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.models import UserView
+from app.models import RealtimeConnectResponse, UserView
 from app.routers.auth import current_user
+from app.services.openai_realtime import RealtimeServiceError
 from app.services.speech_service import (
     SpeechGenerationError,
     SpeechNotConfiguredError,
+    connect_live_speech_session,
     get_speech_options,
     synthesize_speech,
 )
@@ -37,14 +39,23 @@ class SpeechOptionsResponse(BaseModel):
     minimum_speech_rate: int
     maximum_speech_rate: int
     default_speech_rate: int
+    delivery: str
+    supports_speech_rate: bool
+    supports_seek: bool
+
+
+class LiveSpeechConnectRequest(BaseModel):
+    offer_sdp: str = Field(min_length=1)
+    client_session_id: str | None = Field(default=None, min_length=1, max_length=160)
+    voice: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 @router.get("/speech/options", response_model=SpeechOptionsResponse)
 def read_speech_options(
-    _: UserView = Depends(current_user),
+    user: UserView = Depends(current_user),
 ) -> SpeechOptionsResponse:
     try:
-        options = get_speech_options()
+        options = get_speech_options(user_id=user.id)
     except SpeechNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail="语音播报服务尚未配置") from exc
     return SpeechOptionsResponse(
@@ -55,7 +66,33 @@ def read_speech_options(
         minimum_speech_rate=options.minimum_speech_rate,
         maximum_speech_rate=options.maximum_speech_rate,
         default_speech_rate=options.default_speech_rate,
+        delivery=options.delivery,
+        supports_speech_rate=options.supports_speech_rate,
+        supports_seek=options.supports_seek,
     )
+
+
+@router.post(
+    "/lessons/{lesson_id}/speech/live/connect",
+    response_model=RealtimeConnectResponse,
+)
+def connect_live_speech(
+    lesson_id: str,
+    payload: LiveSpeechConnectRequest,
+    user: UserView = Depends(current_user),
+) -> RealtimeConnectResponse:
+    try:
+        return connect_live_speech_session(
+            lesson_id,
+            offer_sdp=payload.offer_sdp,
+            client_session_id=payload.client_session_id,
+            voice=payload.voice,
+            user_id=user.id,
+        )
+    except SpeechNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail="Codex Live 语音播报尚未配置") from exc
+    except RealtimeServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/speech")
