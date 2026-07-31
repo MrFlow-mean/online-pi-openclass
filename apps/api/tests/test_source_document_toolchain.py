@@ -92,6 +92,40 @@ def test_resolve_poppler_root_requires_an_absolute_configured_path(
         source_document_toolchain.resolve_poppler_root()
 
 
+def test_pdf_toolchain_health_reports_available_explicit_configuration(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = _write_fake_poppler(tmp_path / "poppler")
+    monkeypatch.setenv(source_document_toolchain.POPPLER_ROOT_ENV, str(root))
+
+    assert source_document_toolchain.pdf_toolchain_health() == {
+        "status": "available",
+        "configuration": "explicit",
+        "required_tools": ["pdfinfo", "pdftotext", "pdftoppm"],
+    }
+
+
+def test_pdf_toolchain_health_reports_unavailable_without_leaking_paths(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "private-runtime" / "missing-poppler"
+    monkeypatch.setenv(
+        source_document_toolchain.POPPLER_ROOT_ENV,
+        str(missing_root),
+    )
+
+    health = source_document_toolchain.pdf_toolchain_health()
+
+    assert health == {
+        "status": "unavailable",
+        "configuration": "explicit",
+        "required_tools": ["pdfinfo", "pdftotext", "pdftoppm"],
+    }
+    assert str(tmp_path) not in repr(health)
+
+
 def test_prepare_pdf_toolbox_stages_and_executes_every_required_tool(
     monkeypatch,
     tmp_path: Path,

@@ -27,6 +27,7 @@ from app.routers import (
     speech,
     workspace,
 )
+from app.services import source_document_toolchain
 from app.services.ai_model_catalog import (
     build_model_catalog_with_pricing,
     realtime_runtime_enabled,
@@ -110,6 +111,7 @@ def health() -> dict[str, object]:
         "openrouter": openrouter_provisioning_service.health(
             worker_healthy=openrouter_provisioning_worker.healthy
         ),
+        "documents": {"pdf": source_document_toolchain.pdf_toolchain_health()},
         "workflow": {"status": "provider_neutral_board"},
         "realtime": {
             "status": "enabled" if realtime_runtime_enabled() else "disabled",

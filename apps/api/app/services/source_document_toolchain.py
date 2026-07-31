@@ -26,6 +26,23 @@ class SourceDocumentToolchainError(RuntimeError):
     pass
 
 
+def pdf_toolchain_health() -> dict[str, object]:
+    configuration = (
+        "explicit" if (os.getenv(POPPLER_ROOT_ENV) or "").strip() else "path"
+    )
+    try:
+        resolve_poppler_root()
+    except SourceDocumentToolchainError:
+        status = "unavailable"
+    else:
+        status = "available"
+    return {
+        "status": status,
+        "configuration": configuration,
+        "required_tools": list(REQUIRED_PDF_TOOLS),
+    }
+
+
 def source_document_tool_path(toolbox_path: Path) -> str:
     directories = [str(toolbox_path / "bin")]
     directories.extend(

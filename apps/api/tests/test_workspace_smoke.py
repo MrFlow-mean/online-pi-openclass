@@ -706,6 +706,15 @@ def test_health_reports_provider_neutral_board_and_realtime_status(
 ) -> None:
     monkeypatch.setattr(main_module, "codex_app_server_runtime_enabled", lambda: True)
     monkeypatch.setattr(main_module, "codex_app_server_available", lambda: True)
+    monkeypatch.setattr(
+        main_module.source_document_toolchain,
+        "pdf_toolchain_health",
+        lambda: {
+            "status": "available",
+            "configuration": "explicit",
+            "required_tools": ["pdfinfo", "pdftotext", "pdftoppm"],
+        },
+    )
     monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "false")
 
     response = api_client.get("/health")
@@ -715,6 +724,13 @@ def test_health_reports_provider_neutral_board_and_realtime_status(
     assert response.json()["deepseek"]["access"] == "shared_unmetered"
     assert response.json()["realtime"] == {"status": "disabled", "provider": "openai"}
     assert response.json()["codex"] == {"enabled": True, "available": True}
+    assert response.json()["documents"] == {
+        "pdf": {
+            "status": "available",
+            "configuration": "explicit",
+            "required_tools": ["pdfinfo", "pdftotext", "pdftoppm"],
+        }
+    }
     assert "openai" not in response.json()
     assert not any(route.path.startswith("/api/realtime") for route in main_module.app.routes)
     assert any(route.path == "/api/lessons/{lesson_id}/realtime/connect" for route in main_module.app.routes)
