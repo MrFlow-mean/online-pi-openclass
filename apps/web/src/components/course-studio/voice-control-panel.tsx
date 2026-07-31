@@ -145,7 +145,7 @@ export function VoiceControlPanel({
               <p className="text-sm font-semibold text-gray-900">AI 回复自动播报</p>
             </div>
             <p className="mt-2 text-xs leading-5 text-gray-500">
-              AI 在聊天框中生成新回复后，自动使用 Codex Live 实时朗读。
+              AI 在聊天框中生成新回复后，自动使用 Codex Live 生成可拖动的语音。
             </p>
           </div>
           <button
@@ -173,7 +173,8 @@ export function VoiceControlPanel({
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">当前播放</p>
           <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600">
-            {model || options.model}{options.delivery === "realtime_audio" ? " · LIVE" : ""}
+            {model || options.model}
+            {options.delivery === "realtime_audio" ? " · LIVE" : ""}
           </span>
         </div>
 
@@ -218,7 +219,7 @@ export function VoiceControlPanel({
               <X className="h-3 w-3" />
               取消
             </button>
-          ) : isPlaying && options.delivery === "realtime_audio" ? (
+          ) : isPlaying && !options.supports_seek ? (
             <button
               type="button"
               onClick={onCancel}

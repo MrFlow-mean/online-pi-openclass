@@ -149,7 +149,7 @@ GitHub 仓库资料默认允许导入公开仓库 URL；设置 `OPENCLASS_GITHUB
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，浏览器通过 OpenAI WebRTC（网页实时通信）接收 function call（函数调用），再交给经过用户与 lesson 权限校验的 OpenClass 后端读取受限板书范围或调用同一条 Chatbot workflow，最后只把受控结果返回 Realtime；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 
-聊天回复的自动播报默认使用 `openai_codex` adapter（适配器），通过已经配置的 Codex Live WebRTC（网页实时音频连接）与 sideband（旁路控制通道）实时播放，不请求麦克风权限，也不把回复重新送进 Chatbot 工作流。`OPENCLASS_CODEX_REALTIME_VOICE` 控制默认音色；该实时传输不提供文件进度拖动或单独语速倍率。旧的 `openai`、`google_cloud` 和 `volcengine` 缓冲音频 adapter 仍可供私有部署显式选择。所有密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重新建立 Codex Live 播报。
+聊天回复的自动播报默认使用 `openai_codex` adapter（适配器），通过已经配置的 Codex Live WebRTC（网页实时音频连接）与 sideband（旁路控制通道）生成语音，不请求麦克风权限，也不把回复重新送进 Chatbot 工作流。浏览器会先缓冲远端音频，再通过标准音频播放器提供真实时长、暂停、继续和拖动进度；`OPENCLASS_CODEX_REALTIME_VOICE` 控制默认音色，Codex Live 本身仍不提供单独语速倍率。旧的 `openai`、`google_cloud` 和 `volcengine` 缓冲音频 adapter 仍可供私有部署显式选择。所有密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重新建立 Codex Live 播报。
 
 ## 数据与文档格式
 

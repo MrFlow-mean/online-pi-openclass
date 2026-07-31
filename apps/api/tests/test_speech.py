@@ -104,7 +104,7 @@ def test_speech_options_expose_doubao_model_voices_and_rate_range(
     }
 
 
-def test_speech_options_expose_codex_live_realtime_delivery(
+def test_speech_options_expose_seekable_codex_live_delivery(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -121,9 +121,9 @@ def test_speech_options_expose_codex_live_realtime_delivery(
     assert payload["provider"] == "openai_codex"
     assert payload["model"] == "gpt-live-1-codex"
     assert payload["default_voice"] == "cove"
-    assert payload["delivery"] == "realtime_audio"
+    assert payload["delivery"] == "buffered_live_audio"
     assert payload["supports_speech_rate"] is False
-    assert payload["supports_seek"] is False
+    assert payload["supports_seek"] is True
     assert {voice["id"] for voice in payload["voices"]} >= {"cove", "ember", "vale"}
 
 

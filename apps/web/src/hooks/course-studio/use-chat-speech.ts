@@ -33,9 +33,9 @@ const DEFAULT_SPEECH_OPTIONS: SpeechOptionsResponse = {
   minimum_speech_rate: 0,
   maximum_speech_rate: 0,
   default_speech_rate: 0,
-  delivery: "realtime_audio",
+  delivery: "buffered_live_audio",
   supports_speech_rate: false,
-  supports_seek: false,
+  supports_seek: true,
 };
 
 type SpeechPlaybackStatus = "idle" | "loading" | "playing" | "paused" | "error";
@@ -145,13 +145,17 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       setDuration(0);
       setStatus("loading");
       setStatusMessage(
+        speechOptions.delivery === "buffered_live_audio" ||
         speechOptions.delivery === "realtime_audio"
-          ? "正在连接 Codex Live…"
+          ? "Codex Live 正在生成可拖动音频…"
           : "TTS 正在生成音频…"
       );
 
       try {
-        if (speechOptions.delivery === "realtime_audio") {
+        if (
+          speechOptions.delivery === "buffered_live_audio" ||
+          speechOptions.delivery === "realtime_audio"
+        ) {
           if (!lessonId) {
             throw new Error("请先打开课程，再使用 Codex Live 播报");
           }
@@ -177,6 +181,11 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
             onElapsed: (seconds) => {
               if (requestSequenceRef.current === requestSequence) {
                 setCurrentTime(seconds);
+              }
+            },
+            onDuration: (seconds) => {
+              if (requestSequenceRef.current === requestSequence) {
+                setDuration(seconds);
               }
             },
           });

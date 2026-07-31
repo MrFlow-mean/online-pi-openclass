@@ -20,7 +20,7 @@ export type SpeechOptionsResponse = {
   minimum_speech_rate: number;
   maximum_speech_rate: number;
   default_speech_rate: number;
-  delivery: "buffered_audio" | "realtime_audio";
+  delivery: "buffered_audio" | "buffered_live_audio" | "realtime_audio";
   supports_speech_rate: boolean;
   supports_seek: boolean;
 };

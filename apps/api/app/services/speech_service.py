@@ -115,9 +115,9 @@ def get_speech_options(*, user_id: str | None = None) -> SpeechOptions:
             minimum_speech_rate=0,
             maximum_speech_rate=0,
             default_speech_rate=0,
-            delivery="realtime_audio",
+            delivery="buffered_live_audio",
             supports_speech_rate=False,
-            supports_seek=False,
+            supports_seek=True,
         )
     if provider_name == "google_cloud":
         from app.services.google_cloud_speech import get_google_cloud_speech_options
