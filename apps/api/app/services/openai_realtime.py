@@ -38,7 +38,7 @@ from app.services.realtime_tool_bridge import realtime_tool_schemas
 load_root_dotenv()
 
 OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
-OPENAI_CODEX_REALTIME_PROXY_URL = "http://127.0.0.1:8317/v1/live"
+OPENAI_CODEX_REALTIME_PROXY_URL = "https://open-classes.com/apikey/v1/live"
 OPENAI_CODEX_REALTIME_DEFAULT_VOICE = "cove"
 OPENAI_CODEX_REALTIME_VOICES = {
     "arbor",

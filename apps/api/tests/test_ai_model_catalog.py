@@ -10,6 +10,7 @@ from app.services.codex_text_proxy import (
     CODEX_TEXT_PROXY_MODEL_IDS,
     CodexTextProxyClient,
     CodexTextProxyConfig,
+    codex_text_proxy_config,
 )
 from pydantic import BaseModel
 
@@ -90,6 +91,10 @@ def test_platform_codex_text_models_are_catalogued_for_all_users_and_routed(
             effort.reasoning_effort
             for effort in proxy_options[3].supported_reasoning_efforts
         ] == ["minimal", "low", "medium", "high", "xhigh"]
+        assert [
+            effort.reasoning_effort
+            for effort in proxy_options[-1].supported_reasoning_efforts
+        ] == ["low", "medium", "high", "xhigh"]
         assert all(option.service_tiers == [] for option in proxy_options)
         assert catalog.defaults["text"].model == "gpt-5.5"
         assert catalog.defaults["text"].access_method == "platform_credits"
@@ -110,6 +115,12 @@ def test_platform_codex_text_models_are_catalogued_for_all_users_and_routed(
     assert adapter._selected_model_audit()["transport"] == "responses_api"
     assert adapter._selected_model_audit()["access_method"] == "platform_credits"
     assert adapter._selected_model_audit()["agent_backend"] == "platform_proxy"
+
+
+def test_platform_codex_text_defaults_to_public_https_gateway() -> None:
+    assert codex_text_proxy_config().base_url == (
+        "https://open-classes.com/apikey/v1"
+    )
 
 
 def test_platform_codex_models_inherit_codex_live_all_user_policy(

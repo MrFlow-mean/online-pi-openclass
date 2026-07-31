@@ -33,6 +33,10 @@ The backend binds only to `127.0.0.1:18080`. Install
 `nginx-locations.conf` in the existing OpenClass HTTPS server block and run
 `nginx -t` before reloading Nginx.
 
+OpenClass model clients must use the public HTTPS gateway below. The loopback
+binding is only the private Nginx-to-container hop and is not an application
+model endpoint.
+
 The production `.env` is intentionally excluded. Create it with mode `0600`
 from `.env.example`, replacing each placeholder with an independent random
 secret.
@@ -43,6 +47,7 @@ The deployment keeps OpenClass `/api/*` unchanged. Sub2API uses:
 - management API: `/apikey/api/v1/*`
 - model gateways: `/apikey/v1/*` and `/apikey/v1beta/*`
 - direct Codex gateway: `/apikey/backend-api/codex/*`
+- Codex Live gateway and sideband: `/apikey/v1/live` and `/apikey/v1/live/*`
 
 ## Connect OpenClass text models
 
@@ -51,9 +56,17 @@ Keep the generated gateway key in a restricted server file rather than in the
 repository or an inline environment variable:
 
 ```dotenv
-OPENCLASS_CODEX_TEXT_PROXY_URL=http://127.0.0.1:18080/v1
+OPENCLASS_CODEX_TEXT_PROXY_URL=https://open-classes.com/apikey/v1
 OPENCLASS_CODEX_TEXT_PROXY_API_KEY_FILE=/etc/openclass/model-proxy-api-key
 OPENCLASS_TEXT_MODEL_PROVIDERS=openai_codex
+```
+
+Codex Live uses the same public gateway namespace while retaining its
+dedicated transport behind Nginx:
+
+```dotenv
+OPENCLASS_CODEX_REALTIME_PROXY_URL=https://open-classes.com/apikey/v1/live
+OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE=/etc/openclass/model-proxy-api-key
 ```
 
 The configured Sub2API OpenAI group must contain at least one active,

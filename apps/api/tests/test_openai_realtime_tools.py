@@ -44,6 +44,17 @@ TEST_TEXT_MODEL = AIModelSelection(
 )
 
 
+def test_codex_live_defaults_to_public_https_gateway(monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLASS_CODEX_REALTIME_PROXY_URL", raising=False)
+
+    assert openai_realtime._codex_realtime_proxy_url() == (
+        "https://open-classes.com/apikey/v1/live"
+    )
+    assert codex_live_sideband.codex_live_sideband_url("rtc_test") == (
+        "wss://open-classes.com/apikey/v1/live/rtc_test"
+    )
+
+
 def _turn_snapshot_arguments(
     references: list[SelectionRef] | None = None,
 ) -> dict[str, object]:

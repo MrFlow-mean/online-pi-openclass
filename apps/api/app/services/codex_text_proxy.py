@@ -49,7 +49,13 @@ CODEX_TEXT_PROXY_LEGACY_REASONING_EFFORTS = (
     "high",
     "xhigh",
 )
-DEFAULT_CODEX_TEXT_PROXY_URL = "http://127.0.0.1:18080/v1"
+CODEX_TEXT_PROXY_SPARK_REASONING_EFFORTS = (
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+DEFAULT_CODEX_TEXT_PROXY_URL = "https://open-classes.com/apikey/v1"
 DEFAULT_CODEX_TEXT_PROXY_KEY_FILE = "/etc/openclass/model-proxy-api-key"
 
 
@@ -156,6 +162,8 @@ def codex_text_proxy_user_allowed(user_id: str) -> bool:
 def codex_text_proxy_reasoning_efforts(model: str) -> tuple[str, ...]:
     if model.startswith("gpt-5.6"):
         return CODEX_TEXT_PROXY_REASONING_EFFORTS
+    if model == "gpt-5.3-codex-spark":
+        return CODEX_TEXT_PROXY_SPARK_REASONING_EFFORTS
     return CODEX_TEXT_PROXY_LEGACY_REASONING_EFFORTS
 
 
