@@ -348,7 +348,40 @@ class FocusResolver:
                 if _selection_excerpt_matches(selection.excerpt, segment.text)
             ]
             if not matches:
-                return self._unresolved("selection_text_mismatch")
+                compound_candidates = _compound_selection_segment_candidates(
+                    segments,
+                    selection.excerpt,
+                )
+                if not compound_candidates:
+                    return self._unresolved("selection_text_mismatch")
+                if len(compound_candidates) > 1:
+                    return self._unresolved(
+                        "ambiguous_candidates",
+                        candidates=self._candidate_refs(
+                            lesson,
+                            [candidate[0] for candidate in compound_candidates],
+                            confidence=0.94,
+                        ),
+                    )
+                compound_segments = compound_candidates[0]
+                if (
+                    compound_segments[0].order_index == 0
+                    and len(compound_segments) == len(segments)
+                ):
+                    return self._unresolved("whole_board_scope_requires_confirmation")
+                return TargetResolution(
+                    status="resolved",
+                    machine_reason="resolved_by_selection",
+                    focus=self._focus_ref(
+                        lesson,
+                        compound_segments[0],
+                        confidence=0.98,
+                        reason="resolved_by_selection",
+                        excerpt_override=selection.excerpt,
+                        source_segments=compound_segments,
+                        freeze_range_hash=True,
+                    ),
+                )
 
         matches = _narrow_by_heading_path(matches, selection.heading_path)
         if len(matches) != 1:
@@ -586,6 +619,44 @@ def _selection_excerpt_matches(excerpt: str, segment_text: str) -> bool:
     if not selected or not current:
         return False
     return selected == current or selected in current
+
+
+def _compound_selection_segment_candidates(
+    segments: Sequence[BoardSegment],
+    excerpt: str,
+) -> list[list[BoardSegment]]:
+    """Resolve one browser selection that crosses adjacent document blocks."""
+
+    selected = _normalize_range_text(excerpt)
+    if not selected or len(segments) < 2:
+        return []
+
+    normalized_segments = [_normalize_range_text(segment.text) for segment in segments]
+    boundary_slack = 2 * max((len(text) for text in normalized_segments), default=0)
+    candidates: list[tuple[int, int, int, list[BoardSegment]]] = []
+    for start in range(len(segments) - 1):
+        parts: list[str] = []
+        for end in range(start, len(segments)):
+            if normalized_segments[end]:
+                parts.append(normalized_segments[end])
+            combined = " ".join(parts)
+            if end > start and selected in combined:
+                candidates.append(
+                    (
+                        len(combined) - len(selected),
+                        end - start + 1,
+                        start,
+                        list(segments[start : end + 1]),
+                    )
+                )
+            if len(combined) > len(selected) + boundary_slack:
+                break
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item[:3])
+    best_rank = candidates[0][:2]
+    return [candidate[3] for candidate in candidates if candidate[:2] == best_rank]
 
 
 def _selection_covers_whole_board(

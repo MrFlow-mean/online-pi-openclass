@@ -531,12 +531,29 @@ def _build_task_sheet(
     active_task: BoardTaskRequirementSheet | None,
     base_commit_id: str,
 ) -> BoardTaskRequirementSheet:
+    focus = resolution.focus.model_copy(deep=True) if resolution.focus is not None else None
     missing = list(dict.fromkeys(decision.missing_items))
     target_required = _decision_requires_resolved_target(decision)
     if not target_required or resolution.status == "resolved":
         missing = [item for item in missing if item != "target"]
     elif "target" not in missing:
         missing.append("target")
+    inferred_extent = decision.extent
+    if (
+        focus is not None
+        and resolution.machine_reason == "resolved_by_selection"
+        and inferred_extent == "unresolved"
+    ):
+        inferred_extent = (
+            "section"
+            if (
+                focus.order_start is not None
+                and focus.order_end is not None
+                and focus.order_end > focus.order_start
+            )
+            else "paragraph"
+        )
+        missing = [item for item in missing if item != "extent"]
     relation_continues = decision.relation_to_active in {"continue", "supplement"}
     task_id = active_task.task_id if active_task is not None and relation_continues else new_id("boardtask")
     action = None if decision.action == "unresolved" else decision.action
@@ -546,7 +563,6 @@ def _build_task_sheet(
         else "unspecified"
     )
     candidates = [_safe_focus(item) for item in resolution.candidates[:5]]
-    focus = resolution.focus.model_copy(deep=True) if resolution.focus is not None else None
     if decision.destination == "new_lesson" and focus is None:
         location_status = "content_absent"
     elif decision.extent == "whole_board" and focus is None:
@@ -566,7 +582,7 @@ def _build_task_sheet(
         requested_action=action,
         question_or_topic=decision.question_or_topic.strip(),
         special_interaction_requirements=decision.special_interaction_requirements.strip(),
-        content_extent=(None if decision.extent == "unresolved" else decision.extent),
+        content_extent=(None if inferred_extent == "unresolved" else inferred_extent),
         topic_relation=decision.topic_relation,
         document_destination=decision.destination,
         target_candidates=candidates,

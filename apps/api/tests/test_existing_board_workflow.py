@@ -326,6 +326,69 @@ def test_approved_explanation_persists_ready_then_consumed_without_document_chan
     assert FULL_BOARD_SENTINEL not in str(adapter.text_calls[0]["user_prompt"])
 
 
+def test_cross_block_selection_supplies_target_and_extent_without_clarification(
+    workflow_store,
+) -> None:
+    store, seeded = workflow_store
+    workspace = store.load_for_user(TEST_USER_ID)
+    _package, lesson = workspace_state.find_lesson_package(workspace, seeded.id)
+    lesson.board_document = build_document(
+        title=lesson.board_document.title,
+        content_text=(
+            "# Lesson\n\n## Selected exercise\n\nRead the prompt.\n\n"
+            "- First option.\n- Second option.\n\n"
+            f"## Other\n\n{FULL_BOARD_SENTINEL}"
+        ),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    lesson.history_graph.commits[0].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER_ID, workspace)
+    excerpt = "Selected exercise Read the prompt. First option. Second option."
+    adapter = RecordingAdapter(
+        _draft(
+            target_hint="",
+            location_kind="unresolved",
+            question_or_topic="Explain how to do the selected exercise",
+            extent="unresolved",
+            missing_items=["target", "extent"],
+        )
+    )
+
+    response = process_existing_board_workflow(
+        lesson.id,
+        ChatRequest(
+            message="How do I do this?",
+            selection=SelectionRef(
+                kind="board",
+                location_kind="target_range",
+                excerpt=excerpt,
+                lesson_id=lesson.id,
+                document_id=lesson.board_document.id,
+                source_commit_id=current_head_commit(lesson).id,
+            ),
+        ),
+        user_id=TEST_USER_ID,
+        adapter=adapter,
+        selected_model=_model(),
+    )
+
+    assert response.board_task_phase == "consumed"
+    assert response.needs_clarification is False
+    assert response.board_task_sheet.location_status == "resolved"
+    assert response.board_task_sheet.content_extent == "section"
+    assert response.board_task_sheet.missing_items == []
+    assert response.board_task_sheet.target_location is not None
+    assert response.board_task_sheet.target_location.excerpt == excerpt
+    assert response.chatbot_message == "model generated bounded explanation"
+    assert len(adapter.text_calls) == 1
+    assert json.loads(str(adapter.text_calls[0]["user_prompt"]))["response_mode"] == (
+        "approved_bounded_explanation"
+    )
+    assert FULL_BOARD_SENTINEL not in str(adapter.parse_calls[1]["user_prompt"])
+    assert FULL_BOARD_SENTINEL not in str(adapter.text_calls[0]["user_prompt"])
+
+
 @pytest.mark.parametrize(
     ("action", "extent", "expected_phase", "expected_mode"),
     [
@@ -1053,3 +1116,59 @@ def test_root_section_and_single_frozen_whole_board_range_require_whole_board_pa
         assert result.status == "target_not_resolved"
         assert result.machine_reason == "whole_board_scope_requires_confirmation"
         assert result.focus is None
+
+
+def test_single_browser_selection_across_adjacent_blocks_resolves_as_one_range() -> None:
+    lesson = _approved_scope_lesson(
+        "# Lesson\n\n## Replaceable patterns\n\n"
+        "Adapt these sentences to your own situation.\n\n"
+        "- First sentence.\n- Second sentence.\n- Third sentence.\n\n"
+        "## Outside\n\nOutside the selected range."
+    )
+    excerpt = (
+        "Replaceable patterns Adapt these sentences to your own situation. "
+        "First sentence. Second sentence. Third sentence."
+    )
+
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            location_kind="target_range",
+            excerpt=excerpt,
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+        ),
+    )
+
+    assert result.status == "resolved"
+    assert result.machine_reason == "resolved_by_selection"
+    assert result.focus is not None
+    assert result.focus.excerpt == excerpt
+    assert len(result.focus.source_segment_ids) == 5
+    assert result.focus.order_start == 1
+    assert result.focus.order_end == 5
+    assert "Outside the selected range" not in result.focus.excerpt
+
+
+def test_repeated_cross_block_browser_selection_stays_ambiguous() -> None:
+    lesson = _approved_scope_lesson(
+        "# Lesson\n\n## First\n\nShared lead.\n\nShared detail.\n\n"
+        "## Second\n\nShared lead.\n\nShared detail."
+    )
+    result = resolve_board_focus(
+        lesson,
+        selection=SelectionRef(
+            kind="board",
+            location_kind="target_range",
+            excerpt="Shared lead. Shared detail.",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            source_commit_id=current_head_commit(lesson).id,
+        ),
+    )
+
+    assert result.status == "target_not_resolved"
+    assert result.machine_reason == "ambiguous_candidates"
+    assert result.focus is None
