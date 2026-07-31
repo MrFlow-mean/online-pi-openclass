@@ -50,7 +50,10 @@ let catalogMutationQueue: Promise<void> = Promise.resolve();
 
 async function withCatalogMutation<T>(operation: () => Promise<T>): Promise<T> {
   const result = catalogMutationQueue.then(operation, operation);
-  catalogMutationQueue = result.then(() => undefined, () => undefined);
+  catalogMutationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
   return result;
 }
 
@@ -134,7 +137,11 @@ async function checkpointState(): Promise<{
     if (!Array.isArray(nodes) || nodes.some((node) => !node || typeof node !== "object" || Array.isArray(node))) {
       throw new Error("The OpenClass catalog node checkpoint is invalid");
     }
-    return { started: true, pdf, nodes: nodes as Array<Record<string, unknown>> };
+    return {
+      started: true,
+      pdf,
+      nodes: nodes as Array<Record<string, unknown>>,
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { started: false, pdf: null, nodes: [] };
@@ -143,10 +150,7 @@ async function checkpointState(): Promise<{
   }
 }
 
-function validateCheckpointNodes(
-  existing: Array<Record<string, unknown>>,
-  additions: Array<Record<string, unknown>>,
-): void {
+function validateCheckpointNodes(existing: Array<Record<string, unknown>>, additions: Array<Record<string, unknown>>): void {
   if (!additions.length || additions.length > 100) {
     throw new Error("catalog_append requires between 1 and 100 directory nodes");
   }
@@ -175,6 +179,25 @@ function validateCheckpointNodes(
     }
     levels.set(key, level as number);
   }
+
+  const activePath: Array<{ key: string; level: number }> = [];
+  for (const node of [...existing, ...additions]) {
+    const key = node.key as string;
+    const level = node.level as number;
+    const parentKey = node.parent_key as string | null;
+    while (activePath.length && activePath[activePath.length - 1].level >= level) {
+      activePath.pop();
+    }
+    const expectedParent = activePath.length ? activePath[activePath.length - 1].key : null;
+    if (parentKey !== expectedParent) {
+      throw new Error(
+        `Checkpoint node ${JSON.stringify(key)} breaks parent-consistent preorder: ` +
+          `expected parent ${JSON.stringify(expectedParent)}, received ${JSON.stringify(parentKey)}. ` +
+          "Append each parent immediately followed by its complete descendant subtree before the next sibling.",
+      );
+    }
+    activePath.push({ key, level });
+  }
 }
 
 export default function openClassPiSourceTools(pi: ExtensionAPI) {
@@ -186,19 +209,23 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     async execute() {
       await verifiedSourcePath();
       const sourceStat = await stat(sourcePath);
-      const suffixMatch = basename(sourcePath).toLowerCase().match(/\.[^.]+$/);
+      const suffixMatch = basename(sourcePath)
+        .toLowerCase()
+        .match(/\.[^.]+$/);
       const suffix = suffixMatch?.[0] ?? "";
       let pdfInfo = "";
       if (suffix === ".pdf") {
         pdfInfo = boundedText((await runTool(toolPath("pdfinfo"), [sourcePath])).stdout, 16_000);
       }
-      return textResult(JSON.stringify({
-        file_name: basename(sourcePath),
-        suffix,
-        byte_count: sourceStat.size,
-        sha256: await sourceSha256(),
-        pdf_info: pdfInfo,
-      }));
+      return textResult(
+        JSON.stringify({
+          file_name: basename(sourcePath),
+          suffix,
+          byte_count: sourceStat.size,
+          sha256: await sourceSha256(),
+          pdf_info: pdfInfo,
+        }),
+      );
     },
   });
 
@@ -216,10 +243,20 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         throw new Error(`PDF inspection must cover between 1 and ${MAX_PDF_PAGE_SPAN} pages`);
       }
       const { stdout } = await runTool(toolPath("pdftotext"), [
-        "-f", String(params.first_page), "-l", String(params.last_page),
-        "-layout", "-enc", "UTF-8", sourcePath, "-",
+        "-f",
+        String(params.first_page),
+        "-l",
+        String(params.last_page),
+        "-layout",
+        "-enc",
+        "UTF-8",
+        sourcePath,
+        "-",
       ]);
-      return textResult(boundedText(stdout), { first_page: params.first_page, last_page: params.last_page });
+      return textResult(boundedText(stdout), {
+        first_page: params.first_page,
+        last_page: params.last_page,
+      });
     },
   });
 
@@ -233,18 +270,26 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
       const prefix = join(scratchPath, `page-${params.page}-${randomUUID()}`);
       const imagePath = `${prefix}.png`;
       try {
-        await runTool(toolPath("pdftoppm"), [
-          "-f", String(params.page), "-l", String(params.page), "-singlefile",
-          "-scale-to", "1800", "-png", sourcePath, prefix,
-        ], 16 * 1024 * 1024);
+        await runTool(
+          toolPath("pdftoppm"),
+          ["-f", String(params.page), "-l", String(params.page), "-singlefile", "-scale-to", "1800", "-png", sourcePath, prefix],
+          16 * 1024 * 1024,
+        );
         const image = await readFile(imagePath);
         if (!image.length || image.length > 12 * 1024 * 1024) {
           throw new Error("Rendered PDF page is empty or exceeds the OpenClass image limit");
         }
         return {
           content: [
-            { type: "text" as const, text: `Rendered physical PDF page ${params.page}.` },
-            { type: "image" as const, data: image.toString("base64"), mimeType: "image/png" },
+            {
+              type: "text" as const,
+              text: `Rendered physical PDF page ${params.page}.`,
+            },
+            {
+              type: "image" as const,
+              data: image.toString("base64"),
+              mimeType: "image/png",
+            },
           ],
           details: { page: params.page },
         };
@@ -261,7 +306,9 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute() {
       const entries = [...(await loadArchiveEntries())];
-      return textResult(boundedText(entries.join("\n")), { entry_count: entries.length });
+      return textResult(boundedText(entries.join("\n")), {
+        entry_count: entries.length,
+      });
     },
   });
 
@@ -269,12 +316,16 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     name: "archive_read",
     label: "Read one source archive entry",
     description: "Read one exact archive entry, bounded for safe navigation inspection.",
-    parameters: Type.Object({ entry: Type.String({ minLength: 1, maxLength: 2_048 }) }),
+    parameters: Type.Object({
+      entry: Type.String({ minLength: 1, maxLength: 2_048 }),
+    }),
     async execute(_id, params) {
       const entries = await loadArchiveEntries();
       if (!entries.has(params.entry)) throw new Error("The requested archive entry does not exist");
       const { stdout } = await runTool("/usr/bin/unzip", ["-p", sourcePath, params.entry], MAX_ARCHIVE_ENTRY_BYTES * 4);
-      return textResult(boundedText(stdout, MAX_ARCHIVE_ENTRY_BYTES), { entry: params.entry });
+      return textResult(boundedText(stdout, MAX_ARCHIVE_ENTRY_BYTES), {
+        entry: params.entry,
+      });
     },
   });
 
@@ -293,7 +344,10 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
       }
       const lines: string[] = [];
       let lineNumber = 0;
-      const reader = createInterface({ input: createReadStream(sourcePath, { encoding: "utf8" }), crlfDelay: Infinity });
+      const reader = createInterface({
+        input: createReadStream(sourcePath, { encoding: "utf8" }),
+        crlfDelay: Infinity,
+      });
       for await (const line of reader) {
         lineNumber += 1;
         if (lineNumber >= params.start_line) lines.push(line);
@@ -313,12 +367,14 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute() {
       const state = await checkpointState();
-      return textResult(JSON.stringify({
-        started: state.started,
-        node_count: state.nodes.length,
-        last_keys: state.nodes.slice(-8).map((node) => node.key),
-        pdf: state.pdf,
-      }));
+      return textResult(
+        JSON.stringify({
+          started: state.started,
+          node_count: state.nodes.length,
+          last_keys: state.nodes.slice(-8).map((node) => node.key),
+          pdf: state.pdf,
+        }),
+      );
     },
   });
 
@@ -326,7 +382,9 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     name: "catalog_start",
     label: "Start catalog checkpoint",
     description: "Start a resumable catalog. Pass the validated PDF task object, or null for a non-PDF source.",
-    parameters: Type.Object({ pdf_json: Type.String({ minLength: 4, maxLength: 16_000 }) }),
+    parameters: Type.Object({
+      pdf_json: Type.String({ minLength: 4, maxLength: 16_000 }),
+    }),
     async execute(_id, params) {
       return withCatalogMutation(async () => {
         const state = await checkpointState();
@@ -347,8 +405,10 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "catalog_append",
     label: "Append catalog checkpoint nodes",
-    description: "Append 1-100 complete directory node objects to the resumable catalog in parent-first order.",
-    parameters: Type.Object({ nodes_json: Type.String({ minLength: 4, maxLength: 4 * 1024 * 1024 }) }),
+    description: "Append 1-100 complete directory nodes in parent-consistent preorder: each parent, then its entire descendant subtree, then its next sibling.",
+    parameters: Type.Object({
+      nodes_json: Type.String({ minLength: 4, maxLength: 4 * 1024 * 1024 }),
+    }),
     async execute(_id, params) {
       return withCatalogMutation(async () => {
         const state = await checkpointState();
@@ -361,11 +421,13 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         validateCheckpointNodes(state.nodes, typedAdditions);
         const nodes = [...state.nodes, ...typedAdditions];
         await atomicJsonWrite(catalogNodesPath, nodes);
-        return textResult(JSON.stringify({
-          appended: typedAdditions.length,
-          node_count: nodes.length,
-          last_key: nodes.at(-1)?.key ?? null,
-        }));
+        return textResult(
+          JSON.stringify({
+            appended: typedAdditions.length,
+            node_count: nodes.length,
+            last_key: nodes.at(-1)?.key ?? null,
+          }),
+        );
       });
     },
   });
@@ -381,9 +443,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         if (!state.started || !state.nodes.length) {
           throw new Error("A non-empty catalog checkpoint is required before final submission");
         }
-        const artifact = inspectionScope === "directory_only"
-          ? { complete: true, pdf: state.pdf, nodes: state.nodes }
-          : { complete: true, nodes: state.nodes };
+        const artifact = inspectionScope === "directory_only" ? { complete: true, pdf: state.pdf, nodes: state.nodes } : { complete: true, nodes: state.nodes };
         const bytes = await atomicJsonWrite(catalogPath, artifact);
         const receipt = {
           artifact_path: "scratch/catalog.json",

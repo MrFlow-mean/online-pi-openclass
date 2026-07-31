@@ -153,6 +153,8 @@ def _retryable_source_error(message: str) -> bool:
             "websocket",
             "connection reset",
             "connection closed",
+            "stream_read_error",
+            "stream read error",
             "temporarily unavailable",
             "timed out",
             "timeout",
@@ -309,7 +311,9 @@ class PiSourceTextClient:
             "is no checkpoint, call catalog_start with the validated PDF coordinate task only for the "
             "directory-only contract, otherwise pass null. Save nodes progressively with "
             "catalog_append in parent-first "
-            "batches of at most 100; append each directory page before moving to the next so work "
+            "preorder batches of at most 100. After a parent, append its complete descendant "
+            "subtree before any later sibling; the checkpoint rejects a child appended after its "
+            "parent branch has closed. Append each directory page before moving to the next so work "
             "survives a provider disconnect. Never restart or duplicate a non-empty checkpoint. When "
             "all nodes are saved, call write_catalog. After write_catalog succeeds, return only its "
             f"receipt. {scope_instructions}\n\n"

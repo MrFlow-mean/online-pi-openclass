@@ -338,9 +338,11 @@ def test_pi_source_client_accepts_an_atomically_written_artifact_at_timeout(
     assert response.output_parsed.nodes == ["One"]
 
 
+@pytest.mark.parametrize("provider_error", ["WebSocket error", "stream_read_error"])
 def test_pi_source_client_retries_a_transient_provider_disconnect(
     monkeypatch,
     tmp_path: Path,
+    provider_error: str,
 ) -> None:
     monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
     source = tmp_path / "source.txt"
@@ -353,7 +355,7 @@ def test_pi_source_client_retries_a_transient_provider_disconnect(
             return subprocess.CompletedProcess(
                 command,
                 1,
-                _error_stdout("WebSocket error"),
+                _error_stdout(provider_error),
                 "",
             )
         scratch = Path(kwargs["cwd"]) / "scratch"

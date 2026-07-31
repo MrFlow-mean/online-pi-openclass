@@ -150,6 +150,13 @@ class SourceCodexCatalogResult:
     audit_metadata: dict[str, object]
 
 
+@dataclass(frozen=True)
+class SourceCatalogCompletenessWitness:
+    source: str = "none"
+    expected_node_count: int = 0
+    sample_titles: tuple[str, ...] = ()
+
+
 class SourceCatalogTextClient(Protocol):
     def parse_source_file(self, **kwargs: Any) -> Any: ...
 
@@ -295,13 +302,18 @@ def generate_codex_direct_catalog(
         if suffix == ".pdf"
         else None
     )
+    completeness_witness = _catalog_completeness_witness(source_path)
     selected_client_factory = client_factory or PiSourceTextClient
     response = selected_client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         provider=selection.provider,
         model=selection.model,
         system_prompt=_catalog_system_prompt(),
-        user_prompt=_catalog_user_prompt(suffix=suffix, mime_type=record.mime_type),
+        user_prompt=_catalog_user_prompt(
+            suffix=suffix,
+            mime_type=record.mime_type,
+            completeness_witness=completeness_witness,
+        ),
         schema=CodexDirectCatalog,
         on_activity=on_activity,
         access_method=selection.access_method,
@@ -317,6 +329,7 @@ def generate_codex_direct_catalog(
         artifact_validator=lambda payload: _validate_catalog_payload_for_source(
             payload,
             source_path=source_path,
+            completeness_witness=completeness_witness,
         ),
         inspection_scope="source",
     )
@@ -385,6 +398,10 @@ def generate_codex_direct_catalog(
             "codex_raw_output": raw_output,
             "codex_raw_output_sha256": raw_output_sha256,
             "body_text_extracted_by_host": False,
+            "catalog_completeness_witness_source": completeness_witness.source,
+            "catalog_completeness_witness_node_count": (
+                completeness_witness.expected_node_count
+            ),
             "pdf_catalog_visual_evidence_count": (
                 len(visual_evidence.image_inputs)
                 if visual_evidence is not None
@@ -485,7 +502,10 @@ def _validate_catalog(nodes: Sequence[CodexDirectCatalogNode]) -> None:
         expected_parent = active_path[-1] if active_path else None
         if (expected_parent.key if expected_parent else None) != node.parent_key:
             raise SourceCodexCatalogError(
-                "Directory nodes must use parent-consistent preorder."
+                f"Directory node {node.key!r} must use parent-consistent preorder: "
+                f"expected parent {(expected_parent.key if expected_parent else None)!r}, "
+                f"received {node.parent_key!r}. Keep every parent's complete descendant "
+                "subtree contiguous before the next sibling."
             )
 
         parent_component_count = path_component_counts.get(node.parent_key or "", 0)
@@ -611,7 +631,12 @@ def _validate_raw_catalog_shape(value: object) -> None:
             )
 
 
-def _validate_catalog_payload_for_source(value: object, *, source_path: Path) -> None:
+def _validate_catalog_payload_for_source(
+    value: object,
+    *,
+    source_path: Path,
+    completeness_witness: SourceCatalogCompletenessWitness | None = None,
+) -> None:
     try:
         _validate_raw_catalog_shape(value)
         catalog = CodexDirectCatalog.model_validate(value)
@@ -620,6 +645,17 @@ def _validate_catalog_payload_for_source(value: object, *, source_path: Path) ->
             "The submitted catalog does not match the required directory and range schema."
         ) from exc
     _validate_catalog(catalog.nodes)
+    witness = completeness_witness or _catalog_completeness_witness(source_path)
+    if (
+        witness.expected_node_count >= 2
+        and len(catalog.nodes) < witness.expected_node_count
+    ):
+        raise SourceCodexCatalogError(
+            "The catalog is incomplete: it contains "
+            f"{len(catalog.nodes)} nodes, but {witness.source} exposes at least "
+            f"{witness.expected_node_count} authored navigation entries. Continue the Pi "
+            "investigation and submit every authored directory node."
+        )
     suffix = source_path.suffix.lower()
     verified_nodes = [node for node in catalog.nodes if node.mapping_status == "verified"]
     if suffix == ".pdf":
@@ -1233,6 +1269,18 @@ clean, merge, or expand headings. key is unique within this file; parent_key
 refers only to an earlier node; roots have level 1 and children are exactly one
 level deeper than their parent. number and source_locator may be empty, but
 title and mapping_reason may not be empty. Never expose an absolute path.
+Parent-first alone is insufficient: after writing a parent, write that parent's
+entire descendant subtree before writing its next sibling. Never append a child
+after a sibling or later root has already closed the parent's branch.
+
+Completeness is literal. Include every genuine authored navigation entry at every
+level, including front matter, parts, chapters, sections, appendices, references,
+and index entries when they are present in the authored navigation. Never replace
+a multi-node directory with the book title, one root node, one broad range, or a
+small sample. When native navigation is available, exhaust it from first entry to
+last entry and reconcile its observed entry count with the saved checkpoint before
+calling write_catalog. When native navigation is absent, locate and inspect the
+complete printed table of contents or recurring heading structure instead.
 
 Use the available local document commands and visual inspection as an autonomous
 tool loop. Inspect metadata and native navigation first, then extract bounded
@@ -1284,14 +1332,88 @@ artifact instead of terminating.
 """.strip()
 
 
-def _catalog_user_prompt(*, suffix: str, mime_type: str) -> str:
+def _catalog_user_prompt(
+    *,
+    suffix: str,
+    mime_type: str,
+    completeness_witness: SourceCatalogCompletenessWitness | None = None,
+) -> str:
+    witness = completeness_witness or SourceCatalogCompletenessWitness()
+    witness_instruction = ""
+    if witness.expected_node_count >= 2:
+        samples = " | ".join(witness.sample_titles)
+        witness_instruction = (
+            f" A host-side mechanical preflight observed {witness.expected_node_count} authored "
+            f"navigation entries in {witness.source}. Treat that count only as a completeness "
+            "lower bound: inspect and parse the navigation yourself, preserve every genuine node, "
+            "and do not submit fewer nodes. Representative labels from the beginning, middle, and "
+            f"end are: {samples}."
+        )
     return (
         "Investigate the staged source file and write its complete directory, authoritative "
         "body ranges, per-node evidence, and exact unresolved reasons to the fixed catalog "
         "artifact using the exact schema. Use the local document toolbox autonomously and "
-        "continue checking evidence when the first mapping hypothesis is uncertain. "
+        "continue checking evidence when the first mapping hypothesis is uncertain. A book title "
+        "or whole-document range is not a complete directory when the source contains authored "
+        "navigation, a printed table of contents, or repeated section headings. Before submission, "
+        "compare the saved node count with the navigation you actually inspected and verify samples "
+        "from its beginning, middle, and end."
+        + witness_instruction
+        + " "
         f"Stored suffix: {suffix}. Declared MIME type: {mime_type or 'unknown'}."
     )
+
+
+def _catalog_completeness_witness(source_path: Path) -> SourceCatalogCompletenessWitness:
+    suffix = source_path.suffix.lower()
+    titles: list[str] = []
+    source = "none"
+    try:
+        if suffix == ".epub":
+            # This preflight does not publish or transform the catalog. Pi remains
+            # the sole semantic owner; the host only supplies an authored-node
+            # lower bound to its mechanical validator.
+            from app.services.source_directory_extractor import _epub_nav_entries
+
+            with SafeSourceArchive(source_path) as archive:
+                entries = _epub_nav_entries(archive, archive.namelist())
+            titles = [entry[2] for entry in entries]
+            source = "EPUB native navigation"
+        elif suffix == ".pdf":
+            from pypdf import PdfReader
+
+            titles = _pdf_outline_titles(PdfReader(str(source_path)).outline)
+            source = "PDF native outline"
+    except Exception:
+        return SourceCatalogCompletenessWitness()
+    if len(titles) < 2:
+        return SourceCatalogCompletenessWitness()
+    sample_indexes = sorted(
+        {
+            0,
+            1,
+            len(titles) // 2,
+            max(0, len(titles) - 2),
+            len(titles) - 1,
+        }
+    )
+    return SourceCatalogCompletenessWitness(
+        source=source,
+        expected_node_count=len(titles),
+        sample_titles=tuple(titles[index] for index in sample_indexes),
+    )
+
+
+def _pdf_outline_titles(items: Sequence[object]) -> list[str]:
+    titles: list[str] = []
+    for item in items:
+        if isinstance(item, list):
+            titles.extend(_pdf_outline_titles(item))
+            continue
+        title = str(getattr(item, "title", "") or "").strip()
+        if title:
+            titles.append(title)
+    return titles
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -907,6 +907,47 @@ def test_source_codex_rejects_empty_complete_catalog(tmp_path: Path) -> None:
         _generate(tmp_path, _catalog())
 
 
+def test_source_codex_rejects_catalog_shorter_than_native_pdf_outline(
+    tmp_path: Path,
+) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(width=500, height=700)
+    writer.add_outline_item("Chapter One", 0)
+    writer.add_outline_item("Chapter Two", 1)
+    writer.add_outline_item("Appendix", 3)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    client = FakeSourceCodexClient(
+        _catalog(
+            _node(
+                "whole-book",
+                title="Whole book",
+                source_range=_pdf_range(1, 4),
+                evidence=_pdf_evidence(1),
+            )
+        ),
+        source_sha256=content_hash,
+    )
+
+    with pytest.raises(SourceCodexCatalogError, match="contains 1 nodes.*at least 3"):
+        generate_codex_direct_catalog(
+            record=_record(path),
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: client,
+        )
+
+    prompt = str(client.calls[0]["user_prompt"])
+    assert "3 authored navigation entries" in prompt
+    assert "beginning, middle, and end" in prompt
+
+
 def test_stored_source_codex_catalog_is_revalidated_before_rematerialization(
     tmp_path: Path,
 ) -> None:
