@@ -23,11 +23,32 @@ def _no_personal_api_credentials(monkeypatch) -> None:
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_API_KEY_FILE", raising=False)
     monkeypatch.delenv("OPENCLASS_CODEX_TEXT_PROXY_URL", raising=False)
+    monkeypatch.delenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE", raising=False)
     monkeypatch.setattr(
         ai_model_catalog,
         "pi_personal_api_configured",
         lambda **_kwargs: False,
     )
+
+
+def test_codex_realtime_proxy_requires_a_readable_key_file(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    key_file = tmp_path / "realtime-api-key"
+    key_file.write_text("configured\n")
+    monkeypatch.setenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE", str(key_file))
+
+    assert ai_model_catalog.codex_realtime_proxy_configured() is True
+
+    monkeypatch.setattr(
+        ai_model_catalog.Path,
+        "is_file",
+        lambda _self: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    assert ai_model_catalog.codex_realtime_proxy_configured() is False
 
 
 def test_platform_codex_text_models_are_catalogued_for_all_users_and_routed(

@@ -279,11 +279,21 @@ def _configured_secret(name: str) -> bool:
     )
 
 
+def _configured_secret_file(name: str) -> bool:
+    key_file = (os.getenv(name) or "").strip()
+    if not key_file:
+        return False
+    try:
+        path = Path(key_file)
+        return path.is_file() and os.access(path, os.R_OK)
+    except OSError:
+        return False
+
+
 def codex_realtime_proxy_configured() -> bool:
     if _configured_secret("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY"):
         return True
-    key_file = (os.getenv("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE") or "").strip()
-    return bool(key_file and Path(key_file).is_file())
+    return _configured_secret_file("OPENCLASS_CODEX_REALTIME_PROXY_API_KEY_FILE")
 
 
 def _pi_text_models() -> tuple[dict[str, Any], ...]:
