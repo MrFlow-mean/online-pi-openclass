@@ -40,7 +40,6 @@ import type {
   AIModelOption,
   AIModelSelection,
   BoardDecision,
-  BoardFocusRef,
   BoardTaskRequirementSheet,
   ChatAttachmentRef,
   ChatInteractionMode,
@@ -146,7 +145,6 @@ function CurrentNeedCard({
   currentNeedPending,
   isChatBusy,
   lesson,
-  onSelectBoardCandidate,
   onSubmitChat,
   targetCommitId,
 }: {
@@ -157,7 +155,6 @@ function CurrentNeedCard({
   currentNeedPending: boolean;
   isChatBusy: boolean;
   lesson: Lesson;
-  onSelectBoardCandidate: (task: BoardTaskRequirementSheet, candidate: BoardFocusRef) => void;
   onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
   targetCommitId: string | null;
 }) {
@@ -251,23 +248,6 @@ function CurrentNeedCard({
             <p>互动要求：{activeBoardTask.special_interaction_requirements}</p>
           ) : null}
         </div>
-        {activeBoardTask.target_candidates.length ? (
-          <div className="mt-3 grid gap-2">
-            <p className="text-xs font-semibold text-sky-900">请选择要处理的位置：</p>
-            {activeBoardTask.target_candidates.map((candidate) => (
-              <button
-                key={candidate.match_id ?? candidate.segment_id ?? candidate.excerpt}
-                type="button"
-                disabled={isChatBusy}
-                onClick={() => onSelectBoardCandidate(activeBoardTask, candidate)}
-                className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-left text-xs leading-5 text-sky-950 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <span className="font-semibold">{candidate.display_label || candidate.heading_path.at(-1) || "候选位置"}</span>
-                {candidate.excerpt ? <span className="mt-1 block line-clamp-2 text-sky-800">{candidate.excerpt}</span> : null}
-              </button>
-            ))}
-          </div>
-        ) : null}
         {activeBoardTask.confirmation_status === "awaiting" ? (
           <div className="mt-3 rounded-lg border border-sky-200 bg-white p-3">
             <p className="text-xs leading-6 text-sky-900">该板书任务需要你的明确确认。</p>
@@ -597,24 +577,6 @@ export function CourseStudioChatSidebar({
             currentNeedPending={!isPreviewMode && currentNeedPending}
             isChatBusy={isChatBusy}
             lesson={activeLesson}
-            onSelectBoardCandidate={(task, candidate) =>
-              onApplySelection(
-                {
-                  kind: "board",
-                  location_kind: task.location_kind,
-                  lesson_id: candidate.lesson_id,
-                  source_commit_id: task.base_commit_id || null,
-                  document_id: candidate.document_id,
-                  segment_id: candidate.segment_id,
-                  heading_path: candidate.heading_path,
-                  excerpt: candidate.excerpt,
-                  before_text: "",
-                  after_text: "",
-                  text_hash: candidate.text_hash,
-                },
-                null
-              )
-            }
             onSubmitChat={onSubmitChat}
             targetCommitId={targetCommitId}
           />
