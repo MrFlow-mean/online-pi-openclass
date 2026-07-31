@@ -195,6 +195,45 @@ def test_edit_and_confirmed_write_bind_once_then_execute_atomically(monkeypatch)
     assert document_to_markdown(document) == "# Section\n\nOld paragraph.\n\nClosing."
 
 
+def test_confirmed_section_end_write_stays_inside_the_resolved_section() -> None:
+    document = _document(
+        "# Root\n\n## Target\n\nPrompt.\n\n## Outside\n\nKeep outside."
+    )
+    focus = _section_focus(document, "Target")
+    draft = _draft(
+        document,
+        [
+            _operation(
+                "write_section_answer",
+                "write",
+                focus,
+                position="parent_end",
+                content="Agent-generated answer.",
+            )
+        ],
+    )
+
+    result = bind_and_execute_board_mutation(
+        draft=draft,
+        document=document,
+        current_commit_id="commit_current",
+        resolved_focus=focus,
+        confirmed_write_anchors=[
+            _confirmed_anchor(
+                "write_section_answer",
+                focus,
+                position="parent_end",
+            )
+        ],
+    )
+
+    assert result.status == "applied"
+    assert document_to_markdown(result.document) == (
+        "# Root\n\n## Target\n\nPrompt.\n\nAgent-generated answer."
+        "\n\n## Outside\n\nKeep outside."
+    )
+
+
 def test_duplicate_text_binding_changes_only_the_explicit_segment() -> None:
     document = _document("# Section\n\nRepeated.\n\nRepeated.")
     second_focus = _focus(document, "Repeated.", occurrence=1)

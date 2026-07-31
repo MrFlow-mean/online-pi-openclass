@@ -36,6 +36,18 @@ def _focus() -> BoardFocusRef:
     )
 
 
+def _heading_focus() -> BoardFocusRef:
+    return _focus().model_copy(
+        update={
+            "segment_id": "segment_heading",
+            "kind": "heading",
+            "excerpt": "Parent section",
+            "text_hash": "heading_text_hash",
+            "excerpt_hash": "heading_excerpt_hash",
+        }
+    )
+
+
 def _task(
     *,
     action: str = "edit",
@@ -44,12 +56,13 @@ def _task(
     location_status: str = "resolved",
     location_kind: str = "target_range",
     confirmation_status: str = "none",
+    focus: BoardFocusRef | None = None,
 ) -> BoardTaskRequirementSheet:
-    focus = _focus()
+    resolved_focus = focus or _focus()
     return BoardTaskRequirementSheet(
         location_kind=location_kind,
         target_hint="the already resolved bounded target",
-        target_location=focus if location_status == "resolved" else None,
+        target_location=resolved_focus if location_status == "resolved" else None,
         location_status=location_status,
         requested_action=action,
         question_or_topic="revise the target and add supporting content",
@@ -153,6 +166,76 @@ def test_edit_and_write_order_is_preserved_without_full_board_context() -> None:
     assert "board_document" not in prompt
     assert "conversation" not in prompt
     assert "source_body" not in prompt
+
+
+@pytest.mark.parametrize("position", ["parent_start", "parent_end"])
+def test_resolved_heading_authorizes_agent_selected_section_boundary_write(
+    position: str,
+) -> None:
+    focus = _heading_focus()
+    adapter = RecordingAdapter(
+        _draft(
+            [
+                {
+                    "operation_id": "write_section_content",
+                    "action": "write",
+                    "binding": {"kind": "insertion_anchor", "position": position},
+                    "content_markdown": "Agent-selected bounded content.",
+                }
+            ]
+        )
+    )
+
+    result = plan_existing_board_mutation(
+        adapter=adapter,
+        board_task=_task(action="write", focus=focus),
+        resolved_focus=focus,
+        current_commit_id="commit_current",
+        current_document_hash="document_hash_current",
+        parent_heading_path=["Parent section"],
+    )
+
+    binding = result.plan.operations[0].binding
+    assert binding.position == position
+    assert binding.segment_id == "segment_heading"
+    payload = json.loads(str(adapter.calls[0]["user_prompt"]))
+    assert payload["authorized_write_positions"] == [
+        "before",
+        "after",
+        "parent_start",
+        "parent_end",
+    ]
+
+
+def test_resolved_paragraph_does_not_authorize_parent_boundary_write() -> None:
+    adapter = RecordingAdapter(
+        _draft(
+            [
+                {
+                    "operation_id": "write_outside_paragraph_capability",
+                    "action": "write",
+                    "binding": {
+                        "kind": "insertion_anchor",
+                        "position": "parent_end",
+                    },
+                    "content_markdown": "Unbounded content.",
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(MutationPlannerError, match="authorized insertion anchor"):
+        plan_existing_board_mutation(
+            adapter=adapter,
+            board_task=_task(action="write"),
+            resolved_focus=_focus(),
+            current_commit_id="commit_current",
+            current_document_hash="document_hash_current",
+            parent_heading_path=["Parent section"],
+        )
+
+    payload = json.loads(str(adapter.calls[0]["user_prompt"]))
+    assert payload["authorized_write_positions"] == ["before", "after"]
 
 
 @pytest.mark.parametrize(

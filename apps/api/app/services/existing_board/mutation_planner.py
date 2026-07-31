@@ -52,8 +52,10 @@ You are the BoardMutation Planner role. Decompose the complete, already-authoriz
 an ordered list of edit, write, and delete draft operations. Preserve the user's requested order;
 one request may require multiple operations such as an edit followed by a write. Every edit or
 delete must use target_range with position replace. Every write must use insertion_anchor and a
-position permitted by the supplied target or confirmed insertion location. Delete content must be
-empty; edit and write content must be non-empty Markdown.
+position from authorized_write_positions. That list is the complete write capability granted by the
+backend for this task; choose the position that best satisfies the request without asking the user
+to restate an already-resolved location. Delete content must be empty; edit and write content must
+be non-empty Markdown.
 
 Use only the supplied bounded task fields, resolved target excerpt or confirmed content-absent
 insertion identity, current version identity, and controlled parent heading path. You cannot read or
@@ -206,6 +208,10 @@ def plan_existing_board_mutation(
         content_absent_insertion=content_absent_insertion,
         parent_heading_path=safe_parent_path,
     )
+    authorized_write_positions = _authorized_write_positions(
+        safe_focus=safe_focus,
+        safe_insertion=safe_insertion,
+    )
 
     payload = {
         "board_task_requirement_sheet": safe_task.model_dump(mode="json"),
@@ -220,6 +226,7 @@ def plan_existing_board_mutation(
         "current_commit_id": current_commit_id,
         "current_document_hash": current_document_hash,
         "controlled_parent_heading_path": safe_parent_path,
+        "authorized_write_positions": authorized_write_positions,
     }
     response = adapter.parse_structured(
         system_prompt=MUTATION_PLANNER_INSTRUCTIONS,
@@ -238,6 +245,7 @@ def plan_existing_board_mutation(
         model_draft=model_draft,
         safe_focus=safe_focus,
         safe_insertion=safe_insertion,
+        authorized_write_positions=authorized_write_positions,
         parent_heading_path=safe_parent_path,
         current_commit_id=current_commit_id,
         current_document_hash=current_document_hash,
@@ -369,12 +377,28 @@ def _safe_resolved_focus(
     )
 
 
+def _authorized_write_positions(
+    *,
+    safe_focus: _SafeResolvedTarget | None,
+    safe_insertion: ConfirmedContentAbsentInsertion | None,
+) -> list[MutationBindingPosition]:
+    if safe_insertion is not None:
+        return [safe_insertion.position]
+    if safe_focus is None:
+        return []
+    positions: list[MutationBindingPosition] = ["before", "after"]
+    if safe_focus.kind == "heading":
+        positions.extend(["parent_start", "parent_end"])
+    return positions
+
+
 def _finalize_plan(
     *,
     board_task: BoardTaskRequirementSheet,
     model_draft: MutationPlannerModelDraft,
     safe_focus: _SafeResolvedTarget | None,
     safe_insertion: ConfirmedContentAbsentInsertion | None,
+    authorized_write_positions: Sequence[MutationBindingPosition],
     parent_heading_path: list[str],
     current_commit_id: str,
     current_document_hash: str,
@@ -404,6 +428,7 @@ def _finalize_plan(
             operation,
             safe_focus=safe_focus,
             safe_insertion=safe_insertion,
+            authorized_write_positions=authorized_write_positions,
             parent_heading_path=parent_heading_path,
         )
         for operation in model_draft.operations
@@ -441,6 +466,7 @@ def _bind_operation(
     *,
     safe_focus: _SafeResolvedTarget | None,
     safe_insertion: ConfirmedContentAbsentInsertion | None,
+    authorized_write_positions: Sequence[MutationBindingPosition],
     parent_heading_path: list[str],
 ) -> MutationPlannerOperationDraft:
     if operation.action in {"edit", "delete"}:
@@ -474,7 +500,10 @@ def _bind_operation(
                 parent_heading_path=parent_heading_path,
             )
         else:
-            if safe_focus is None or operation.binding.position not in {"before", "after"}:
+            if (
+                safe_focus is None
+                or operation.binding.position not in authorized_write_positions
+            ):
                 raise MutationPlannerError("Write lacks an authorized insertion anchor")
             binding = MutationPlannerBinding(
                 kind="insertion_anchor",
