@@ -11,9 +11,10 @@ import { Type } from "typebox";
 
 const execFileAsync = promisify(execFile);
 const MAX_TEXT_OUTPUT = 120_000;
-const MAX_ARCHIVE_ENTRIES = 20_000;
+const MAX_ARCHIVE_ENTRIES = 50_001;
+const MAX_ARCHIVE_LIST_PAGE_ENTRIES = 2_000;
 const MAX_ARCHIVE_ENTRY_CHARACTERS = 120_000;
-const MAX_ARCHIVE_ENTRY_BUFFER_BYTES = 4 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRY_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
 const MAX_TEXT_LINES_PER_CALL = 500;
 const MAX_PDF_PAGE_SPAN = 32;
@@ -29,9 +30,19 @@ const sourcePath = resolve(workspace, requiredEnvironment("OPENCLASS_PI_SOURCE_F
 const scratchPath = resolve(workspace, requiredEnvironment("OPENCLASS_PI_SOURCE_SCRATCH"));
 const toolboxBin = resolve(requiredEnvironment("OPENCLASS_PI_SOURCE_TOOLBOX_BIN"));
 const inspectionScope = requiredEnvironment("OPENCLASS_PI_SOURCE_INSPECTION_SCOPE");
-if (inspectionScope !== "directory_only" && inspectionScope !== "source") {
+if (inspectionScope !== "directory_only" && inspectionScope !== "source" && inspectionScope !== "repository") {
   throw new Error("OpenClass source runtime received an unsupported inspection scope");
 }
+const archivePrefix = (process.env.OPENCLASS_PI_SOURCE_ARCHIVE_PREFIX ?? "").trim().replace(/^\/+|\/+$/g, "");
+if (
+  inspectionScope === "repository" &&
+  (!archivePrefix || archivePrefix.includes("\\") || archivePrefix.includes("\0") || archivePrefix.split("/").length !== 1 || archivePrefix === "..")
+) {
+  throw new Error("OpenClass repository runtime received an invalid archive root prefix");
+}
+const repositoryReadablePathsFile = inspectionScope === "repository"
+  ? requiredEnvironment("OPENCLASS_PI_REPOSITORY_READABLE_PATHS")
+  : "";
 const catalogPath = join(scratchPath, "catalog.json");
 const catalogHeaderPath = join(scratchPath, "catalog-header.json");
 const catalogNodesPath = join(scratchPath, "catalog-nodes.json");
@@ -46,6 +57,10 @@ assertWorkspacePath(sourcePath, workspace);
 assertWorkspacePath(catalogPath, scratchPath);
 assertWorkspacePath(catalogHeaderPath, scratchPath);
 assertWorkspacePath(catalogNodesPath, scratchPath);
+const repositoryReadablePathsPath = repositoryReadablePathsFile
+  ? resolve(workspace, repositoryReadablePathsFile)
+  : "";
+if (repositoryReadablePathsPath) assertWorkspacePath(repositoryReadablePathsPath, workspace);
 
 let catalogMutationQueue: Promise<void> = Promise.resolve();
 
@@ -97,18 +112,91 @@ async function runTool(executable: string, args: string[], maxBuffer = MAX_TEXT_
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-let archiveEntries: Set<string> | null = null;
+type ArchiveIndex = {
+  visibleEntries: string[];
+  rawByVisibleEntry: Map<string, string>;
+};
 
-async function loadArchiveEntries(): Promise<Set<string>> {
-  if (archiveEntries) return archiveEntries;
+let archiveIndex: ArchiveIndex | null = null;
+let repositoryReadablePaths: Set<string> | null = null;
+
+async function loadRepositoryReadablePaths(): Promise<Set<string>> {
+  if (inspectionScope !== "repository" || !repositoryReadablePathsPath) {
+    throw new Error("Repository file reading is unavailable for this source task");
+  }
+  if (repositoryReadablePaths) return repositoryReadablePaths;
+  const raw = JSON.parse(await readFile(repositoryReadablePathsPath, "utf8")) as unknown;
+  if (
+    !Array.isArray(raw) ||
+    !raw.length ||
+    raw.length > MAX_ARCHIVE_ENTRIES ||
+    raw.some((entry) => typeof entry !== "string" || !entry || entry.includes("\\") || entry.includes("\0") || entry.split("/").includes(".."))
+  ) {
+    throw new Error("The OpenClass repository-readable path manifest is invalid");
+  }
+  repositoryReadablePaths = new Set(raw as string[]);
+  if (repositoryReadablePaths.size !== raw.length) {
+    throw new Error("The OpenClass repository-readable path manifest contains duplicates");
+  }
+  return repositoryReadablePaths;
+}
+
+async function loadArchiveEntries(): Promise<ArchiveIndex> {
+  if (archiveIndex) return archiveIndex;
   await verifiedSourcePath();
   const { stdout } = await runTool("/usr/bin/unzip", ["-Z1", sourcePath], 4 * 1024 * 1024);
-  const entries = stdout.split(/\r?\n/).filter(Boolean);
-  if (entries.length > MAX_ARCHIVE_ENTRIES) {
+  const rawEntries = stdout.split(/\r?\n/).filter(Boolean);
+  if (rawEntries.length > MAX_ARCHIVE_ENTRIES) {
     throw new Error("The source archive contains too many entries for directory inspection");
   }
-  archiveEntries = new Set(entries);
-  return archiveEntries;
+  const rawByVisibleEntry = new Map<string, string>();
+  const repositoryPrefix = `${archivePrefix}/`;
+  for (const rawEntry of rawEntries) {
+    const visibleEntry = inspectionScope === "repository"
+      ? rawEntry.startsWith(repositoryPrefix)
+        ? rawEntry.slice(repositoryPrefix.length)
+        : ""
+      : rawEntry;
+    if (!visibleEntry) continue;
+    if (rawByVisibleEntry.has(visibleEntry)) {
+      throw new Error("The source archive contains duplicate visible entries");
+    }
+    rawByVisibleEntry.set(visibleEntry, rawEntry);
+  }
+  archiveIndex = {
+    visibleEntries: [...rawByVisibleEntry.keys()],
+    rawByVisibleEntry,
+  };
+  return archiveIndex;
+}
+
+function normalizedArchivePrefix(prefix: string | undefined): string {
+  const normalized = (prefix ?? "").trim().replace(/^\/+|\/+$/g, "");
+  if (normalized.includes("\\") || normalized.includes("\0") || normalized.split("/").includes("..")) {
+    throw new Error("archive_list received an unsafe repository prefix");
+  }
+  return normalized;
+}
+
+function filteredArchiveEntries(entries: string[], prefix: string, recursive: boolean): string[] {
+  const base = prefix ? `${prefix}/` : "";
+  const selected = new Set<string>();
+  for (const entry of entries) {
+    if (prefix && entry !== prefix && !entry.startsWith(base)) continue;
+    if (recursive || inspectionScope !== "repository") {
+      selected.add(entry);
+      continue;
+    }
+    if (entry === prefix) {
+      selected.add(entry);
+      continue;
+    }
+    const remainder = entry.slice(base.length);
+    if (!remainder) continue;
+    const separator = remainder.indexOf("/");
+    selected.add(separator >= 0 ? `${base}${remainder.slice(0, separator)}/` : `${base}${remainder}`);
+  }
+  return [...selected].sort((left, right) => left.localeCompare(right));
 }
 
 async function atomicJsonWrite(path: string, value: unknown): Promise<Buffer> {
@@ -231,6 +319,8 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
           byte_count: sourceStat.size,
           sha256: await sourceSha256(),
           pdf_info: pdfInfo,
+          inspection_scope: inspectionScope,
+          archive_prefix: archivePrefix || null,
         }),
       );
     },
@@ -309,12 +399,44 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "archive_list",
     label: "List source archive entries",
-    description: "List entries in the sole staged EPUB, DOCX, PPTX, or XLSX source without extracting it.",
-    parameters: Type.Object({}),
-    async execute() {
-      const entries = [...(await loadArchiveEntries())];
-      return textResult(boundedText(entries.join("\n")), {
-        entry_count: entries.length,
+    description: "List a bounded page of entries in the sole staged source archive without extracting it. Repository inspection supports non-recursive prefix navigation.",
+    parameters: Type.Object({
+      prefix: Type.Optional(Type.String({ maxLength: 2_048 })),
+      recursive: Type.Optional(Type.Boolean()),
+      start_index: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_ARCHIVE_ENTRIES })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_ARCHIVE_LIST_PAGE_ENTRIES })),
+    }),
+    async execute(_id, params) {
+      const index = await loadArchiveEntries();
+      const prefix = normalizedArchivePrefix(params.prefix);
+      const recursive = params.recursive ?? inspectionScope !== "repository";
+      const entries = filteredArchiveEntries(index.visibleEntries, prefix, recursive);
+      const startIndex = params.start_index ?? 0;
+      const limit = params.limit ?? 500;
+      if (startIndex > entries.length) {
+        throw new Error("archive_list start_index falls beyond the filtered archive entries");
+      }
+      const page: string[] = [];
+      let endIndex = startIndex;
+      let characterCount = 0;
+      while (endIndex < entries.length && page.length < limit) {
+        const entry = entries[endIndex];
+        const nextCharacters = entry.length + (page.length ? 1 : 0);
+        if (page.length && characterCount + nextCharacters > MAX_TEXT_OUTPUT) break;
+        page.push(entry);
+        characterCount += nextCharacters;
+        endIndex += 1;
+      }
+      const complete = endIndex >= entries.length;
+      return textResult(page.join("\n"), {
+        prefix,
+        recursive,
+        total_entry_count: index.visibleEntries.length,
+        filtered_entry_count: entries.length,
+        start_index: startIndex,
+        end_index: endIndex,
+        complete,
+        next_start_index: complete ? null : endIndex,
       });
     },
   });
@@ -328,9 +450,13 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
       start_character: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_ARCHIVE_ENTRY_BUFFER_BYTES })),
     }),
     async execute(_id, params) {
-      const entries = await loadArchiveEntries();
-      if (!entries.has(params.entry)) throw new Error("The requested archive entry does not exist");
-      const { stdout } = await runTool("/usr/bin/unzip", ["-p", sourcePath, params.entry], MAX_ARCHIVE_ENTRY_BUFFER_BYTES);
+      const index = await loadArchiveEntries();
+      const rawEntry = index.rawByVisibleEntry.get(params.entry);
+      if (!rawEntry) throw new Error("The requested archive entry does not exist");
+      if (inspectionScope === "repository" && !(await loadRepositoryReadablePaths()).has(params.entry)) {
+        throw new Error("The requested repository entry is not a verified readable regular file");
+      }
+      const { stdout } = await runTool("/usr/bin/unzip", ["-p", sourcePath, rawEntry], MAX_ARCHIVE_ENTRY_BUFFER_BYTES);
       const startCharacter = params.start_character ?? 0;
       if (startCharacter > stdout.length) {
         throw new Error("archive_read start_character falls beyond the decoded archive entry");
@@ -344,6 +470,50 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         total_character_count: stdout.length,
         complete,
         next_start_character: complete ? null : endCharacter,
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "repository_read",
+    label: "Read verified repository lines",
+    description: `Read at most ${MAX_TEXT_LINES_PER_CALL} line-numbered lines from one verified readable regular repository file.`,
+    parameters: Type.Object({
+      entry: Type.String({ minLength: 1, maxLength: 2_048 }),
+      start_line: Type.Integer({ minimum: 1, maximum: 10_000_000 }),
+      end_line: Type.Integer({ minimum: 1, maximum: 10_000_000 }),
+    }),
+    async execute(_id, params) {
+      if (inspectionScope !== "repository") {
+        throw new Error("repository_read is available only for repository inspection");
+      }
+      if (params.end_line < params.start_line || params.end_line - params.start_line + 1 > MAX_TEXT_LINES_PER_CALL) {
+        throw new Error(`Repository inspection must cover between 1 and ${MAX_TEXT_LINES_PER_CALL} lines`);
+      }
+      const readable = await loadRepositoryReadablePaths();
+      if (!readable.has(params.entry)) {
+        throw new Error("The requested repository entry is not a verified readable regular file");
+      }
+      const index = await loadArchiveEntries();
+      const rawEntry = index.rawByVisibleEntry.get(params.entry);
+      if (!rawEntry) throw new Error("The requested repository entry does not exist");
+      const { stdout } = await runTool("/usr/bin/unzip", ["-p", sourcePath, rawEntry], MAX_ARCHIVE_ENTRY_BUFFER_BYTES);
+      const lines = stdout.split(/\r\n|\n|\r/);
+      if (lines.at(-1) === "") lines.pop();
+      if (!lines.length) lines.push("");
+      if (params.start_line > lines.length) {
+        throw new Error("repository_read start_line falls beyond the verified file boundary");
+      }
+      const actualEnd = Math.min(params.end_line, lines.length);
+      const selected = lines
+        .slice(params.start_line - 1, actualEnd)
+        .map((line, index) => `${params.start_line + index}: ${line}`)
+        .join("\n");
+      return textResult(boundedText(selected), {
+        entry: params.entry,
+        start_line: params.start_line,
+        end_line: actualEnd,
+        total_line_count: lines.length,
       });
     },
   });

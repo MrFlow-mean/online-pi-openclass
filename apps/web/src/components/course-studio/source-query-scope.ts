@@ -1,4 +1,5 @@
 import type { SelectionRef, SourceQueryScope } from "@/types";
+import type { LessonComposerState } from "@/components/course-studio/history-utils";
 
 function validSourceSelection(selection: SelectionRef) {
   return (
@@ -12,6 +13,7 @@ function selectionKey(selection: SelectionRef) {
   return [
     selection.source_ingestion_id,
     selection.source_scope_kind,
+    selection.source_repository_node_id,
     selection.source_chapter_id,
     selection.source_page_start,
     selection.source_page_end,
@@ -38,6 +40,35 @@ export function appendSourceQuerySelection(
   return [...withoutSameSourceScope, next];
 }
 
+export function applySourceReferenceToComposerState(
+  current: LessonComposerState,
+  sourceReference: SelectionRef
+): LessonComposerState {
+  if (sourceReference.source_scope_kind === "repository_node") {
+    return {
+      ...current,
+      composerMode: "ask",
+      includeSelectionInPrompt: true,
+      composerSelection: sourceReference,
+      composerSelections: [sourceReference],
+      sourceQuerySelections: [],
+      sourceQueryAllReady: false,
+    };
+  }
+  return {
+    ...current,
+    composerMode: "ask",
+    includeSelectionInPrompt: true,
+    composerSelection: null,
+    composerSelections: [],
+    sourceQuerySelections: appendSourceQuerySelection(
+      current.sourceQueryAllReady ? [] : current.sourceQuerySelections,
+      sourceReference
+    ),
+    sourceQueryAllReady: false,
+  };
+}
+
 export function sourceQueryScopeFromComposer(
   selections: SelectionRef[],
   allReadySources: boolean
@@ -47,6 +78,12 @@ export function sourceQueryScopeFromComposer(
   }
   const valid = selections.filter(validSourceSelection);
   if (!valid.length) {
+    return null;
+  }
+  if (valid.some((selection) => selection.source_scope_kind === "repository_node")) {
+    // Repository nodes are frozen through the full SelectionRef contract.
+    // Sending them as a generic source query scope discards the node identity
+    // and is rejected because repository selections also carry a node ID.
     return null;
   }
   const kinds = new Set(
@@ -73,6 +110,9 @@ export function sourceQueryScopeFromComposer(
 }
 
 export function sourceQuerySelectionLabel(selection: SelectionRef) {
+  if (selection.source_scope_kind === "repository_node") {
+    return selection.source_chapter_title || selection.source_locator || selection.excerpt;
+  }
   if (selection.source_scope_kind === "chapter") {
     return selection.source_chapter_title || selection.excerpt;
   }

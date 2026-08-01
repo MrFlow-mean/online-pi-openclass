@@ -231,6 +231,60 @@ def test_pi_source_client_exposes_only_openclass_source_tools(
     )
 
 
+def test_pi_source_client_supports_isolated_repository_archive_inspection(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    source = tmp_path / "repository.zip"
+    source.write_bytes(b"frozen repository archive")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    readable_paths: list[str] = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        readable_path = Path(kwargs["cwd"]) / kwargs["env"]["OPENCLASS_PI_REPOSITORY_READABLE_PATHS"]
+        readable_paths.extend(json.loads(readable_path.read_text(encoding="utf-8")))
+        scratch = Path(kwargs["cwd"]) / "scratch"
+        (scratch / "catalog.json").write_text(
+            json.dumps({"complete": True, "nodes": ["Architecture"]}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    response = PiSourceTextClient(
+        "user_test",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=runner,
+    ).parse_source_file(
+        source_path=source,
+        provider="openai_codex",
+        model="gpt-test",
+        system_prompt="Build a repository learning structure with verified evidence.",
+        user_prompt="Inspect the frozen repository linked by the user.",
+        schema=_Catalog,
+        output_artifact_path="scratch/catalog.json",
+        inspection_scope="repository",
+        archive_prefix="owner-repo-commit",
+        repository_readable_paths=["README.md", "src/main.py"],
+    )
+
+    command, kwargs = calls[0]
+    system_prompt = command[command.index("--system-prompt") + 1]
+    assert kwargs["env"]["OPENCLASS_PI_SOURCE_INSPECTION_SCOPE"] == "repository"
+    assert kwargs["env"]["OPENCLASS_PI_SOURCE_ARCHIVE_PREFIX"] == "owner-repo-commit"
+    assert readable_paths == [
+        "README.md",
+        "src/main.py",
+    ]
+    assert "repository archive" in system_prompt
+    assert "learning structure" in system_prompt
+    assert response.activity[0].metadata["source_tool_policy"] == (
+        "openclass_read_only_repository_tools"
+    )
+
+
 def test_pi_source_client_retries_a_mechanically_rejected_artifact(
     monkeypatch,
     tmp_path: Path,
@@ -269,6 +323,53 @@ def test_pi_source_client_retries_a_mechanically_rejected_artifact(
     assert len(calls) == 2
     assert "mechanical validator rejected" in str(calls[1][1]["input"])
     assert response.output_parsed.nodes == ["First", "Second"]
+    assert response.source_turn_count == 2
+
+
+def test_pi_source_client_retries_an_exit_143_without_losing_the_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    source = tmp_path / "source.md"
+    source.write_text("# Architecture\n", encoding="utf-8")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        scratch = Path(kwargs["cwd"]) / "scratch"
+        if len(calls) == 1:
+            (scratch / "catalog-header.json").write_text("null", encoding="utf-8")
+            (scratch / "catalog-nodes.json").write_text("[]", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 143, "", "")
+        (scratch / "catalog.json").write_text(
+            json.dumps({"complete": True, "nodes": ["Architecture"]}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    response = PiSourceTextClient(
+        "user_test",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=run,
+    ).parse_source_file(
+        source_path=source,
+        provider="deepseek",
+        model="deepseek-test",
+        system_prompt="Build a learning structure.",
+        user_prompt="Inspect the repository.",
+        schema=_Catalog,
+        output_artifact_path="scratch/catalog.json",
+        inspection_scope="repository",
+        archive_prefix="owner-repo-commit",
+        repository_readable_paths=["README.md"],
+    )
+
+    assert len(calls) == 2
+    assert "valid partial checkpoint" in str(calls[1][1]["input"])
+    assert "remaining parent-first learning nodes" in str(calls[1][1]["input"])
+    assert response.output_parsed.nodes == ["Architecture"]
     assert response.source_turn_count == 2
 
 

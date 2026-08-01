@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import (
+    AIModelSelection,
     Lesson,
     RepositoryFileEntry,
     RepositoryMapNode,
@@ -21,8 +22,12 @@ from app.models import (
 from app.services import repository_grounding, source_grounded_board
 from app.services.github_app import GitHubAppError, GitHubAppService
 from app.services.repository_source import (
+    RepositoryLearningMapOutput,
+    RepositorySourceProcessor,
     RepositorySourceError,
+    ResolvedGitHubSource,
     SafeRepositoryArchive,
+    _validate_repository_learning_artifact,
     parse_github_url,
     read_repository_file_range,
 )
@@ -64,16 +69,244 @@ def test_safe_repository_archive_reads_regular_files(tmp_path: Path) -> None:
         assert archive.read("project-root/README.md") == b"one\ntwo\nthree\n"
 
 
-def test_safe_repository_archive_rejects_symlinks(tmp_path: Path) -> None:
+def test_safe_repository_archive_keeps_symlinks_unreadable(tmp_path: Path) -> None:
     archive_path = tmp_path / "repository.zip"
     link = zipfile.ZipInfo("project-root/link")
     link.create_system = 3
     link.external_attr = (stat.S_IFLNK | 0o777) << 16
     with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr(link, "../outside")
+        archive.writestr("project-root/target.txt", "verified\n")
+        archive.writestr(link, "target.txt")
 
-    with pytest.raises(RepositorySourceError, match="symbolic link"):
+    with SafeRepositoryArchive(archive_path) as archive:
+        assert list(archive.symlinks) == ["project-root/link"]
+        assert archive.read("project-root/target.txt") == b"verified\n"
+        with pytest.raises(RepositorySourceError, match="unavailable"):
+            archive.read("project-root/link")
+
+
+def test_safe_repository_archive_still_rejects_special_entries(tmp_path: Path) -> None:
+    archive_path = tmp_path / "repository.zip"
+    special = zipfile.ZipInfo("project-root/device")
+    special.create_system = 3
+    special.external_attr = (stat.S_IFIFO | 0o600) << 16
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(special, "")
+
+    with pytest.raises(RepositorySourceError, match="special filesystem entry"):
         SafeRepositoryArchive(archive_path)
+
+
+def test_repository_processor_gives_safe_snapshot_to_pi_and_materializes_referenceable_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_archive = tmp_path / "github.zip"
+    link = zipfile.ZipInfo("project-root/CLAUDE.md")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(source_archive, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("project-root/README.md", "# Project\nLearn the architecture.\n")
+        archive.writestr("project-root/src/main.py", "def main():\n    return 'ready'\n")
+        archive.writestr(link, "AGENTS.md")
+
+    resolved = ResolvedGitHubSource(
+        owner="owner",
+        name="repo",
+        repository_id=7,
+        private=False,
+        default_branch="main",
+        requested_ref="main",
+        commit_sha="a" * 40,
+        tree_sha="b" * 40,
+        scope_path="",
+        scope_kind="repository",
+        license_spdx="MIT",
+        title="owner/repo",
+        token=None,
+    )
+
+    class FakeGitHubAdapter:
+        def resolve(self, **_kwargs):
+            return resolved
+
+        def tree(self, _resolved):
+            return {
+                "README.md": ("1" * 40, 34),
+                "src/main.py": ("2" * 40, 31),
+                "CLAUDE.md": ("3" * 40, 9),
+            }
+
+        def download(self, _resolved, *, target, progress_callback=None):
+            payload = source_archive.read_bytes()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            if progress_callback is not None:
+                progress_callback(len(payload), len(payload))
+            return len(payload)
+
+    captured: dict[str, object] = {}
+
+    class FakePiSourceClient:
+        def __init__(self, owner_user_id: str) -> None:
+            captured["owner_user_id"] = owner_user_id
+
+        def parse_source_file(self, **kwargs):
+            captured.update(kwargs)
+            source_path = Path(kwargs["source_path"])
+            payload = RepositoryLearningMapOutput.model_validate(
+                {
+                    "complete": True,
+                    "nodes": [
+                        {
+                            "key": "orientation",
+                            "parent_key": None,
+                            "level": 1,
+                            "node_kind": "concept",
+                            "title": "Project orientation",
+                            "description": "Understand the purpose and top-level architecture.",
+                            "evidence": [
+                                {
+                                    "path": "README.md",
+                                    "line_start": 1,
+                                    "line_end": 2,
+                                    "reason": "project purpose",
+                                }
+                            ],
+                        },
+                        {
+                            "key": "runtime-entry",
+                            "parent_key": "orientation",
+                            "level": 2,
+                            "node_kind": "entrypoint",
+                            "title": "Runtime entry",
+                            "description": "Trace the executable entrypoint.",
+                            "evidence": [
+                                {
+                                    "path": "src/main.py",
+                                    "line_start": 1,
+                                    "line_end": 2,
+                                    "reason": "entrypoint implementation",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            )
+            kwargs["artifact_validator"](payload.model_dump(mode="json"))
+            return SimpleNamespace(
+                output_parsed=payload,
+                output_text=payload.model_dump_json(),
+                source_sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                source_turn_count=1,
+                activity=[],
+            )
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(
+        "app.services.repository_source.workspace_state.UPLOAD_DIR",
+        upload_dir,
+    )
+    record = SourceIngestionRecord(
+        id="source-pi-repository",
+        owner_user_id="user-1",
+        package_id="package-1",
+        title="https://github.com/owner/repo",
+        source_type="code_repository",
+        source_uri="https://github.com/owner/repo",
+        status="queued",
+    )
+    processor = RepositorySourceProcessor(
+        adapter=FakeGitHubAdapter(),
+        source_client_factory=FakePiSourceClient,
+    )
+
+    result = processor.process(
+        record=record,
+        source_uri=record.source_uri or "",
+        learning_goal="Understand the project architecture",
+        catalog_model=AIModelSelection(
+            provider="openai_codex",
+            model="gpt-test",
+            access_method="chatgpt_subscription",
+        ),
+    )
+
+    assert captured["owner_user_id"] == "user-1"
+    assert captured["inspection_scope"] == "repository"
+    assert captured["archive_prefix"] == "project-root"
+    assert "https://github.com/owner/repo" in str(captured["user_prompt"])
+    assert captured["source_path"] == upload_dir / "sources" / f"{record.id}.repository.zip"
+    assert result.snapshot.metadata["learning_analysis"]["source_agent_backend"] == "pi"
+    assert result.snapshot.metadata["learning_analysis"]["source_agent_turn_count"] == 1
+    symlink_file = next(item for item in result.files if item.path == "CLAUDE.md")
+    assert symlink_file.text_status == "unsupported"
+    assert symlink_file.skip_reason == "symbolic_link_not_followed"
+    assert symlink_file.metadata["symlink_followed"] is False
+    symlink_node = next(
+        node
+        for node in result.nodes
+        if node.tree_kind == "project" and node.path == "CLAUDE.md"
+    )
+    assert symlink_node.selectable is False
+    learning_nodes = [node for node in result.nodes if node.tree_kind == "learning"]
+    assert [node.title for node in learning_nodes] == ["Project orientation", "Runtime entry"]
+    assert all(node.selectable for node in learning_nodes)
+    assert learning_nodes[1].parent_id == learning_nodes[0].id
+    assert any("symbolic link" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {
+            "key": "unsafe-link",
+            "parent_key": None,
+            "level": 1,
+            "node_kind": "concept",
+            "title": "Unsafe link",
+            "evidence": [{"path": "alias.md", "line_start": 1, "line_end": 1}],
+        },
+        {
+            "key": "outside-lines",
+            "parent_key": None,
+            "level": 1,
+            "node_kind": "concept",
+            "title": "Outside lines",
+            "evidence": [{"path": "README.md", "line_start": 1, "line_end": 99}],
+        },
+        {
+            "key": "missing-parent",
+            "parent_key": "unknown",
+            "level": 2,
+            "node_kind": "module",
+            "title": "Missing parent",
+            "evidence": [{"path": "README.md", "line_start": 1, "line_end": 1}],
+        },
+    ],
+)
+def test_repository_learning_artifact_rejects_unverifiable_nodes(node: dict[str, object]) -> None:
+    files = {
+        "README.md": RepositoryFileEntry(
+            source_ingestion_id="source-1",
+            path="README.md",
+            line_count=2,
+            text_status="ready",
+        ),
+        "alias.md": RepositoryFileEntry(
+            source_ingestion_id="source-1",
+            path="alias.md",
+            line_count=0,
+            text_status="unsupported",
+            skip_reason="symbolic_link_not_followed",
+        ),
+    }
+
+    with pytest.raises(RepositorySourceError):
+        _validate_repository_learning_artifact(
+            {"complete": True, "nodes": [node]},
+            file_by_path=files,
+        )
 
 
 def test_repository_store_round_trip_and_verified_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

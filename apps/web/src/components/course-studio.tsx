@@ -23,7 +23,7 @@ import {
 import { LessonTabs } from "@/components/course-studio/lesson-tabs";
 import { SelectionPopover } from "@/components/course-studio/selection-popover";
 import {
-  appendSourceQuerySelection,
+  applySourceReferenceToComposerState,
   sourceQueryScopeFromComposer,
 } from "@/components/course-studio/source-query-scope";
 import { CourseStudioSidePanel, type CourseStudioSidebarTab } from "@/components/course-studio/studio-side-panel";
@@ -502,18 +502,9 @@ export function CourseStudio() {
     }
     setSelection(sourceReference);
     setSelectionPopover(null);
-    updateActiveLessonComposerState((current) => ({
-      ...current,
-      composerMode: "ask",
-      includeSelectionInPrompt: true,
-      composerSelection: null,
-      composerSelections: [],
-      sourceQuerySelections: appendSourceQuerySelection(
-        current.sourceQueryAllReady ? [] : current.sourceQuerySelections,
-        sourceReference
-      ),
-      sourceQueryAllReady: false,
-    }));
+    updateActiveLessonComposerState((current) =>
+      applySourceReferenceToComposerState(current, sourceReference)
+    );
     window.requestAnimationFrame(() => {
       chatInputRef.current?.focus();
     });
