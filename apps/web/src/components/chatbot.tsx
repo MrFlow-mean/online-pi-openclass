@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 
-import { publicAgentActivityLabel } from "@/lib/agent-activity";
+import { publicAgentActivityLabel, publicAgentActivityText } from "@/lib/agent-activity";
 import { writeTextToClipboard } from "@/lib/clipboard";
 import { markdownToChatHtml } from "@/lib/markdown";
 import type {
@@ -36,6 +36,7 @@ export type CourseChatMessageView = {
   status?: "ready" | "pending" | "error";
   statusLabel?: string;
   selection?: SelectionRef | null;
+  sourceSelections?: SelectionRef[];
   agentActivity?: AgentActivityEvent[];
   guidedRequirementDiscovery?: GuidedRequirementDiscovery | null;
   followUpSuggestions?: string[];
@@ -50,13 +51,70 @@ export type CourseChatMessageView = {
 
 function selectionPreviewLabel(selection: SelectionRef): string {
   if (selection.kind === "source") {
-    return "引用的资料章节";
+    return "Referenced material sections";
   }
-  return selection.kind === "board" ? "选中的讲义" : "引用的对话";
+  return selection.kind === "board" ? "Selected lesson documents" : "Quoted dialogue";
 }
 
 function selectionPreviewText(excerpt: string): string {
   return excerpt.replace(/\s+/g, " ").trim();
+}
+
+export function chatMessageSelections(message: CourseChatMessageView): SelectionRef[] {
+  return [
+    ...(message.sourceSelections ?? []),
+    ...(message.selection ? [message.selection] : []),
+  ];
+}
+
+function selectionPreviewKey(selection: SelectionRef, index: number): string {
+  return [
+    selection.kind,
+    selection.source_ingestion_id,
+    selection.source_chapter_id,
+    selection.source_page_start,
+    selection.source_page_end,
+    selection.document_id,
+    selection.segment_id,
+    selection.text_hash,
+    index,
+  ].join(":");
+}
+
+function ChatSelectionPreview({ selection }: { selection: SelectionRef }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const excerpt = selectionPreviewText(selection.excerpt);
+  if (!excerpt) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700">
+      <div className="flex items-start gap-2">
+        <TextQuote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold text-gray-500">{selectionPreviewLabel(selection)}</p>
+          <p
+            className={clsx(
+              "mt-1 whitespace-pre-wrap break-words pr-1 text-[12px] leading-5",
+              isExpanded ? "custom-scrollbar max-h-40 overflow-y-auto" : "max-h-10 overflow-hidden"
+            )}
+          >
+            “{excerpt}”
+          </p>
+          <button
+            type="button"
+            aria-expanded={isExpanded}
+            onClick={() => setIsExpanded((current) => !current)}
+            className="mt-2 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold text-gray-500 transition hover:bg-white hover:text-gray-900"
+          >
+            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {isExpanded ? "close" : "Expand"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ChatMessageContent({ content }: { content: string }) {
@@ -71,7 +129,7 @@ function ChatMessageContent({ content }: { content: string }) {
 function activityDetail(event: AgentActivityEvent): string {
   const detail = event.metadata.detail;
   if (typeof detail === "string" && detail.trim()) {
-    return detail.trim();
+    return publicAgentActivityText(detail.trim());
   }
   const command = event.metadata.command;
   if (typeof command === "string" && command.trim()) {
@@ -104,8 +162,8 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
   const summary = isPending || hasActiveEvent
     ? publicAgentActivityLabel(latestEvent.label)
     : problemCount
-      ? `${events.length} 项工作，${problemCount} 项未完成`
-      : `${events.length} 项工作已完成`;
+      ? `${events.length} tasks, ${problemCount} incomplete`
+      : `${events.length} tasks completed`;
 
   return (
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50/80">
@@ -125,10 +183,10 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
           )}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[11px] font-semibold text-gray-800">工作过程</span>
+          <span className="block text-[11px] font-semibold text-gray-800">working process</span>
           <span className="block truncate text-[11px] leading-5 text-gray-500">{summary}</span>
         </span>
-        <span className="text-[10px] font-medium text-gray-400">{isExpanded ? "收起" : "展开"}</span>
+        <span className="text-[10px] font-medium text-gray-400">{isExpanded ? "close" : "Expand"}</span>
       </button>
       {isExpanded ? <div className="space-y-2 border-t border-gray-200 px-3 py-2.5">
         {events.map((event) => {
@@ -200,12 +258,11 @@ export function CourseChatMessage({
   onOpenSourceCitation?: (citation: SourceCitation) => void | Promise<void>;
   isEditDisabled?: boolean;
 }) {
-  const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const isAssistant = message.role === "assistant";
   const isPending = message.status === "pending";
   const isError = message.status === "error";
-  const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
+  const displayedSelections = chatMessageSelections(message);
   const teachingProgress = message.teachingProgress;
   const agentActivity = message.agentActivity ?? [];
   const followUpSuggestions = message.followUpSuggestions ?? [];
@@ -236,39 +293,17 @@ export function CourseChatMessage({
       <div className={clsx("min-w-0 max-w-[86%] space-y-2", isAssistant && "max-w-[calc(100%-2.5rem)] flex-1")}>
         <div className={clsx("flex items-center gap-2 text-[11px] text-gray-500", !isAssistant && "justify-end")}>
           {!isAssistant ? <MessageSquare className="h-3.5 w-3.5" /> : null}
-          <span className="font-medium">{isPending ? message.statusLabel || "正在思考" : isAssistant ? "OpenClass" : "你"}</span>
+          <span className="font-medium">{isPending ? message.statusLabel || "thinking" : isAssistant ? "OpenClass" : "you"}</span>
         </div>
 
-        {message.selection && selectedExcerpt ? (
-          <div
-            className={clsx(
-              "rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700",
-              !isAssistant && "ml-auto"
-            )}
-          >
-            <div className="flex items-start gap-2">
-              <TextQuote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold text-gray-500">{selectionPreviewLabel(message.selection)}</p>
-                <p
-                  className={clsx(
-                    "mt-1 whitespace-pre-wrap break-words pr-1 text-[12px] leading-5",
-                    isSelectionExpanded ? "custom-scrollbar max-h-40 overflow-y-auto" : "max-h-10 overflow-hidden"
-                  )}
-                >
-                  “{selectedExcerpt}”
-                </p>
-                <button
-                  type="button"
-                  aria-expanded={isSelectionExpanded}
-                  onClick={() => setIsSelectionExpanded((current) => !current)}
-                  className="mt-2 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold text-gray-500 transition hover:bg-white hover:text-gray-900"
-                >
-                  {isSelectionExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                  {isSelectionExpanded ? "收起" : "展开"}
-                </button>
-              </div>
-            </div>
+        {displayedSelections.length ? (
+          <div className={clsx("space-y-2", !isAssistant && "ml-auto")}>
+            {displayedSelections.map((selection, index) => (
+              <ChatSelectionPreview
+                key={selectionPreviewKey(selection, index)}
+                selection={selection}
+              />
+            ))}
           </div>
         ) : null}
 
@@ -299,7 +334,7 @@ export function CourseChatMessage({
                 type="button"
                 onClick={onCancelEdit}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-800"
-                title="取消编辑"
+                title="Cancel edit"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -308,7 +343,7 @@ export function CourseChatMessage({
                 onClick={onSubmitEdit}
                 disabled={isEditDisabled}
                 className="flex h-8 w-8 items-center justify-center rounded-md bg-gray-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
-                title="提交编辑"
+                title="Submit edit"
               >
                 <Check className="h-4 w-4" />
               </button>
@@ -339,7 +374,8 @@ export function CourseChatMessage({
             {isAssistant && teachingProgress && !isPending && !isError ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
                 <span>
-                  第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 项
+
+                  No. {teachingProgress.section_index + 1}/{teachingProgress.section_count}  item
                   {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
                 </span>
                 {teachingProgress.has_next_section && onContinueTeaching ? (
@@ -349,7 +385,8 @@ export function CourseChatMessage({
                     className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
                   >
                     <ArrowRight className="h-3.5 w-3.5" />
-                    继续下一项
+
+                    Continue to next item
                   </button>
                 ) : null}
               </div>
@@ -360,15 +397,16 @@ export function CourseChatMessage({
         {isAssistant && !isPending && !isError && sourceCitations.length ? (
           <div className="overflow-hidden rounded-xl border border-blue-100 bg-blue-50/40">
             <p className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-700">
-              资料依据
+
+              Data basis
             </p>
             <div className="divide-y divide-blue-100">
               {sourceCitations.map((citation, index) => {
                 const pageLabel = citation.page_start
                   ? citation.page_end && citation.page_end !== citation.page_start
-                    ? `第 ${citation.page_start}–${citation.page_end} 页`
-                    : `第 ${citation.page_start} 页`
-                  : "原文位置";
+                    ? `Pages ${citation.page_start}–${citation.page_end}`
+                    : `Page ${citation.page_start}`
+                  : "Original location";
                 const sectionLabel = citation.section_path.filter(Boolean).join(" › ");
                 return (
                   <button
@@ -398,7 +436,8 @@ export function CourseChatMessage({
         {isAssistant && !isPending && !isError && followUpSuggestions.length && onFollowUpSuggestion ? (
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <p className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-              接下来可以
+
+              OK next
             </p>
             <div className="divide-y divide-gray-100">
               {followUpSuggestions.map((suggestion) => (
@@ -428,7 +467,7 @@ export function CourseChatMessage({
                 type="button"
                 onClick={onStartEdit}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
-                title="编辑这条消息"
+                title="edit this message"
               >
                 <PencilLine className="h-3.5 w-3.5" />
               </button>
@@ -436,11 +475,11 @@ export function CourseChatMessage({
             <button
               type="button"
               onClick={() => void copyMessage()}
-              aria-label={copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : "复制"}
+              aria-label={copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "copy"}
               className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
             >
               {copyStatus === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : "复制"}
+              {copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "copy"}
             </button>
           </div>
         ) : null}

@@ -155,9 +155,11 @@ def test_prepare_pdf_toolbox_stages_and_executes_every_required_tool(
     assert all("installed-poppler" not in entry for entry in isolated_path)
 
 
-def test_directory_only_pdf_toolbox_rejects_unbounded_or_large_extraction(
+@pytest.mark.parametrize("inspection_scope", ["directory_only", "catalog_v3"])
+def test_catalog_pdf_toolbox_rejects_unbounded_or_large_extraction(
     monkeypatch,
     tmp_path: Path,
+    inspection_scope: str,
 ) -> None:
     root = _write_fake_poppler(tmp_path / "poppler")
     monkeypatch.setenv(source_document_toolchain.POPPLER_ROOT_ENV, str(root))
@@ -171,7 +173,7 @@ def test_directory_only_pdf_toolbox_rejects_unbounded_or_large_extraction(
         cwd=cwd,
         source_path=source,
         scratch_path=scratch,
-        inspection_scope="directory_only",
+        inspection_scope=inspection_scope,
     )
     pdftotext = toolbox / "bin" / "pdftotext"
 

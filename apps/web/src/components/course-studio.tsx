@@ -123,7 +123,7 @@ export function CourseStudio() {
     defaultWidth: CHAT_PANEL_DEFAULT_WIDTH,
     minWidth: CHAT_PANEL_MIN_WIDTH,
     maxWidth: CHAT_PANEL_MAX_WIDTH,
-    label: "调整 Chatbot 宽度",
+    label: "Adjust Chatbot width",
   });
   const {
     width: rightSidebarWidth,
@@ -135,7 +135,7 @@ export function CourseStudio() {
     minWidth: RIGHT_SIDEBAR_MIN_WIDTH,
     maxWidth: RIGHT_SIDEBAR_MAX_WIDTH,
     dragDirection: "grow-left",
-    label: "调整课程工作台辅助宽度",
+    label: "Adjust course workbench auxiliary width",
   });
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
   const boardDraft = useBoardDraft({
@@ -149,8 +149,12 @@ export function CourseStudio() {
 
   function updateCoursePackage(nextPackage: CoursePackage, options?: CoursePackageApplyOptions) {
     const result = applyWorkspaceCoursePackage(nextPackage, options);
-    boardDraft.resetToLesson(result.activeLesson);
-    resetTransientUi();
+    const isBackgroundLessonUpdate =
+      Boolean(options?.mergeLessonId) && result.activeLesson?.id !== options?.mergeLessonId;
+    if (!isBackgroundLessonUpdate) {
+      boardDraft.resetToLesson(result.activeLesson);
+      resetTransientUi();
+    }
     return result;
   }
 
@@ -444,6 +448,8 @@ export function CourseStudio() {
       includeSelectionInPrompt: true,
       composerSelection: null,
       composerSelections: [],
+      sourceQuerySelections: [],
+      sourceQueryAllReady: false,
     }));
   }
 
@@ -540,8 +546,8 @@ export function CourseStudio() {
     const isReplaceAction = payload.action === "replace";
     void handleSubmitChat({
       message: isReplaceAction
-        ? "请识别我手写的公式，并把当前选中的公式更改为识别结果。"
-        : "请识别我手写的公式，并结合当前选中的公式回答。",
+        ? "Please recognize my handwritten formula and change the currently selected formula to the recognition result."
+        : "Please identify my handwritten formula and answer with the currently selected formula.",
       selection: formulaSelection,
       interaction_mode: isReplaceAction ? "direct_edit" : "ask",
       formula_ink: {
@@ -615,7 +621,7 @@ export function CourseStudio() {
       return;
     }
     if (voiceActive || busyAction === "voice-connect") {
-      stopRealtimeSession("已切换实时语音模型，当前会话已断开");
+      stopRealtimeSession("The real-time speech model has been switched and the current session has been disconnected");
     }
     selectRealtimeModel(option);
   }
@@ -665,21 +671,21 @@ export function CourseStudio() {
       isBusyCreating={busyAction === "generate"}
       onSelectLesson={(lessonId) => {
         if (lessonMerge.isActive) {
-          setError("合并期间不能切换课程，请先提交或放弃合并。");
+          setError("Courses cannot be switched during the merge, please submit or abandon the merge first.");
           return;
         }
         void handleSelectLesson(lessonId);
       }}
       onCloseLesson={(lessonId) => {
         if (lessonMerge.isActive) {
-          setError("合并期间不能关闭课程。");
+          setError("Courses cannot be closed during the merger.");
           return;
         }
         void handleCloseLesson(lessonId);
       }}
       onCreateLesson={() => {
         if (lessonMerge.isActive) {
-          setError("合并期间不能创建新课程。");
+          setError("New courses cannot be created during the merge.");
           return;
         }
         void handleCreateLesson();
@@ -704,7 +710,7 @@ export function CourseStudio() {
         rightSidebarOpen={rightSidebarOpen}
         error={error}
         tabs={lessonTabs}
-        accountMenu={<AccountMenu compact ariaLabel="开放课堂用户头像" />}
+        accountMenu={<AccountMenu compact ariaLabel="OpenClass User Avatar" />}
         selectionPopover={selectionPopoverNode}
         onReturnHome={() => void handleReturnHome()}
         onTopCollapsedChange={setTopCollapsed}
@@ -748,7 +754,7 @@ export function CourseStudio() {
       rightSidebarOpen={rightSidebarOpen}
       error={error}
       tabs={lessonTabs}
-      accountMenu={<AccountMenu compact ariaLabel="开放课堂用户头像" />}
+      accountMenu={<AccountMenu compact ariaLabel="OpenClass User Avatar" />}
       selectionPopover={selectionPopoverNode}
       onReturnHome={() => void handleReturnHome()}
       onTopCollapsedChange={setTopCollapsed}
@@ -841,7 +847,7 @@ export function CourseStudio() {
           onClearTransientSelection={clearTransientSelection}
           onImportDocx={(file) => {
             if (lessonMerge.isActive) {
-              setError("合并期间不能导入 DOCX，请先提交或放弃合并。");
+              setError("DOCX cannot be imported during the merge, please submit or abandon the merge first.");
               return;
             }
             void handleImportDocx(file);

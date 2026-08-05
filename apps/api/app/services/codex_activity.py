@@ -129,25 +129,25 @@ class CodexActivityRecorder:
                 item_id=item_id,
                 turn_id=turn_id,
                 stage="execute_role",
-                label="OpenClass 工作进展",
+                label="OpenClass progress",
                 status="running",
                 role=PUBLIC_AGENT_ROLE,
                 metadata={"kind": "commentary", "detail": str(item.get("text") or "")},
             )
             return
         descriptors: dict[str, tuple[str, str, str]] = {
-            "reasoning": ("build_context", "OpenClass 正在思考", PUBLIC_AGENT_ROLE),
-            "plan": ("build_context", "制定工作计划", PUBLIC_AGENT_ROLE),
-            "commandExecution": ("execute_role", "运行命令", PUBLIC_TOOL_ROLE),
-            "fileChange": ("execute_role", "更新板书文档", PUBLIC_TOOL_ROLE),
-            "mcpToolCall": ("execute_role", "调用工具", PUBLIC_TOOL_ROLE),
-            "dynamicToolCall": ("execute_role", "调用工具", PUBLIC_TOOL_ROLE),
-            "collabAgentToolCall": ("execute_role", "协同处理", PUBLIC_AGENT_ROLE),
-            "subAgentActivity": ("execute_role", "协同处理", PUBLIC_AGENT_ROLE),
-            "webSearch": ("build_context", "搜索网络", PUBLIC_TOOL_ROLE),
-            "imageView": ("build_context", "查看图片", PUBLIC_TOOL_ROLE),
-            "imageGeneration": ("execute_role", "生成图片", PUBLIC_TOOL_ROLE),
-            "contextCompaction": ("build_context", "整理上下文", PUBLIC_AGENT_ROLE),
+            "reasoning": ("build_context", "OpenClass is thinking", PUBLIC_AGENT_ROLE),
+            "plan": ("build_context", "Preparing work plan", PUBLIC_AGENT_ROLE),
+            "commandExecution": ("execute_role", "Running command", PUBLIC_TOOL_ROLE),
+            "fileChange": ("execute_role", "Updating board document", PUBLIC_TOOL_ROLE),
+            "mcpToolCall": ("execute_role", "Using tool", PUBLIC_TOOL_ROLE),
+            "dynamicToolCall": ("execute_role", "Using tool", PUBLIC_TOOL_ROLE),
+            "collabAgentToolCall": ("execute_role", "Collaborating", PUBLIC_AGENT_ROLE),
+            "subAgentActivity": ("execute_role", "Collaborating", PUBLIC_AGENT_ROLE),
+            "webSearch": ("build_context", "Searching the web", PUBLIC_TOOL_ROLE),
+            "imageView": ("build_context", "Viewing image", PUBLIC_TOOL_ROLE),
+            "imageGeneration": ("execute_role", "Generating image", PUBLIC_TOOL_ROLE),
+            "contextCompaction": ("build_context", "Organizing context", PUBLIC_AGENT_ROLE),
         }
         descriptor = descriptors.get(item_type)
         if descriptor is None:
@@ -192,17 +192,17 @@ class CodexActivityRecorder:
                 turn_id=turn_id,
                 delta=delta,
                 stage="execute_role",
-                label="OpenClass 工作进展",
+                label="OpenClass progress",
                 role=PUBLIC_AGENT_ROLE,
                 kind="commentary",
             )
             return True
         mappings: dict[str, tuple[str, str, str, str]] = {
-            "item/reasoning/summaryTextDelta": ("build_context", "OpenClass 正在思考", PUBLIC_AGENT_ROLE, "reasoning"),
-            "item/plan/delta": ("build_context", "制定工作计划", PUBLIC_AGENT_ROLE, "plan"),
-            "item/commandExecution/outputDelta": ("execute_role", "运行命令", PUBLIC_TOOL_ROLE, "commandExecution"),
-            "item/fileChange/outputDelta": ("execute_role", "更新板书文档", PUBLIC_TOOL_ROLE, "fileChange"),
-            "item/mcpToolCall/progress": ("execute_role", "调用工具", PUBLIC_TOOL_ROLE, "mcpToolCall"),
+            "item/reasoning/summaryTextDelta": ("build_context", "OpenClass is thinking", PUBLIC_AGENT_ROLE, "reasoning"),
+            "item/plan/delta": ("build_context", "Preparing work plan", PUBLIC_AGENT_ROLE, "plan"),
+            "item/commandExecution/outputDelta": ("execute_role", "Running command", PUBLIC_TOOL_ROLE, "commandExecution"),
+            "item/fileChange/outputDelta": ("execute_role", "Updating board document", PUBLIC_TOOL_ROLE, "fileChange"),
+            "item/mcpToolCall/progress": ("execute_role", "Using tool", PUBLIC_TOOL_ROLE, "mcpToolCall"),
         }
         mapping = mappings.get(method)
         if mapping is None:
@@ -239,7 +239,7 @@ class CodexActivityRecorder:
                 item_id=item_id,
                 turn_id=turn_id,
                 stage="execute_role",
-                label="OpenClass 工作进展",
+                label="OpenClass progress",
                 status="completed",
                 role=PUBLIC_AGENT_ROLE,
                 metadata=metadata,
@@ -256,24 +256,24 @@ class CodexActivityRecorder:
                 item_id=item_id,
                 turn_id=turn_id,
                 stage="build_context",
-                label="OpenClass 已完成思考",
+                label="OpenClass finished thinking",
                 status="completed",
                 role=PUBLIC_AGENT_ROLE,
                 metadata=metadata,
             )
             return
         descriptors: dict[str, tuple[str, str, str]] = {
-            "plan": ("build_context", "工作计划已更新", PUBLIC_AGENT_ROLE),
-            "commandExecution": ("execute_role", "命令执行完成", PUBLIC_TOOL_ROLE),
-            "fileChange": ("execute_role", "板书文档已更新", PUBLIC_TOOL_ROLE),
-            "mcpToolCall": ("execute_role", "工具调用完成", PUBLIC_TOOL_ROLE),
-            "dynamicToolCall": ("execute_role", "工具调用完成", PUBLIC_TOOL_ROLE),
-            "collabAgentToolCall": ("execute_role", "协同处理完成", PUBLIC_AGENT_ROLE),
-            "subAgentActivity": ("execute_role", "协同处理完成", PUBLIC_AGENT_ROLE),
-            "webSearch": ("build_context", "网络搜索完成", PUBLIC_TOOL_ROLE),
-            "imageView": ("build_context", "图片查看完成", PUBLIC_TOOL_ROLE),
-            "imageGeneration": ("execute_role", "图片生成完成", PUBLIC_TOOL_ROLE),
-            "contextCompaction": ("build_context", "上下文整理完成", PUBLIC_AGENT_ROLE),
+            "plan": ("build_context", "Work plan updated", PUBLIC_AGENT_ROLE),
+            "commandExecution": ("execute_role", "Command completed", PUBLIC_TOOL_ROLE),
+            "fileChange": ("execute_role", "Board document updated", PUBLIC_TOOL_ROLE),
+            "mcpToolCall": ("execute_role", "Tool call completed", PUBLIC_TOOL_ROLE),
+            "dynamicToolCall": ("execute_role", "Tool call completed", PUBLIC_TOOL_ROLE),
+            "collabAgentToolCall": ("execute_role", "Collaboration completed", PUBLIC_AGENT_ROLE),
+            "subAgentActivity": ("execute_role", "Collaboration completed", PUBLIC_AGENT_ROLE),
+            "webSearch": ("build_context", "Web search completed", PUBLIC_TOOL_ROLE),
+            "imageView": ("build_context", "Image viewed", PUBLIC_TOOL_ROLE),
+            "imageGeneration": ("execute_role", "Image generated", PUBLIC_TOOL_ROLE),
+            "contextCompaction": ("build_context", "Context organized", PUBLIC_AGENT_ROLE),
         }
         descriptor = descriptors.get(item_type)
         if descriptor is None:

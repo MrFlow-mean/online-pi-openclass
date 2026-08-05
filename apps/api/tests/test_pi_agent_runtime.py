@@ -630,10 +630,10 @@ def test_pi_client_converts_live_json_events_into_public_activity(tmp_path) -> N
     )
 
     assert response.output_parsed.answer == "ok"
-    assert any(event.label == "OpenClass 正在推理" for event in observed)
-    assert any(event.label == "OpenClass 已完成推理" for event in observed)
-    assert any(event.label == "OpenClass 正在生成结果" for event in observed)
-    assert any(event.label == "OpenClass 已校验模型结果" for event in observed)
+    assert any(event.label == "OpenClass is reasoning" for event in observed)
+    assert any(event.label == "OpenClass completed reasoning" for event in observed)
+    assert any(event.label == "OpenClass is generating the result" for event in observed)
+    assert any(event.label == "OpenClass validated the model result" for event in observed)
     assert all("private reasoning" not in str(event.metadata) for event in observed)
     assert all("private reasoning" not in str(event.metadata) for event in response.activity)
 
@@ -682,6 +682,44 @@ print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
     assert response.output_parsed.answer == "ok"
     assert observed
     assert observed[0][0] < finished_at - 0.25
+
+
+def test_pi_client_finishes_after_terminal_assistant_event_when_cli_stays_alive(
+    tmp_path,
+) -> None:
+    fake_pi = tmp_path / "fake-pi-stays-alive"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+import time
+
+sys.stdin.read()
+print(json.dumps({
+    "type": "message_end",
+    "message": {"role": "assistant", "content": [{"type": "text", "text": "{\\\"answer\\\":\\\"ok\\\"}"}]},
+}), flush=True)
+time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_pi, 0o700)
+    started_at = time.monotonic()
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary=str(fake_pi),
+        runtime_root=tmp_path / "runtime",
+    ).parse(
+        system_prompt="Answer.",
+        user_prompt="Question",
+        schema=_Answer,
+    )
+
+    assert response.output_parsed.answer == "ok"
+    assert time.monotonic() - started_at < 2
 
 
 def test_pi_client_streams_plain_text_deltas_without_waiting_for_completion(tmp_path) -> None:

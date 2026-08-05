@@ -33,6 +33,7 @@ import {
 } from "@/components/course-studio/source-structure-quality";
 import { api } from "@/lib/api";
 import { useSourceBatchManagement } from "@/hooks/course-studio/use-source-batch-management";
+import { useSourcePolling } from "@/hooks/course-studio/use-source-polling";
 import type { SourceCatalogCacheController } from "@/hooks/course-studio/use-source-catalog-cache";
 import type { AIModelOption, AIModelSelection, RepositoryMapView, SelectionRef, SourceCatalogView, SourceIngestionRecord } from "@/types";
 
@@ -48,16 +49,14 @@ type SourceImportPanelProps = {
 };
 
 const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
-  queued: "等待",
-  fetching: "获取",
-  parsing: "解析",
-  indexing: "索引",
-  ready: "就绪",
-  failed: "失败",
+  queued: "wait",
+  fetching: "get",
+  parsing: "parse",
+  indexing: "index",
+  ready: "ready",
+  failed: "fail",
 };
 
-const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
-const ACTIVE_STRUCTURE_STATUSES = new Set<SourceIngestionRecord["structure_status"]>(["pending", "building"]);
 const CATALOG_MODEL_STORAGE_KEY = "blackboard-ai:selected-catalog-model";
 const sourceRefreshRequests = new Map<string, Promise<SourceIngestionRecord[]>>();
 
@@ -103,6 +102,7 @@ export function SourceImportPanel({
   const dragDepthRef = useRef(0);
   const didRestoreCatalogModelRef = useRef(false);
   const isRefreshingSourcesRef = useRef(false);
+  const removingSourceIdsRef = useRef<Set<string>>(new Set());
   const {
     ensureCurrentSource,
     invalidateSource,
@@ -126,7 +126,11 @@ export function SourceImportPanel({
     ? selectionForModelOption(selectedCatalogModelOption, catalogModel)
     : null;
   const sortedSources = sortSources(sources, sortOption);
-  const readyForQueryCount = sources.filter(sourceIsReadyForQuery).length;
+  const readyForQueryCount = sources.filter((source) => {
+    if (!sourceIsReadyForQuery(source)) return false;
+    const catalog = catalogCache.catalogsBySourceId.get(source.id);
+    return !catalog || catalog.strategy !== "codex_directory_v1" || catalog.directory_status === "complete";
+  }).length;
 
   useEffect(() => {
     if (
@@ -154,29 +158,33 @@ export function SourceImportPanel({
     let active = true;
     void prefetchPackage(packageId).catch((error) => {
       if (active) {
-        onError(error instanceof Error ? error.message : "资料目录读取失败");
+        onError(error instanceof Error ? error.message : "Failed to read data directory");
       }
     });
     return () => {
       active = false;
     };
-  }, [onError, packageId, prefetchPackage, sources]);
+  }, [onError, packageId, prefetchPackage]);
 
   const refreshSources = useCallback(async () => {
     if (!packageId || isRefreshingSourcesRef.current) {
-      return;
+      return null;
     }
     isRefreshingSourcesRef.current = true;
     setIsLoading(true);
     try {
-      setSources(await listPackageSourcesOnce(packageId));
+      const nextSources = await listPackageSourcesOnce(packageId);
+      setSources(nextSources);
+      return nextSources;
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料列表读取失败");
+      onError(error instanceof Error ? error.message : "Failed to read data list");
     } finally {
       setIsLoading(false);
       isRefreshingSourcesRef.current = false;
     }
   }, [onError, packageId]);
+
+  useSourcePolling({ disabled, sources, refreshSources });
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -184,16 +192,6 @@ export function SourceImportPanel({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [refreshSources]);
-
-  useEffect(() => {
-    if (disabled || !sources.some(sourceNeedsRefresh)) {
-      return;
-    }
-    const intervalId = window.setInterval(() => {
-      void refreshSources();
-    }, 1000);
-    return () => window.clearInterval(intervalId);
-  }, [disabled, refreshSources, sources]);
 
   useEffect(() => {
     if (!catalogCache.prefetchedPackageIds.has(packageId)) {
@@ -207,7 +205,7 @@ export function SourceImportPanel({
     ).catch(
       (error) => {
         if (active) {
-          onError(error instanceof Error ? error.message : "资料目录更新失败");
+          onError(error instanceof Error ? error.message : "Data directory update failed");
         }
       }
     );
@@ -232,7 +230,7 @@ export function SourceImportPanel({
       setSourceUri("");
       setTitle("");
     } catch (error) {
-      onError(error instanceof Error ? error.message : "URL 导入失败");
+      onError(error instanceof Error ? error.message : "URL import failed");
     } finally {
       setIsImporting(false);
     }
@@ -267,7 +265,7 @@ export function SourceImportPanel({
           imported.push(record);
           setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
         } catch (error) {
-          failures.push(`${file.name}: ${error instanceof Error ? error.message : "导入失败"}`);
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "Import failed"}`);
         }
       }
       setTitle("");
@@ -279,22 +277,24 @@ export function SourceImportPanel({
       setUploadProgress(null);
     }
     if (failures.length) {
-      onError(`${imported.length} 个文件导入成功，${failures.length} 个失败：${failures.join("；")}`);
+      onError(`${imported.length} files imported; ${failures.length} failed: ${failures.join("; ")}`);
     }
   }
 
   async function removeSource(sourceId: string) {
-    if (!sourceId || disabled || removingSourceId) {
+    if (!sourceId || disabled || removingSourceId || removingSourceIdsRef.current.has(sourceId)) {
       return;
     }
+    removingSourceIdsRef.current.add(sourceId);
     setRemovingSourceId(sourceId);
     try {
       await api.deletePackageSource(packageId, sourceId);
       setSources((current) => current.filter((source) => source.id !== sourceId));
       invalidateSource(sourceId);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料移除失败");
+      onError(error instanceof Error ? error.message : "Data removal failed");
     } finally {
+      removingSourceIdsRef.current.delete(sourceId);
       setRemovingSourceId(null);
     }
   }
@@ -358,18 +358,18 @@ export function SourceImportPanel({
       className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
     >
       <UploadCloud className="h-3.5 w-3.5" />
-      {isImporting ? "处理中" : isDragActive ? "松开上传" : "上传资料"}
+      {isImporting ? "Processing" : isDragActive ? "Release upload" : "Upload information"}
     </button>
   );
 
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-gray-200 bg-white p-3">
-        <label className="text-[11px] font-bold uppercase tracking-widest text-gray-500">标题</label>
+        <label className="text-[11px] font-bold uppercase tracking-widest text-gray-500">title</label>
         <input
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          placeholder="可选"
+          placeholder="Optional"
           className="mt-2 h-9 w-full rounded-md border border-gray-200 px-3 text-sm outline-none transition focus:border-black"
           disabled={disabled || isImporting}
         />
@@ -381,7 +381,8 @@ export function SourceImportPanel({
           onChange={updateCatalogModel}
         />
         <p className="mt-1 text-[11px] leading-5 text-gray-400">
-          仅用于上传后建立目录；后续按章阅读使用聊天框当前模型。
+
+          It is only used to create a table of contents after uploading; subsequent chapter-by-chapter reading uses the current model of the chat box.
         </p>
         <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">URL</label>
         <div className="mt-2 flex gap-2">
@@ -397,8 +398,8 @@ export function SourceImportPanel({
             onClick={() => void submitUrl()}
             disabled={!sourceUri.trim() || disabled || isImporting}
             className="flex h-9 w-9 items-center justify-center rounded-md bg-black text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-            title="导入 URL"
-            aria-label="导入 URL"
+            title="Import URL"
+            aria-label="Import URL"
           >
             <Globe2 className="h-4 w-4" />
           </button>
@@ -419,8 +420,8 @@ export function SourceImportPanel({
             onClick={() => void refreshSources()}
             disabled={disabled || isLoading}
             className="flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:border-gray-300 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-            title="刷新"
-            aria-label="刷新资料状态"
+            title="refresh"
+            aria-label="Refresh data status"
           >
             <RefreshCw className={clsx("h-4 w-4", isLoading && "animate-spin")} />
           </button>
@@ -430,7 +431,7 @@ export function SourceImportPanel({
       <div
         aria-busy={isImporting}
         aria-disabled={disabled || isImporting}
-        aria-label="资料上传区域"
+        aria-label="Source upload area"
         data-testid="source-upload-dropzone"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
@@ -453,11 +454,11 @@ export function SourceImportPanel({
               {isImporting ? (
                 <SourceProcessingProgress
                   className="w-full max-w-60 text-left"
-                  label={uploadProgress === 100 ? "上传完成，正在创建处理任务" : "正在上传资料"}
+                  label={uploadProgress === 100 ? "Upload completed, processing task is being created" : "Uploading data"}
                   value={uploadProgress ?? undefined}
                 />
               ) : (
-                <span>继续拖入资料，或点击上传。</span>
+                <span>Continue to drag in the data, or click to upload.</span>
               )}
             </div>
             <SourceBatchControls
@@ -481,8 +482,8 @@ export function SourceImportPanel({
                 onClick={onAllReadySourcesReference}
                 className="flex w-full items-center justify-between rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 text-left text-xs text-blue-800 transition hover:border-blue-200 hover:bg-blue-50"
               >
-                <span className="font-semibold">检索全部可问答资料</span>
-                <span>{readyForQueryCount} 份</span>
+                <span className="font-semibold">Retrieve all Q&A information</span>
+                <span>{readyForQueryCount}  share</span>
               </button>
             ) : null}
             {sortedSources.map((source) => (
@@ -497,6 +498,7 @@ export function SourceImportPanel({
                   catalogCache.loadingSourceIds.has(source.id)
                 }
                 isRemoving={removingSourceId === source.id}
+                removeDisabled={disabled || Boolean(removingSourceId)}
                 onRemove={() => void removeSource(source.id)}
                 selectionMode={batchManagement.isActive}
                 isSelected={batchManagement.selectedSourceIds.has(source.id)}
@@ -518,7 +520,9 @@ export function SourceImportPanel({
                   );
                 }}
                 onCatalogInvalidate={() => invalidateSource(source.id)}
-                onRefresh={refreshSources}
+                onRefresh={async () => {
+                  await refreshSources();
+                }}
               />
             ))}
           </div>
@@ -534,11 +538,11 @@ export function SourceImportPanel({
             {isImporting ? (
               <SourceProcessingProgress
                 className="w-full max-w-60 text-left"
-                label={uploadProgress === 100 ? "上传完成，正在创建处理任务" : "正在上传资料"}
+                label={uploadProgress === 100 ? "Upload completed, processing task is being created" : "Uploading data"}
                 value={uploadProgress ?? undefined}
               />
             ) : (
-              <span>{isDragActive ? "松开上传资料。" : "拖拽文件到这里，或点击上传资料。"}</span>
+              <span>{isDragActive ? "Release to upload data." : "Drag and drop files here, or click to upload data."}</span>
             )}
           </div>
         )}
@@ -547,7 +551,7 @@ export function SourceImportPanel({
   );
 }
 
-const SOURCE_TITLE_COLLATOR = new Intl.Collator("zh-CN", {
+const SOURCE_TITLE_COLLATOR = new Intl.Collator("en-US", {
   numeric: true,
   sensitivity: "base",
 });
@@ -584,6 +588,7 @@ function SourceRow({
   catalog,
   isCatalogLoading,
   isRemoving,
+  removeDisabled,
   onRemove,
   selectionMode,
   isSelected,
@@ -602,6 +607,7 @@ function SourceRow({
   catalog: SourceCatalogView | null;
   isCatalogLoading: boolean;
   isRemoving: boolean;
+  removeDisabled: boolean;
   onRemove: () => void;
   selectionMode: boolean;
   isSelected: boolean;
@@ -618,6 +624,8 @@ function SourceRow({
   const [repositoryMap, setRepositoryMap] = useState<RepositoryMapView | null>(null);
   const [isLoadingRepositoryMap, setIsLoadingRepositoryMap] = useState(false);
   const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
+  const [isRefiningCatalog, setIsRefiningCatalog] = useState(false);
+  const [isPausingCatalog, setIsPausingCatalog] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState(source.title);
@@ -636,6 +644,8 @@ function SourceRow({
     isDirectoryCatalogSource(source) ||
     catalog?.strategy === "codex_directory_v1" ||
     catalog?.catalog_schema_version === "codex_directory_v1";
+  const visibleCatalogSummary =
+    catalog?.summary && !/(继续核对|持续完善)/.test(catalog.summary) ? catalog.summary : "";
   const sourceQuality = source.structure_quality;
   const viewQuality = catalog?.quality;
   const structureQuality =
@@ -655,9 +665,20 @@ function SourceRow({
   );
   const processingState = getSourceProcessingState(source);
   const queryReady = sourceIsReadyForQuery(source);
+  const wholeSourceReady = Boolean(
+    queryReady &&
+      (!isDirectoryOnlyCatalog || catalog?.directory_status === "complete")
+  );
+  const chapterReferenceReady = Boolean(
+    onSourceReference &&
+      catalog &&
+      catalog.catalog_version > 0 &&
+      catalog.source_content_hash
+  );
+  const nextWork = catalog?.remaining_work?.[0];
 
   async function toggleStructure() {
-    if (!isReady) {
+    if (!isReady && !catalog?.chapters.length) {
       return;
     }
     const nextOpen = !isStructureOpen;
@@ -669,9 +690,48 @@ function SourceRow({
     try {
       setRepositoryMap(await api.getRepositoryMap(packageId, source.id));
     } catch (error) {
-      onError(error instanceof Error ? error.message : "仓库结构读取失败");
+      onError(error instanceof Error ? error.message : "Failed to read warehouse structure");
     } finally {
       setIsLoadingRepositoryMap(false);
+    }
+  }
+
+  async function refineCatalog() {
+    if (
+      !catalog ||
+      isRefiningCatalog ||
+      catalog.work_state === "working" ||
+      catalog.work_state === "partial"
+    ) {
+      return;
+    }
+    setIsRefiningCatalog(true);
+    try {
+      onCatalogUpdate(await api.refinePackageSourceCatalog(packageId, source.id));
+      setIsStructureOpen(true);
+      await onRefresh();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Catalog refinement could not start");
+    } finally {
+      setIsRefiningCatalog(false);
+    }
+  }
+
+  async function pauseCatalog() {
+    if (
+      !catalog ||
+      isPausingCatalog ||
+      !["working", "partial"].includes(catalog.work_state)
+    ) {
+      return;
+    }
+    setIsPausingCatalog(true);
+    try {
+      onCatalogUpdate(await api.pausePackageSourceCatalog(packageId, source.id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Catalog pause could not be requested");
+    } finally {
+      setIsPausingCatalog(false);
     }
   }
 
@@ -702,7 +762,7 @@ function SourceRow({
       setIsStructureOpen(true);
       setExpandedChapterIds(new Set());
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料目录重建失败");
+      onError(error instanceof Error ? error.message : "Data directory reconstruction failed");
     } finally {
       setIsRebuildingStructure(false);
     }
@@ -722,7 +782,7 @@ function SourceRow({
       onCatalogInvalidate();
       onSourceUpdate(await api.retryPackageSource(packageId, source.id));
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料重试失败");
+      onError(error instanceof Error ? error.message : "Data retry failed");
     } finally {
       setIsRetrying(false);
     }
@@ -739,7 +799,7 @@ function SourceRow({
       onSourceUpdate(await api.renamePackageSource(packageId, source.id, nextTitle));
       setIsEditingTitle(false);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料重命名失败");
+      onError(error instanceof Error ? error.message : "Failed to rename data");
     }
   }
 
@@ -755,7 +815,7 @@ function SourceRow({
       setContent(nextContent);
       setDraftContent(nextContent);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料正文读取失败");
+      onError(error instanceof Error ? error.message : "Failed to read data text");
     } finally {
       setIsLoadingContent(false);
     }
@@ -776,7 +836,7 @@ function SourceRow({
       setIsEditingContent(false);
       onSourceUpdate(result.source);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料正文保存失败");
+      onError(error instanceof Error ? error.message : "Failed to save data text");
     } finally {
       setIsSavingContent(false);
     }
@@ -792,7 +852,7 @@ function SourceRow({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "资料下载失败");
+      onError(error instanceof Error ? error.message : "Data download failed");
     }
   }
 
@@ -831,7 +891,7 @@ function SourceRow({
               onChange={onToggleSelection}
               disabled={selectionDisabled}
               className="h-4 w-4 rounded border-blue-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label={`选择资料 ${source.title}`}
+              aria-label={`Select source ${source.title}`}
             />
           </label>
         ) : (
@@ -858,17 +918,17 @@ function SourceRow({
                   className="h-7 min-w-0 flex-1 rounded border border-gray-300 px-2 text-sm outline-none focus:border-black"
                   autoFocus
                 />
-                <button type="button" onClick={() => void saveTitle()} className="rounded p-1 text-emerald-700" aria-label="保存资料标题">
+                <button type="button" onClick={() => void saveTitle()} className="rounded p-1 text-emerald-700" aria-label="Save data title">
                   <Check className="h-3.5 w-3.5" />
                 </button>
-                <button type="button" onClick={() => setIsEditingTitle(false)} className="rounded p-1 text-gray-500" aria-label="取消修改资料标题">
+                <button type="button" onClick={() => setIsEditingTitle(false)} className="rounded p-1 text-gray-500" aria-label="Cancel modification of data title">
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
             ) : (
               <div className="flex min-w-0 items-start gap-1">
                 <p className="min-w-0 flex-1 break-words text-sm font-semibold leading-5 text-gray-900">{source.title}</p>
-                <button type="button" onClick={() => setIsEditingTitle(true)} className="shrink-0 rounded p-1 text-gray-400 hover:text-black" aria-label={`重命名资料 ${source.title}`}>
+                <button type="button" onClick={() => setIsEditingTitle(true)} className="shrink-0 rounded p-1 text-gray-400 hover:text-black" aria-label={`Rename source ${source.title}`}>
                   <Pencil className="h-3 w-3" />
                 </button>
               </div>
@@ -885,7 +945,7 @@ function SourceRow({
                 )}
               >
                 {source.status === "indexing" && isDirectoryCatalogSource(source)
-                  ? "建目录"
+                  ? "Create directory"
                   : STATUS_LABELS[source.status]}
               </span>
               {isReady ? (
@@ -908,19 +968,19 @@ function SourceRow({
                   onClick={() => void toggleContent()}
                   disabled={isLoadingContent}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-50 hover:text-black disabled:opacity-50"
-                  title="查看完整正文"
-                  aria-label={`查看资料正文 ${source.title}`}
+                  title="View full text"
+                  aria-label={`View source content ${source.title}`}
                 >
                   {isLoadingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
                 </button>
               ) : null}
-              {queryReady && onSourceReference ? (
+              {wholeSourceReady && onSourceReference ? (
                 <button
                   type="button"
                   onClick={() => onSourceReference(createWholeSourceSelection(source))}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-blue-600 transition hover:bg-blue-50"
-                  title="在整份资料中问答"
-                  aria-label={`选择整份资料问答 ${source.title}`}
+                  title="Questions and answers throughout the material"
+                  aria-label={`Use entire source for Q&A: ${source.title}`}
                 >
                   <TextQuote className="h-3.5 w-3.5" />
                 </button>
@@ -929,8 +989,8 @@ function SourceRow({
                 type="button"
                 onClick={() => void downloadSource()}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-50 hover:text-black"
-                title="下载原始资料"
-                aria-label={`下载资料 ${source.title}`}
+                title="Download source material"
+                aria-label={`Download source ${source.title}`}
               >
                 <Download className="h-3.5 w-3.5" />
               </button>
@@ -940,13 +1000,13 @@ function SourceRow({
                   onClick={() => void retrySource()}
                   disabled={isRetrying}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-amber-600 transition hover:bg-amber-50 disabled:opacity-50"
-                  title="重试资料处理"
-                  aria-label={`重试资料 ${source.title}`}
+                  title="Retry data processing"
+                  aria-label={`Retry source ${source.title}`}
                 >
                   <RotateCcw className={clsx("h-3.5 w-3.5", isRetrying && "animate-spin")} />
                 </button>
               ) : null}
-              {isReady && !isOpenNotebookManaged ? (
+              {(isReady || hasChapters) && !isOpenNotebookManaged ? (
                 <button
                   type="button"
                   onClick={() => void toggleStructure()}
@@ -956,21 +1016,21 @@ function SourceRow({
                       ? "text-blue-600 hover:border-blue-100 hover:bg-blue-50"
                       : "text-gray-400 hover:border-gray-200 hover:bg-gray-50 hover:text-gray-600"
                   )}
-                  title={canViewDirectory ? "查看目录" : "查看目录状态"}
-                  aria-label={`${canViewDirectory ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
+                  title={canViewDirectory ? "View catalog" : "View directory status"}
+                  aria-label={`${canViewDirectory ? "View data directory" : "View directory status"} ${source.title}`}
                 >
                   {isCatalogLoading || isLoadingRepositoryMap ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
-                  <span>{isStructureOpen ? "收起" : "展开"}</span>
+                  <span>{isStructureOpen ? "close" : "Expand"}</span>
                 </button>
               ) : null}
               {!selectionMode ? (
                 <button
                   type="button"
                   onClick={onRemove}
-                  disabled={isRemoving}
+                  disabled={removeDisabled}
                   className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-gray-400 transition hover:border-rose-100 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="移除资料"
-                  aria-label={`移除资料 ${source.title}`}
+                  title="Remove data"
+                  aria-label={`Remove source ${source.title}`}
                 >
                   {isRemoving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 </button>
@@ -980,9 +1040,9 @@ function SourceRow({
           <p className="mt-2 break-all text-xs leading-5 text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
           {isRepository && isReady ? (
             <p className="mt-1 text-[10px] leading-4 text-gray-500">
-              {metadataString(source, "repository_visibility") === "private" ? "私有仓库" : "公开仓库"}
+              {metadataString(source, "repository_visibility") === "private" ? "Private warehouse" : "public repository"}
               {" · "}commit {metadataString(source, "repository_commit_sha").slice(0, 12)}
-              {" · "}学习覆盖 {Math.round(Number(source.metadata.repository_learning_coverage || 0) * 100)}%
+              {" · "}learning coverage {Math.round(Number(source.metadata.repository_learning_coverage || 0) * 100)}%
             </p>
           ) : null}
           {processingState ? (
@@ -998,16 +1058,16 @@ function SourceRow({
             <SourceCodexActivity
               className="mt-2"
               events={source.ingestion_job.agent_activity}
-              title="最近一次后端 OpenClass 输出"
+              title="The latest backend OpenClass output"
               expandedByDefault={false}
             />
           ) : null}
           {isReady ? (
             <p className="mt-2 text-xs leading-5 text-gray-500">
               {isRepository
-                ? "仓库已固定到不可变提交；选择项目或学习节点后，源码证据才会进入聊天。"
+                ? "The repository is pinned to immutable commits; source code evidence will not enter the chat until a project or learning node is selected."
                 : isOpenNotebookManaged
-                ? "资料正文由 OpenNotebook 处理；引用后按本轮问题检索相关片段。"
+                ? "The text of the data is processed by OpenNotebook; after citation, relevant fragments are retrieved according to the current round of questions."
                 : structureNote}
             </p>
           ) : null}
@@ -1016,7 +1076,7 @@ function SourceRow({
           {isContentOpen ? (
             <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-2">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-[11px] font-semibold text-gray-600">可检索正文</p>
+                <p className="text-[11px] font-semibold text-gray-600">Searchable text</p>
                 {isEditingContent ? (
                   <div className="flex items-center gap-1">
                     <button
@@ -1024,7 +1084,7 @@ function SourceRow({
                       onClick={() => void saveContent()}
                       disabled={!draftContent.trim() || isSavingContent}
                       className="rounded p-1 text-emerald-700 disabled:opacity-40"
-                      aria-label={`保存资料正文 ${source.title}`}
+                      aria-label={`Save source content ${source.title}`}
                     >
                       {isSavingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                     </button>
@@ -1036,7 +1096,7 @@ function SourceRow({
                       }}
                       disabled={isSavingContent}
                       className="rounded p-1 text-gray-500 disabled:opacity-40"
-                      aria-label={`取消编辑资料正文 ${source.title}`}
+                      aria-label={`Cancel editing source content ${source.title}`}
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -1050,7 +1110,7 @@ function SourceRow({
                     }}
                     disabled={!content}
                     className="rounded p-1 text-gray-500 hover:bg-white hover:text-black disabled:opacity-40"
-                    aria-label={`编辑资料正文 ${source.title}`}
+                    aria-label={`Edit source content ${source.title}`}
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </button>
@@ -1065,7 +1125,7 @@ function SourceRow({
                 />
               ) : (
                 <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
-                  {content || "资料中没有可显示的文字正文。"}
+                  {content || "There is no text to display in the profile."}
                 </pre>
               )}
             </div>
@@ -1079,38 +1139,101 @@ function SourceRow({
                   onSourceReference={onSourceReference}
                 />
               ) : !isRepository && catalog?.task_contract !== "directory_pages_offset_tree_v1" ? (
-                <SourceStructureQualitySummary
-                  source={source}
-                  quality={structureQuality}
-                  warnings={catalog?.warnings}
-                />
+                <div>
+                  {catalog?.catalog_schema_version === "agent_catalog_v2" || catalog?.catalog_schema_version === "agent_catalog_v3" ? (
+                    <p className="mb-1 text-[10px] text-gray-500">目录完整性与正文索引由文件解析 Agent 自主判断</p>
+                  ) : null}
+                  <SourceStructureQualitySummary
+                    source={source}
+                    quality={structureQuality}
+                    warnings={catalog?.warnings}
+                  />
+                </div>
               ) : null}
-              <div className="mb-1 mt-2 flex justify-end">
+              {!isRepository && catalog ? (
+                <div className="mt-2 rounded-md border border-blue-100 bg-white/80 p-2 text-[11px] leading-4 text-gray-600">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-gray-800">
+                      目录版本 {catalog.catalog_version} 已发布
+                    </span>
+                    <span>{catalog.chapter_count} 个节点，{catalog.verified_chapter_count} 个可引用，{catalog.unresolved_node_count} 个待处理</span>
+                  </div>
+                  <div className="mt-2 grid gap-1 rounded border border-gray-100 bg-gray-50/70 p-2 text-gray-700">
+                    <p>
+                      目录发现：{catalog.directory_status === "complete" ? `完成，${catalog.chapter_count} 个节点` : `未完成，${catalog.directory_gaps.length} 个明确缺口`}
+                    </p>
+                    <p>
+                      页码标定：{catalog.locator_method === "native_navigation"
+                        ? "原生书签"
+                        : catalog.locator_method === "exact_p_regimes"
+                          ? `${catalog.pagination_regime_count}/${catalog.pagination_regime_count} 个精确 P 区段`
+                          : "尚无合法精确定位"}
+                    </p>
+                    <p>可引用范围：{catalog.verified_chapter_count}/{catalog.chapter_count}</p>
+                  </div>
+                  {visibleCatalogSummary ? <p className="mt-1">{visibleCatalogSummary}</p> : null}
+                  {catalog.background_refine_active && (nextWork?.reason || catalog.next_plan) ? (
+                    <p className="mt-1"><span className="font-medium">后台继续：</span> {nextWork?.reason || catalog.next_plan}</p>
+                  ) : null}
+                  {catalog.unresolved_node_count > 0 ? (
+                    <p className="mt-1 text-amber-700">
+                      未定位节点暂不可引用；已验证章节现在即可使用。
+                    </p>
+                  ) : null}
+                  {catalog.stop_reason ? <p className="mt-1 text-gray-500">{catalog.stop_reason}</p> : null}
+                  {catalog.recent_tool_activity.length ? (
+                    <p className="mt-1 text-gray-500">
+                      Recent tools: {catalog.recent_tool_activity.slice(-3).map((activity) => String(activity.tool || "inspection")).join(" · ")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="mb-1 mt-2 flex justify-end gap-1">
+                {!isRepository && catalog && ["working", "partial"].includes(catalog.work_state) ? (
+                  <button
+                    type="button"
+                    onClick={() => void pauseCatalog()}
+                    disabled={isPausingCatalog}
+                    className="rounded-md border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-700 disabled:opacity-50"
+                  >
+                    {isPausingCatalog ? "正在暂停…" : "暂停"}
+                  </button>
+                ) : null}
+                {!isRepository && catalog?.can_refine && catalog.work_state === "paused" ? (
+                  <button
+                    type="button"
+                    onClick={() => void refineCatalog()}
+                    disabled={isRefiningCatalog}
+                    className="rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] text-blue-700 disabled:opacity-50"
+                  >
+                    {isRefiningCatalog ? "正在恢复…" : "恢复自动解析"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => void rebuildStructure()}
                   disabled={isRebuildingStructure}
                   className="flex h-7 w-7 items-center justify-center rounded-md border border-blue-100 bg-white text-blue-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  title={isRepository ? "从当前分支创建新快照" : "重新建立目录"}
-                  aria-label={`${isRepository ? "创建仓库新快照" : "重新建立资料目录"} ${source.title}`}
+                  title={isRepository ? "Create a new snapshot from the current branch" : "Re-create directory"}
+                  aria-label={`${isRepository ? "Create a new snapshot of the warehouse" : "Re-create the data directory"} ${source.title}`}
                 >
                   <RefreshCw className={clsx("h-3.5 w-3.5", isRebuildingStructure && "animate-spin")} />
                 </button>
               </div>
               {isRepository ? (
                 isLoadingRepositoryMap || !repositoryMap ? (
-                  <p className="text-xs leading-5 text-gray-600">正在读取仓库结构…</p>
+                  <p className="text-xs leading-5 text-gray-600">Reading warehouse structure...</p>
                 ) : null
-              ) : isCatalogLoading ? (
-                <p className="text-xs leading-5 text-gray-600">正在读取目录…</p>
               ) : catalog && hasChapters ? (
                 <SourceChapterTree
                   source={source}
                   catalog={catalog}
                   expandedIds={expandedChapterIds}
                   onToggle={toggleChapter}
-                  onSourceReference={queryReady ? onSourceReference : undefined}
+                  onSourceReference={chapterReferenceReady ? onSourceReference : undefined}
                 />
+              ) : isCatalogLoading ? (
+                <p className="text-xs leading-5 text-gray-600">Reading directory…</p>
               ) : (
                 <SourceStructureEmptyState source={source} catalog={catalog} />
               )}
@@ -1132,12 +1255,12 @@ function SourceStructureEmptyState({
   const status = catalog?.status ?? source.structure_status;
   const message =
     status === "failed"
-      ? catalog?.error || source.structure_error || "目录建立失败。上一个可用目录会继续保留。"
+      ? catalog?.error || source.structure_error || "Directory creation failed. The last available directory will remain."
       : status === "linear_only"
-        ? "未识别到目录节点。可以明确点击重建，但普通展开不会重新处理资料。"
+        ? "Directory node not recognized. You can click Rebuild explicitly, but normal expansion will not reprocess the data."
         : status === "pending" || status === "building"
-          ? "目录正在建立并保存，完成后会自动更新。"
-          : "这份资料当前没有已保存的目录节点。";
+          ? "The catalog is being created and saved, and will be updated automatically when completed."
+          : "There are currently no saved directory nodes for this document.";
   return (
     <p className="text-xs leading-5 text-gray-600">{message}</p>
   );
@@ -1154,13 +1277,6 @@ function mergeSourceWithCatalog(source: SourceIngestionRecord, catalog: SourceCa
     structure_error: catalog.error,
     structure_updated_at: catalog.catalog_updated_at,
   };
-}
-
-function sourceNeedsRefresh(source: SourceIngestionRecord) {
-  if (ACTIVE_SOURCE_STATUSES.has(source.status)) {
-    return true;
-  }
-  return source.status === "ready" && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status);
 }
 
 function sourceIsReadyForQuery(source: SourceIngestionRecord) {

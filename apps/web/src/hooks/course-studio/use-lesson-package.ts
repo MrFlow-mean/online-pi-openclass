@@ -54,13 +54,13 @@ function metadataText(commit: CommitRecord, key: string): string {
 function sourceDetail(commit: CommitRecord): string {
   const selection = commit.metadata?.selection;
   if (!selection || typeof selection !== "object") {
-    return "已使用冻结的课程资料证据";
+    return "Evidence that frozen course materials have been used";
   }
   const record = selection as Record<string, unknown>;
   const parts = [record.source_title, record.source_chapter_title, record.source_page_range]
     .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
     .map((value) => value.trim());
-  return parts.join(" · ") || "已使用冻结的课程资料证据";
+  return parts.join(" · ") || "Evidence that frozen course materials have been used";
 }
 
 function firstParentLineage(lesson: Lesson): CommitRecord[] {
@@ -119,12 +119,12 @@ export function buildLessonPlaybackSteps(lesson: Lesson): LessonPlaybackStep[] {
     };
 
     if (userMessage) {
-      addStep("user", "用户发言", userMessage, beforeCommit.id, beforeCommit.id, beforeCommit.id, "user");
+      addStep("user", "User speaks", userMessage, beforeCommit.id, beforeCommit.id, beforeCommit.id, "user");
     }
     if (hasSource) {
       addStep(
         "source",
-        "资料引用",
+        "Data citation",
         sourceDetail(commit),
         beforeCommit.id,
         beforeCommit.id,
@@ -144,7 +144,7 @@ export function buildLessonPlaybackSteps(lesson: Lesson): LessonPlaybackStep[] {
       }
       addStep(
         "activity",
-        "AI 工作过程",
+        "AI working process",
         label,
         beforeCommit.id,
         beforeCommit.id,
@@ -155,7 +155,7 @@ export function buildLessonPlaybackSteps(lesson: Lesson): LessonPlaybackStep[] {
     if (assistantMessage) {
       addStep(
         "assistant",
-        "AI 回复",
+        "AI Reply",
         assistantMessage,
         beforeCheckpointId,
         beforeCommit.id,
@@ -164,17 +164,17 @@ export function buildLessonPlaybackSteps(lesson: Lesson): LessonPlaybackStep[] {
       );
     }
     if (boardChanged) {
-      addStep("board", "板书变化", commit.label, commit.id, commit.id, commit.id, "board");
+      addStep("board", "Board changes", commit.label, commit.id, commit.id, commit.id, "board");
     }
     if (commit.parent_ids.length > 1) {
-      addStep("merge", "分支合并", commit.message, commit.id, commit.id, commit.id, "merge");
+      addStep("merge", "Branch merge", commit.message, commit.id, commit.id, commit.id, "merge");
     }
     Object.entries(lesson.history_graph.branches).forEach(([branchName, branch]) => {
       if (branch.base_commit_id === commit.id && branchName !== commit.branch_name) {
-        addStep("branch", "创建分支", branchName, commit.id, commit.id, commit.id, `branch-${branchName}`);
+        addStep("branch", "Create a branch", branchName, commit.id, commit.id, commit.id, `branch-${branchName}`);
       }
     });
-    addStep("complete", "回合完成", commit.message, commit.id, commit.id, commit.id, "complete");
+    addStep("complete", "round completed", commit.message, commit.id, commit.id, commit.id, "complete");
   });
 
   return steps;
@@ -280,7 +280,7 @@ export function useLessonPackage({
       (commit) => commit.id === currentStep.checkpointCommitId
     );
     if (!checkpoint) {
-      setError("当前播放步骤没有可用的历史检查点。");
+      setError("There are no history checkpoints available for the current playback step.");
       return;
     }
     setIsPlaying(false);
@@ -289,7 +289,7 @@ export function useLessonPackage({
 
   async function exportRidoc() {
     if (mergeActive || !activeLesson) {
-      setError("合并草案期间不能导出课程包，请先提交或放弃合并。");
+      setError("Course packages cannot be exported during the merge draft, please submit or abandon the merge first.");
       return;
     }
     if (!(await flushAutoSave("export"))) {
@@ -301,7 +301,7 @@ export function useLessonPackage({
       const blob = await api.exportRidoc(activeLesson.id);
       downloadRidoc(blob, activeLesson);
     } catch (exportError) {
-      setError(exportError instanceof Error ? exportError.message : "课程包导出失败");
+      setError(exportError instanceof Error ? exportError.message : "Course package export failed");
     } finally {
       setOperation(null);
       setBusyAction(null);
@@ -310,7 +310,7 @@ export function useLessonPackage({
 
   async function importRidoc(file: File) {
     if (mergeActive) {
-      setError("合并草案期间不能导入课程包，请先提交或放弃合并。");
+      setError("Course packages cannot be imported during the merge draft, please submit or abandon the merge first.");
       return;
     }
     if (!(await flushAutoSave("import"))) {
@@ -326,7 +326,7 @@ export function useLessonPackage({
         rebuildMessageLessonIds: nextPackage.lessons.map((lesson) => lesson.id),
       });
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : "课程包导入失败");
+      setError(importError instanceof Error ? importError.message : "Course package import failed");
     } finally {
       setOperation(null);
       setBusyAction(null);

@@ -407,6 +407,44 @@ def test_native_pdf_reads_only_inclusive_selected_physical_pages(
     assert result.evidence_items[0].metadata["page_end_inclusive"] == 3
 
 
+def test_pdf_range_prefers_bounded_poppler_text_over_slow_page_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "fast-native.pdf"
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(width=612, height=792)
+    with path.open("wb") as handle:
+        writer.write(handle)
+    monkeypatch.setattr(
+        source_range_reader,
+        "_extract_pdf_native_text",
+        lambda _path, *, page_start, page_end: {
+            page_start: "FAST_PAGE_2 durable selected evidence",
+            page_end: "FAST_PAGE_3 durable selected evidence",
+        },
+    )
+    monkeypatch.setattr(
+        source_range_reader,
+        "extract_pdf_pages_layout",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bounded native text must not invoke OCR")
+        ),
+    )
+
+    units, warnings = source_range_reader._read_pdf_pages(
+        path,
+        {"kind": "pdf_pages", "start": 2, "end": 3},
+    )
+
+    assert warnings == []
+    assert "FAST_PAGE_2" in units[0].text
+    assert "FAST_PAGE_3" in units[0].text
+    assert units[0].start == 2
+    assert units[0].end == 3
+
+
 def test_pdf_sparse_watermark_text_layer_does_not_suppress_selected_page_ocr(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -835,6 +873,9 @@ def test_grounded_board_uses_range_reader_and_freezes_traceable_bundle(
     frozen = plan.requirement.source_grounding.frozen_evidence
     assert "selected grounded evidence" in frozen[0].expanded_text
     assert "outside before" not in frozen[0].expanded_text
+    assert saved_bundles[0].metadata["visual_scope_status"] == "not_applicable"
+    assert saved_bundles[0].metadata["visual_extracted_count"] == 0
+    assert saved_bundles[0].metadata["visual_scope_cache_key"]
     assert saved_bundles[0].metadata["catalog_pipeline"] == "codex_directory_v1"
     assert saved_bundles[0].metadata["catalog_version"] == 3
     assert saved_bundles[0].metadata["source_range"]["start"] == 2

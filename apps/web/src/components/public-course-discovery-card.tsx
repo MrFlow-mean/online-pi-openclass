@@ -14,9 +14,9 @@ type PublicCourseDiscoveryCardProps = {
 
 function formatUpdatedAt(value?: string | null) {
   if (!value) {
-    return "刚刚更新";
+    return "Just updated";
   }
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     month: "numeric",
     day: "numeric",
   }).format(new Date(value));
@@ -28,7 +28,7 @@ export function PublicCourseDiscoveryCard({
   badge,
 }: PublicCourseDiscoveryCardProps) {
   const ProjectIcon = course.kind === "package" ? FolderClosed : BookOpen;
-  const kindLabel = course.kind === "package" ? "课程包" : "单独课程";
+  const kindLabel = course.kind === "package" ? "course package" : "individual courses";
 
   return (
     <article className="rounded-xl border border-stone-200 bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.04)] transition hover:border-stone-300 hover:shadow-[0_18px_36px_rgba(15,23,42,0.07)]">
@@ -83,13 +83,13 @@ export function PublicCourseDiscoveryCard({
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-stone-500">
               <span className="inline-flex items-center gap-1.5">
                 <GraduationCap className="h-3.5 w-3.5" />
-                {course.lesson_count} 节课程
+                {course.lesson_count}  lessons
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <Star className="h-3.5 w-3.5" />
                 {course.star_count} Stars
               </span>
-              <span>更新于 {formatUpdatedAt(course.updated_at)}</span>
+              <span>updated on {formatUpdatedAt(course.updated_at)}</span>
             </div>
           </div>
         </div>

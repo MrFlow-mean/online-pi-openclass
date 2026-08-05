@@ -12,18 +12,19 @@ export function LegalPage({ title, summary, children }: { title: string; summary
         <header className="border-b border-stone-200 pb-8">
           <Link href="/" className="inline-flex items-center gap-3">
             <BrandMark alt="" className="h-10 w-10 rounded-lg border border-stone-200" size={80} />
-            <span className="text-lg font-semibold">开放课堂</span>
+            <span className="text-lg font-semibold">OpenClass</span>
           </Link>
           <p className="mt-8 text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">OpenClass Legal</p>
           <h1 className="mt-2 text-4xl font-semibold tracking-tight">{title}</h1>
           <p className="mt-4 text-base leading-7 text-stone-600">{summary}</p>
-          <p className="mt-3 text-sm text-stone-500">最后更新：2026 年 7 月 28 日</p>
+          <p className="mt-3 text-sm text-stone-500">Last updated: July 28, 2026</p>
         </header>
         <div className="legal-copy mt-8 space-y-8 text-[15px] leading-7 text-stone-700">{children}</div>
         <footer className="mt-10 border-t border-stone-200 pt-6 text-sm leading-6 text-stone-500">
-          如对本页面有疑问，请联系 <a className="font-semibold text-stone-900 underline" href={`mailto:${email}`}>{email}</a>。
-          <nav className="mt-4 flex flex-wrap gap-x-5 gap-y-2" aria-label="法律与安全">
-            <Link href="/privacy">隐私政策</Link><Link href="/terms">服务条款</Link><Link href="/security">安全说明</Link>
+
+          If you have questions about this page, please contact <a className="font-semibold text-stone-900 underline" href={`mailto:${email}`}>{email}</a>。
+          <nav className="mt-4 flex flex-wrap gap-x-5 gap-y-2" aria-label="Law and Security">
+            <Link href="/privacy">privacy policy</Link><Link href="/terms">Terms of Service</Link><Link href="/security">Safety instructions</Link>
           </nav>
         </footer>
       </article>

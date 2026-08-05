@@ -27,7 +27,7 @@ async function mockAuthenticatedSession(page: import("@playwright/test").Page) {
     return route.fulfill({
       status: authenticated ? 200 : 401,
       contentType: "application/json",
-      body: JSON.stringify(authenticated ? adminUser : { detail: "未登录" }),
+      body: JSON.stringify(authenticated ? adminUser : { detail: "Not logged in" }),
     });
   });
 }
@@ -53,13 +53,13 @@ test("the account menu revokes the backend session before leaving", async ({ pag
       status: 200,
       contentType: "application/json",
       headers: { "set-cookie": "openclass.auth.token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" },
-      body: JSON.stringify({ message: "已退出登录" }),
+      body: JSON.stringify({ message: "Logged out" }),
     });
   });
 
   await page.goto("/admin");
   await page.getByRole("button", { name: "Logout Admin" }).click();
-  await page.getByRole("menuitem", { name: "退出登录" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
 
   await expect.poll(() => logoutRequests).toBe(1);
   await expect(page).toHaveURL(/\/login$/);

@@ -4,7 +4,7 @@ const user = {
   id: "reviewer",
   email: "reviewer@example.com",
   role: "user",
-  display_name: "课程作者",
+  display_name: "Course Author",
   avatar_url: null,
   created_at: "2026-07-27T00:00:00+00:00",
   last_login_at: null,
@@ -28,7 +28,7 @@ const pageSettings = {
 function boardDocument(id: string, text: string) {
   return {
     id,
-    title: "协作课程",
+    title: "Collaborative courses",
     content_json: {
       type: "doc",
       content: [{ type: "paragraph", content: [{ type: "text", text }] }],
@@ -44,20 +44,20 @@ function contribution(overrides: Record<string, unknown> = {}) {
     id: "contribution_browser",
     source_lesson_id: "lesson_source",
     viewer_project_lesson_id: "lesson_source",
-    source_title: "公开课程",
-    title: "补充关键背景",
-    description: "这个版本补充了学习过程中发现的必要背景。",
+    source_title: "Open courses",
+    title: "Add key background",
+    description: "This version supplements the necessary background discovered during the study process.",
     status: "open",
     version: 1,
     current_revision: 1,
-    source_author: { user_id: "reviewer", display_name: "课程作者", avatar_url: null },
-    contributor: { user_id: "learner", display_name: "学习者", avatar_url: null },
+    source_author: { user_id: "reviewer", display_name: "Course Author", avatar_url: null },
+    contributor: { user_id: "learner", display_name: "learner", avatar_url: null },
     revision: {
       id: "revision_browser",
       revision_number: 1,
       source_commit_id: "commit_base",
-      base_document: boardDocument("document_base", "第一节\n原始解释"),
-      proposed_document: boardDocument("document_proposal", "第一节\n改进后的解释\n新增示例"),
+      base_document: boardDocument("document_base", "Section 1 original explanation"),
+      proposed_document: boardDocument("document_proposal", "Improved explanations and new examples in Section 1"),
       created_at: "2026-07-27T01:00:00+00:00",
     },
     events: [
@@ -65,7 +65,7 @@ function contribution(overrides: Record<string, unknown> = {}) {
         id: "event_opened",
         contribution_id: "contribution_browser",
         kind: "opened",
-        actor: { user_id: "learner", display_name: "学习者", avatar_url: null },
+        actor: { user_id: "learner", display_name: "learner", avatar_url: null },
         body: "",
         metadata: { revision_number: 1 },
         created_at: "2026-07-27T01:00:00+00:00",
@@ -95,7 +95,7 @@ function workspaceWithProject() {
     packages: [
       {
         id: "package_standalone",
-        title: "单独课程",
+        title: "individual courses",
         summary: "",
         visibility: "private",
         publication_review: {
@@ -111,9 +111,9 @@ function workspaceWithProject() {
         lessons: [
           {
             id: "lesson_source",
-            title: "公开课程",
+            title: "Open courses",
             slug: "public-course",
-            summary: "用于项目级协作管理的课程。",
+            summary: "Courses for project-level collaboration management.",
             tags: [],
             visibility: "public",
             publication_review: {
@@ -123,9 +123,9 @@ function workspaceWithProject() {
               scanned_source_count: 0,
               scanned_unit_count: 0,
               findings: [],
-              message: "可以公开。",
+              message: "Can be made public.",
             },
-            board_document: boardDocument("document_source", "第一节"),
+            board_document: boardDocument("document_source", "Section 1"),
             history_graph: {
               branches: {},
               commits: [],
@@ -171,10 +171,10 @@ test("lists received and submitted lesson contributions", async ({ page }) => {
   );
 
   await page.goto("/contributions");
-  await expect(page.getByRole("heading", { name: "课程协作" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /补充关键背景/ })).toBeVisible();
-  await page.getByRole("button", { name: "我提交的" }).click();
-  await expect(page.getByText("当前筛选下还没有课程改进方案。")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Course Collaboration" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Add key background/ })).toBeVisible();
+  await page.getByRole("button", { name: "I submitted" }).click();
+  await expect(page.getByText("There are no course improvement plans under the current filter.")).toBeVisible();
 });
 
 test("keeps the profile free of the removed collaboration panel", async ({ page }) => {
@@ -184,13 +184,13 @@ test("keeps the profile free of the removed collaboration panel", async ({ page 
   );
 
   await page.goto("/");
-  await expect(page.getByRole("link", { name: "打开课程协作" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open course collaboration" })).toHaveCount(0);
 
   await page.goto("/profile?tab=collaboration");
   await expect(page).toHaveURL(/tab=repositories/);
-  await expect(page.getByRole("button", { name: "协作" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "项目协作" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /打开 .+ 的协作管理/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "cooperation" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Project collaboration" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Open .+ collaboration management/ })).toHaveCount(0);
 });
 
 test("shows a public diff without exposing write controls", async ({ page }) => {
@@ -209,12 +209,12 @@ test("shows a public diff without exposing write controls", async ({ page }) => 
   );
 
   await page.goto("/contributions/contribution_browser");
-  await expect(page.getByRole("heading", { name: "补充关键背景" })).toBeVisible();
-  await expect(page.getByText("来源基线")).toBeVisible();
-  await expect(page.getByText("贡献版本")).toBeVisible();
-  await expect(page.getByText("新增示例")).toBeVisible();
-  await expect(page.getByRole("link", { name: "登录正式账号" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "开始合并" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Add key background" })).toBeVisible();
+  await expect(page.getByText("source baseline")).toBeVisible();
+  await expect(page.getByText("Contributed version")).toBeVisible();
+  await expect(page.getByText("New example")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Log in to official account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start merging" })).toHaveCount(0);
 });
 
 test("comments and starts a merge from the contribution detail", async ({ page }) => {
@@ -248,12 +248,12 @@ test("comments and starts a merge from the contribution detail", async ({ page }
   });
 
   await page.goto("/contributions/contribution_browser");
-  await page.getByPlaceholder("参与这次课程改进讨论").fill("这项修改可以进入合并审查");
-  await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.getByText("这项修改可以进入合并审查")).toBeVisible();
+  await page.getByPlaceholder("Participate in this course improvement discussion").fill("This modification can go to merge review");
+  await page.getByRole("button", { name: "send" }).click();
+  await expect(page.getByText("This modification can go to merge review")).toBeVisible();
 
   const mergeRequest = page.waitForRequest("**/api/contributions/contribution_browser/merge/start");
-  await page.getByRole("button", { name: "开始合并" }).click();
+  await page.getByRole("button", { name: "Start merging" }).click();
   await mergeRequest;
   await expect(page).toHaveURL(/\/studio\?lesson=lesson_source&contribution=contribution_browser/);
 });

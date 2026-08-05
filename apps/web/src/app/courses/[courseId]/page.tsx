@@ -31,7 +31,7 @@ function findCourse(courseId: string) {
 }
 
 function formatUpdatedAt(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
@@ -48,7 +48,7 @@ export async function generateMetadata({ params }: CourseDetailPageProps): Promi
 
   if (!course) {
     return {
-      title: "课程不存在",
+      title: "Course does not exist",
     };
   }
 
@@ -81,7 +81,8 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
           className="inline-flex w-fit items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
         >
           <ArrowLeft className="h-4 w-4" />
-          返回开放课堂
+
+          Return to OpenClass
         </Link>
 
         <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -128,7 +129,8 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
           <aside className="h-fit rounded-lg border border-stone-200 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.05)]">
             <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
               <BookOpenCheck className="h-4 w-4 text-sky-600" />
-              课程概览
+
+              Course Overview
             </div>
             <dl className="mt-5 grid grid-cols-2 gap-3">
               {stats.map(({ label, value, Icon }) => (
@@ -143,14 +145,15 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
             </dl>
             <div className="mt-5 flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm text-stone-600">
               <Clock3 className="h-4 w-4 text-stone-400" />
-              更新于 {formatUpdatedAt(course.updatedAt)}
+
+              updated on {formatUpdatedAt(course.updatedAt)}
             </div>
           </aside>
         </section>
 
         <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.05)]">
-            <h2 className="text-base font-semibold text-stone-950">课程主题</h2>
+            <h2 className="text-base font-semibold text-stone-950">Course Topics</h2>
             <div className="mt-4 flex flex-wrap gap-2">
               {course.topics.map((topic) => (
                 <span key={topic} className="rounded-full bg-sky-50 px-3 py-1.5 text-sm font-semibold text-sky-700">
@@ -161,7 +164,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
           </div>
 
           <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.05)]">
-            <h2 className="text-base font-semibold text-stone-950">访问路径</h2>
+            <h2 className="text-base font-semibold text-stone-950">access path</h2>
             <p className="mt-3 break-all font-mono text-sm text-stone-500">{courseDetailHref(course)}</p>
           </div>
         </section>

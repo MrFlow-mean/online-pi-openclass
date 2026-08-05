@@ -211,6 +211,9 @@ def _extract_docx(
                 text_offset += len(paragraph_text) + 2
             paragraph_index += 1
         elif block.tag.endswith("}tbl"):
+            table_paragraphs = list(_docx_table_paragraphs(block))
+            table_paragraph_start = paragraph_index
+            table_paragraph_end = paragraph_index + max(0, len(table_paragraphs) - 1)
             budget.reserve_visual_objects()
             table_data = _word_table(block)
             if table_data:
@@ -232,15 +235,15 @@ def _extract_docx(
                         metadata={
                             "office_part": "word/document.xml",
                             "block_index": block_index,
+                            "paragraph_start_index": table_paragraph_start,
+                            "paragraph_end_index": table_paragraph_end,
                             **_unrepresented_table_merge_metadata(merge_markers),
                         },
                     )
                 )
                 native_order += 1
             section_geometry = _docx_section_geometry(body_blocks, block_index)
-            for row_index, cell_index, cell_paragraph_index, paragraph in _docx_table_paragraphs(
-                block
-            ):
+            for row_index, cell_index, cell_paragraph_index, paragraph in table_paragraphs:
                 paragraph_text = _node_text(paragraph)
                 drawing_containers = [
                     node
@@ -273,6 +276,8 @@ def _extract_docx(
                             "table_row_index": row_index,
                             "table_cell_index": cell_index,
                             "cell_paragraph_index": cell_paragraph_index,
+                            "paragraph_start_index": paragraph_index,
+                            "paragraph_end_index": paragraph_index,
                             "drawing_index": drawing_index,
                             "floating_drawing": is_floating,
                             "page_position_reliable": position_reliable,
@@ -359,6 +364,9 @@ def _extract_docx(
                                 )
                             )
                         native_order += 1
+                if paragraph_text:
+                    text_offset += len(paragraph_text) + 2
+                paragraph_index += 1
         rendered_break_count += sum(
             node.tag.endswith("}lastRenderedPageBreak") for node in block.iter()
         )
@@ -618,6 +626,7 @@ def _extract_xlsx(
                             metadata={
                                 "office_part": target,
                                 "sheet": sheet_no,
+                                "max_row": max_row,
                                 **display_metadata,
                             },
                         )
@@ -636,6 +645,8 @@ def _extract_xlsx(
                             caption=_shape_caption(anchor),
                             confidence=0.82,
                             metadata={
+                                "sheet": sheet_no,
+                                "max_row": max_row,
                                 "rendered_page_mapping": (
                                     "single_sheet_fit_to_one_page"
                                     if rendered_page_no is not None

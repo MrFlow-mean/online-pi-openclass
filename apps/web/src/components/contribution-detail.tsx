@@ -26,24 +26,24 @@ import type { LessonContributionEvent, LessonContributionStatus, LessonContribut
 import type { ProjectGovernance, ProjectReview } from "@/types/project-collaboration";
 
 const STATUS_LABELS: Record<LessonContributionStatus, string> = {
-  open: "等待审查",
-  merge_draft: "合并处理中",
-  merged: "已合并",
-  closed: "已关闭",
+  open: "Awaiting review",
+  merge_draft: "Merging in progress",
+  merged: "Merged",
+  closed: "Closed",
 };
 
 const EVENT_LABELS: Partial<Record<LessonContributionEvent["kind"], string>> = {
-  opened: "提交了课程改进方案",
-  revision_submitted: "更新了提交版本",
-  merge_started: "开始合并审查",
-  returned_for_changes: "退回继续修改",
-  merged: "合并了课程改进",
-  closed: "关闭了改进方案",
-  reopened: "重新打开了改进方案",
+  opened: "Submitted course improvement plan",
+  revision_submitted: "Updated commit version",
+  merge_started: "Start merge review",
+  returned_for_changes: "Return to continue modification",
+  merged: "Incorporated course improvements",
+  closed: "Improvement plan closed",
+  reopened: "Improvement plan reopened",
 };
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -58,13 +58,13 @@ function DocumentDiff({ contribution }: { contribution: LessonContributionView }
   return (
     <section className="rounded-[26px] border border-stone-200 bg-white p-5 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold">课程内容差异</h2>
-        <span className="text-xs text-stone-400">基线 ↔ revision {contribution.current_revision}</span>
+        <h2 className="text-lg font-semibold">Course content differences</h2>
+        <span className="text-xs text-stone-400">Baseline ↔ revision {contribution.current_revision}</span>
       </div>
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         {[
-          { label: "来源基线", lines: base, other: proposed, tone: "bg-rose-50/70" },
-          { label: "贡献版本", lines: proposed, other: base, tone: "bg-emerald-50/70" },
+          { label: "source baseline", lines: base, other: proposed, tone: "bg-rose-50/70" },
+          { label: "Contributed version", lines: proposed, other: base, tone: "bg-emerald-50/70" },
         ].map((column) => (
           <div key={column.label} className="min-w-0 overflow-hidden rounded-2xl border border-stone-200">
             <div className="border-b border-stone-200 bg-stone-50 px-4 py-2 text-xs font-semibold text-stone-600">{column.label}</div>
@@ -132,7 +132,7 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
           setReviews(projectReviews);
         }
       } catch (failure) {
-        if (active) setError(failure instanceof Error ? failure.message : "改进方案不存在或已停止公开");
+        if (active) setError(failure instanceof Error ? failure.message : "The improvement plan does not exist or has stopped being made public");
       } finally {
         if (active) setLoading(false);
       }
@@ -159,7 +159,7 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
     try {
       setContribution(await action(contribution));
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "操作失败，请刷新后重试");
+      setError(failure instanceof Error ? failure.message : "The operation failed, please refresh and try again.");
     } finally {
       setBusy(false);
     }
@@ -174,7 +174,7 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
   async function submitReview(decision: ProjectReview["decision"]) {
     if (!contribution || !governance) return;
     if (decision === "request_changes" && !reviewBody.trim()) {
-      setError("请说明需要修改的内容。");
+      setError("Please describe what needs to be modified.");
       return;
     }
     setBusy(true);
@@ -197,25 +197,25 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
       );
       setReviewBody("");
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "审查结论提交失败");
+      setError(failure instanceof Error ? failure.message : "Failed to submit review conclusion");
     } finally {
       setBusy(false);
     }
   }
 
   if (loading) {
-    return <main className="flex min-h-screen items-center justify-center gap-2 bg-[#f7f5ef] text-sm text-stone-500"><LoaderCircle className="h-5 w-5 animate-spin" />正在载入改进方案…</main>;
+    return <main className="flex min-h-screen items-center justify-center gap-2 bg-[#f7f5ef] text-sm text-stone-500"><LoaderCircle className="h-5 w-5 animate-spin" />Loading improvement plans...</main>;
   }
 
   if (!contribution) {
-    return <main className="flex min-h-screen items-center justify-center bg-[#f7f5ef] px-5"><div className="max-w-lg rounded-[26px] border border-amber-200 bg-amber-50 p-8 text-center text-sm text-amber-900">{error ?? "改进方案不存在或已停止公开。"}</div></main>;
+    return <main className="flex min-h-screen items-center justify-center bg-[#f7f5ef] px-5"><div className="max-w-lg rounded-[26px] border border-amber-200 bg-amber-50 p-8 text-center text-sm text-amber-900">{error ?? "The improvement plan does not exist or has been discontinued."}</div></main>;
   }
 
   return (
     <main className="min-h-screen bg-[#f7f5ef] text-stone-950">
       <header className="sticky top-0 z-30 border-b border-stone-200 bg-[#fcfbf8]/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <Link href={user?.role !== "guest" ? "/contributions" : "/"} className="inline-flex items-center gap-2 text-sm font-semibold text-stone-600 hover:text-stone-950"><ArrowLeft className="h-4 w-4" />返回</Link>
+          <Link href={user?.role !== "guest" ? "/contributions" : "/"} className="inline-flex items-center gap-2 text-sm font-semibold text-stone-600 hover:text-stone-950"><ArrowLeft className="h-4 w-4" />return</Link>
           <BrandMark alt="" className="h-8 w-8 rounded-lg bg-white" size={64} />
           <span className="rounded-full border border-stone-200 bg-white px-3 py-1.5 text-xs font-semibold text-stone-600">{STATUS_LABELS[contribution.status]}</span>
         </div>
@@ -225,16 +225,16 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
         <section className="rounded-[28px] border border-stone-200 bg-white p-6 shadow-[0_18px_50px_rgba(15,23,42,0.06)] sm:p-8">
           <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-stone-400"><GitPullRequest className="h-4 w-4" />Lesson contribution</p>
           <h1 className="mt-3 break-words text-3xl font-semibold tracking-tight">{contribution.title}</h1>
-          <p className="mt-2 text-sm text-stone-500">{contribution.source_title} · {contribution.contributor.display_name} 提交</p>
+          <p className="mt-2 text-sm text-stone-500">{contribution.source_title} · {contribution.contributor.display_name}  submit</p>
           {contribution.description ? <div className="mt-5 max-w-3xl text-sm leading-7 text-stone-700"><CommunityMarkdown content={contribution.description} /></div> : null}
-          {!contribution.source_is_public ? <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">来源课程已转为私有，此页面仅对参与者可见，当前不可开始新合并。</div> : null}
+          {!contribution.source_is_public ? <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">The source course has been made private, this page is only visible to participants, and new merges cannot be started at this time.</div> : null}
           {error ? <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}
           <div className="mt-6 flex flex-wrap gap-2 border-t border-stone-100 pt-5">
-            {contribution.viewer_permissions.can_update ? <button disabled={busy} onClick={() => void run((current) => api.updateLessonContribution(current.id, { expected_version: current.version }))} className="rounded-full bg-stone-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">提交当前个人课程新版本</button> : null}
-            {contribution.viewer_permissions.can_start_merge ? <button disabled={busy} onClick={() => void run(handleStartMerge)} className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><GitMerge className="h-4 w-4" />开始合并</button> : null}
-            {contribution.viewer_permissions.can_return_for_changes ? <button disabled={busy} onClick={() => void run((current) => api.returnLessonContributionForChanges(current.id, current.version))} className="inline-flex items-center gap-2 rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold"><RotateCcw className="h-4 w-4" />退回继续修改</button> : null}
-            {contribution.viewer_permissions.can_close ? <button disabled={busy} onClick={() => void run((current) => api.closeLessonContribution(current.id, current.version))} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700"><XCircle className="h-4 w-4" />关闭</button> : null}
-            {contribution.viewer_permissions.can_reopen ? <button disabled={busy} onClick={() => void run((current) => api.reopenLessonContribution(current.id, current.version))} className="inline-flex items-center gap-2 rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold"><RotateCcw className="h-4 w-4" />重新打开</button> : null}
+            {contribution.viewer_permissions.can_update ? <button disabled={busy} onClick={() => void run((current) => api.updateLessonContribution(current.id, { expected_version: current.version }))} className="rounded-full bg-stone-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Submit a new version of the current personal course</button> : null}
+            {contribution.viewer_permissions.can_start_merge ? <button disabled={busy} onClick={() => void run(handleStartMerge)} className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><GitMerge className="h-4 w-4" />Start merging</button> : null}
+            {contribution.viewer_permissions.can_return_for_changes ? <button disabled={busy} onClick={() => void run((current) => api.returnLessonContributionForChanges(current.id, current.version))} className="inline-flex items-center gap-2 rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold"><RotateCcw className="h-4 w-4" />Return to continue modification</button> : null}
+            {contribution.viewer_permissions.can_close ? <button disabled={busy} onClick={() => void run((current) => api.closeLessonContribution(current.id, current.version))} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700"><XCircle className="h-4 w-4" />closure</button> : null}
+            {contribution.viewer_permissions.can_reopen ? <button disabled={busy} onClick={() => void run((current) => api.reopenLessonContribution(current.id, current.version))} className="inline-flex items-center gap-2 rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold"><RotateCcw className="h-4 w-4" />reopen</button> : null}
             {busy ? <LoaderCircle className="h-5 w-5 animate-spin self-center text-stone-400" /> : null}
           </div>
         </section>
@@ -244,27 +244,27 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
         {governance ? (
           <section className="rounded-[26px] border border-stone-200 bg-white p-5 sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="flex items-center gap-2 text-lg font-semibold"><ShieldCheck className="h-5 w-5" />多人审查</h2>
-              <span className="text-xs text-stone-500">当前版本 revision {contribution.current_revision} · 需要 {governance.policy.required_approvals} 个批准</span>
+              <h2 className="flex items-center gap-2 text-lg font-semibold"><ShieldCheck className="h-5 w-5" />Multi-person review</h2>
+              <span className="text-xs text-stone-500">Current version revision {contribution.current_revision}  · need {governance.policy.required_approvals}  approval</span>
             </div>
             <div className="mt-4 space-y-2">
               {reviews.length ? reviews.map((review) => (
                 <article key={review.id} className="rounded-2xl border border-stone-200 px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p><span className="font-semibold">{review.reviewer_display_name}</span><span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${review.decision === "approve" ? "bg-emerald-50 text-emerald-700" : review.decision === "request_changes" ? "bg-rose-50 text-rose-700" : "bg-stone-100 text-stone-600"}`}>{review.decision === "approve" ? "已批准" : review.decision === "request_changes" ? "请求修改" : "留言"}</span></p>
+                    <p><span className="font-semibold">{review.reviewer_display_name}</span><span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${review.decision === "approve" ? "bg-emerald-50 text-emerald-700" : review.decision === "request_changes" ? "bg-rose-50 text-rose-700" : "bg-stone-100 text-stone-600"}`}>{review.decision === "approve" ? "Approved" : review.decision === "request_changes" ? "Request modification" : "message"}</span></p>
                     <span className="text-xs text-stone-400">revision {review.revision_number} · {formatDate(review.updated_at)}</span>
                   </div>
                   {review.body ? <p className="mt-2 whitespace-pre-wrap leading-6 text-stone-600">{review.body}</p> : null}
                 </article>
-              )) : <p className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-500">还没有审查结论。</p>}
+              )) : <p className="rounded-2xl bg-stone-50 px-4 py-3 text-sm text-stone-500">The review has not concluded yet.</p>}
             </div>
             {governance.capabilities.review_changes && contribution.status === "open" ? (
               <div className="mt-5 border-t border-stone-100 pt-5">
-                <textarea value={reviewBody} onChange={(event) => setReviewBody(event.target.value)} rows={3} placeholder="审查意见（请求修改时必填）" className="w-full resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" />
+                <textarea value={reviewBody} onChange={(event) => setReviewBody(event.target.value)} rows={3} placeholder="Review comments (required when requesting modification)" className="w-full resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" />
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" disabled={busy || contribution.contributor.user_id === user?.id} onClick={() => void submitReview("approve")} className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><ThumbsUp className="h-4 w-4" />批准当前版本</button>
-                  <button type="button" disabled={busy || contribution.contributor.user_id === user?.id} onClick={() => void submitReview("request_changes")} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50">请求修改</button>
-                  <button type="button" disabled={busy} onClick={() => void submitReview("comment")} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold disabled:opacity-50">仅留言</button>
+                  <button type="button" disabled={busy || contribution.contributor.user_id === user?.id} onClick={() => void submitReview("approve")} className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><ThumbsUp className="h-4 w-4" />Approve current version</button>
+                  <button type="button" disabled={busy || contribution.contributor.user_id === user?.id} onClick={() => void submitReview("request_changes")} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50">Request modification</button>
+                  <button type="button" disabled={busy} onClick={() => void submitReview("comment")} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold disabled:opacity-50">Leave a message only</button>
                 </div>
               </div>
             ) : null}
@@ -272,16 +272,16 @@ export function ContributionDetail({ contributionId }: { contributionId: string 
         ) : null}
 
         <section className="rounded-[26px] border border-stone-200 bg-white p-5 sm:p-6">
-          <h2 className="flex items-center gap-2 text-lg font-semibold"><MessageCircle className="h-5 w-5" />讨论与时间线</h2>
+          <h2 className="flex items-center gap-2 text-lg font-semibold"><MessageCircle className="h-5 w-5" />Discussion and Timeline</h2>
           <div className="mt-5 space-y-3">
             {systemEvents.map((event) => <div key={event.id} className="flex gap-3 rounded-2xl bg-stone-50 px-4 py-3 text-sm"><span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-stone-400" /><div><p><span className="font-semibold">{event.actor.display_name}</span> {EVENT_LABELS[event.kind] ?? event.kind}</p><p className="mt-1 text-xs text-stone-400">{formatDate(event.created_at)}</p></div></div>)}
             {comments.map((event) => {
               const deleted = event.metadata.deleted === true;
               const own = user?.id === event.actor.user_id;
-              return <article key={event.id} className="rounded-2xl border border-stone-200 p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{event.actor.display_name}</p><p className="mt-1 text-xs text-stone-400">{formatDate(event.created_at)}{event.metadata.edited ? " · 已编辑" : ""}</p></div>{own && !deleted ? <div className="flex gap-1"><button type="button" onClick={() => { setEditingCommentId(event.id); setEditingComment(event.body); }} className="rounded-lg p-2 text-stone-400 hover:bg-stone-100 hover:text-stone-700"><Pencil className="h-4 w-4" /></button><button type="button" disabled={busy} onClick={() => void run((current) => api.deleteLessonContributionComment(current.id, event.id, current.version))} className="rounded-lg p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-700"><Trash2 className="h-4 w-4" /></button></div> : null}</div>{editingCommentId === event.id ? <div className="mt-3 flex gap-2"><input value={editingComment} onChange={(change) => setEditingComment(change.target.value)} className="min-w-0 flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!editingComment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.editLessonContributionComment(current.id, event.id, current.version, editingComment); setEditingCommentId(null); return updated; })} className="rounded-xl bg-stone-950 px-3 py-2 text-sm font-semibold text-white">保存</button></div> : <p className={`mt-3 whitespace-pre-wrap text-sm leading-6 ${deleted ? "italic text-stone-400" : "text-stone-700"}`}>{deleted ? "该评论已删除" : event.body}</p>}</article>;
+              return <article key={event.id} className="rounded-2xl border border-stone-200 p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{event.actor.display_name}</p><p className="mt-1 text-xs text-stone-400">{formatDate(event.created_at)}{event.metadata.edited ? "· Edited" : ""}</p></div>{own && !deleted ? <div className="flex gap-1"><button type="button" onClick={() => { setEditingCommentId(event.id); setEditingComment(event.body); }} className="rounded-lg p-2 text-stone-400 hover:bg-stone-100 hover:text-stone-700"><Pencil className="h-4 w-4" /></button><button type="button" disabled={busy} onClick={() => void run((current) => api.deleteLessonContributionComment(current.id, event.id, current.version))} className="rounded-lg p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-700"><Trash2 className="h-4 w-4" /></button></div> : null}</div>{editingCommentId === event.id ? <div className="mt-3 flex gap-2"><input value={editingComment} onChange={(change) => setEditingComment(change.target.value)} className="min-w-0 flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!editingComment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.editLessonContributionComment(current.id, event.id, current.version, editingComment); setEditingCommentId(null); return updated; })} className="rounded-xl bg-stone-950 px-3 py-2 text-sm font-semibold text-white">save</button></div> : <p className={`mt-3 whitespace-pre-wrap text-sm leading-6 ${deleted ? "italic text-stone-400" : "text-stone-700"}`}>{deleted ? "This comment has been deleted" : event.body}</p>}</article>;
             })}
           </div>
-          {contribution.viewer_permissions.can_comment ? <div className="mt-5 flex gap-2 border-t border-stone-100 pt-5"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="参与这次课程改进讨论" rows={3} className="min-w-0 flex-1 resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!comment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.addLessonContributionComment(current.id, current.version, comment); setComment(""); return updated; })} className="inline-flex h-11 items-center gap-2 self-end rounded-full bg-stone-950 px-4 text-sm font-semibold text-white disabled:opacity-50"><Send className="h-4 w-4" />发送</button></div> : !user || user.role === "guest" ? <p className="mt-5 border-t border-stone-100 pt-5 text-sm text-stone-500"><Link href={`/login?next=${encodeURIComponent(`/contributions/${contribution.id}`)}`} className="font-semibold text-stone-950 underline">登录正式账号</Link> 后参与讨论。</p> : null}
+          {contribution.viewer_permissions.can_comment ? <div className="mt-5 flex gap-2 border-t border-stone-100 pt-5"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Participate in this course improvement discussion" rows={3} className="min-w-0 flex-1 resize-y rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-stone-500" /><button type="button" disabled={!comment.trim() || busy} onClick={() => void run(async (current) => { const updated = await api.addLessonContributionComment(current.id, current.version, comment); setComment(""); return updated; })} className="inline-flex h-11 items-center gap-2 self-end rounded-full bg-stone-950 px-4 text-sm font-semibold text-white disabled:opacity-50"><Send className="h-4 w-4" />send</button></div> : !user || user.role === "guest" ? <p className="mt-5 border-t border-stone-100 pt-5 text-sm text-stone-500"><Link href={`/login?next=${encodeURIComponent(`/contributions/${contribution.id}`)}`} className="font-semibold text-stone-950 underline">Log in to official account</Link>  Participate in the discussion later.</p> : null}
         </section>
       </div>
     </main>

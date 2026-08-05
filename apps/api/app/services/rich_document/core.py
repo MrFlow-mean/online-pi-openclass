@@ -30,9 +30,9 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|boldsymbol|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|neg|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|boldsymbol|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
     r"|[_^]"
-    r"|[=<>≤≥≈≠]"
+    r"|[=<>≤≥≈≠¬]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
     r"|\\[{}]"
@@ -40,9 +40,10 @@ _MATH_SIGNAL_RE = re.compile(
     r"|^[\[(][A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=.,]+,[A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=.,]+[\])]$"
     r"|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+\)$"
 )
+_SYMBOL_LIST_RE = re.compile(r"^[A-Za-zα-ωΑ-Ω](?:\s*,\s*[A-Za-zα-ωΑ-Ω])+$")
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
 _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
-_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()!+\-−*/=#·∞→←≤≥≈≠±<>|&:;'\s.,]+$")
+_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()!+\-−*/=#·∞→←≤≥≈≠¬±<>|&:;'\s.,]+$")
 _LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
 _LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
 _LATEX_CHEM_ARGUMENT_RE = re.compile(r"\\(?:ce|pu)\{[^{}]*\}")
@@ -123,6 +124,7 @@ _LATEX_SYMBOLS = {
     r"\approx": "≈",
     r"\ne": "≠",
     r"\neq": "≠",
+    r"\neg": "¬",
     r"\pm": "±",
     r"\sim": "∼",
     r"\forall": "∀",
@@ -2131,6 +2133,7 @@ def _is_likely_delimited_math(value: str) -> bool:
         _has_math_signal(compact)
         or bool(re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", validation_text))
         or bool(re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", validation_text))
+        or bool(_SYMBOL_LIST_RE.fullmatch(validation_text))
     )
 
 

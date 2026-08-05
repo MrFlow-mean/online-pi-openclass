@@ -151,6 +151,30 @@ def test_build_document_preserves_markdown_structure_and_math() -> None:
     assert "<strong>Key:</strong> value" in document.content_html
 
 
+def test_build_document_preserves_absolute_value_pipes_inside_table_math() -> None:
+    document = build_document(
+        title="Formula table",
+        content_text=(
+            "| Concept | Formula |\n"
+            "| --- | --- |\n"
+            r"| density | \(\rho(x,t)=|\Psi(x,t)|^2\) |" "\n"
+            r"| interval | \(P(a<x<b)=\int_a^b|\Psi|^2dx\) |"
+        ),
+    )
+
+    table = document.content_json["content"][0]
+    rows = table["content"]
+    assert [len(row["content"]) for row in rows] == [2, 2, 2]
+    assert rows[1]["content"][1]["content"][0]["content"] == [
+        {"type": "inlineMath", "attrs": {"latex": r"\rho(x,t)=|\Psi(x,t)|^2"}},
+    ]
+    assert rows[2]["content"][1]["content"][0]["content"] == [
+        {"type": "inlineMath", "attrs": {"latex": r"P(a<x<b)=\int_a^b|\Psi|^2dx"}},
+    ]
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert "\\(" not in document.content_html
+
+
 def test_build_document_renders_bold_vector_math_without_exposing_delimiters() -> None:
     document = build_document(
         title="Vector notation",

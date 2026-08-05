@@ -275,7 +275,7 @@ export function ProfileSettingsPanel({
     return () => {
       isDisposed = true;
     };
-     
+
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- fetch once per mount; error fallbacks reflect language when reopening Settings
 
   useEffect(() => {
@@ -1237,14 +1237,14 @@ export function ProfileSettingsPanel({
           {currentUser?.email_verified_at ? (
             <p className="mt-4 inline-flex h-10 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-800">
               <Check className="h-4 w-4" />
-              {settings.interfaceLanguage === "zh-CN" ? "主邮箱已验证" : "Primary email verified"}
+              {settings.interfaceLanguage === "zh-CN" ? "Primary email has been verified" : "Primary email verified"}
             </p>
           ) : currentUser && currentUser.role !== "guest" && currentUser.auth_identities.some((identity) => identity.provider === "email") ? (
             <Link
               href="/verify-email"
               className="mt-4 inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
             >
-              {settings.interfaceLanguage === "zh-CN" ? "验证主邮箱" : "Verify primary email"}
+              {settings.interfaceLanguage === "zh-CN" ? "Verify primary email" : "Verify primary email"}
             </Link>
           ) : null}
         </section>

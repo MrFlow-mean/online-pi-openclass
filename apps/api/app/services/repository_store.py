@@ -326,6 +326,17 @@ class RepositoryStore:
             warnings=list(snapshot.metadata.get("warnings") or []),
         )
 
+    def has_snapshot(self, *, source: SourceIngestionRecord) -> bool:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT 1 FROM repository_snapshots
+                WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                LIMIT 1
+                """,
+                (source.owner_user_id, source.package_id, source.id),
+            ).fetchone() is not None
+
     def delete_source(self, source_id: str) -> None:
         def operation() -> None:
             with self._connect() as conn:

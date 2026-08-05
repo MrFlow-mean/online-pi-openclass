@@ -15,6 +15,7 @@ from app.models import (
     SourceStructure,
 )
 from app.services.source_structure_store import SourceStructureStore
+from app.services.source_evidence_store import SourceEvidenceStore
 
 
 def _source_record(source_id: str = "source_catalog") -> SourceIngestionRecord:
@@ -168,6 +169,45 @@ def test_catalog_publication_is_versioned_and_directory_only(tmp_path: Path) -> 
     assert saved_run.inspected_page_count == 6
 
 
+def test_catalog_publication_rejects_a_stale_run_id(tmp_path: Path) -> None:
+    database = tmp_path / "catalog-stale-run.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    store = SourceStructureStore(database)
+    source = _source_record().model_copy(
+        update={
+            "metadata": {
+                "content_hash": "hash-v1",
+                "active_catalog_run_id": "run-current",
+            }
+        }
+    )
+    source_store.save_source(source)
+    stale_run = SourceCatalogRun(
+        id="run-stale",
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_ingestion_id=source.id,
+        status="running",
+        metadata={
+            "active_catalog_run_id": "run-stale",
+            "content_hash": "hash-v1",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="newer catalog run"):
+        store.publish_catalog(
+            structure=_catalog_structure(source),
+            chapters=[_catalog_chapter(source)],
+            run=stale_run,
+        )
+
+    assert store.get_structure(
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_id=source.id,
+    ) is None
+
+
 def test_failed_catalog_publication_preserves_previous_version(tmp_path: Path) -> None:
     store = SourceStructureStore(tmp_path / "catalog-rollback.sqlite3")
     source = _source_record()
@@ -258,3 +298,32 @@ def test_catalog_batch_includes_saved_and_pending_sources(tmp_path: Path) -> Non
     assert batch.catalogs[0].chapter_count == 1
     assert batch.catalogs[1].chapter_count == 0
     assert batch.catalogs[1].status == "pending"
+
+
+def test_source_summary_keeps_catalog_timestamp_after_ancillary_structure_write(
+    tmp_path: Path,
+) -> None:
+    store = SourceStructureStore(tmp_path / "catalog-summary.sqlite3")
+    source = _source_record("source_with_visual_cache")
+    published = store.publish_catalog(
+        structure=_catalog_structure(source),
+        chapters=[_catalog_chapter(source)],
+    )
+
+    store.mark_scoped_visual_cache_complete(
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_ingestion_id=source.id,
+        scope_cache_key="chapter-visual-cache",
+    )
+
+    current = store.get_structure(
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_id=source.id,
+    )
+    summary = store.attach_summary(source)
+
+    assert current is not None
+    assert current.catalog_updated_at == published.catalog_updated_at
+    assert summary.structure_updated_at == published.catalog_updated_at

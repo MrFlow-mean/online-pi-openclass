@@ -8,7 +8,7 @@ type BrandMarkProps = {
   size?: number;
 };
 
-export function BrandMark({ alt = "开放课堂 logo", className, priority = false, size = 64 }: BrandMarkProps) {
+export function BrandMark({ alt = "OpenClass logo", className, priority = false, size = 64 }: BrandMarkProps) {
   return (
     <span className={clsx("inline-flex shrink-0 items-center justify-center overflow-hidden", className)}>
       <Image

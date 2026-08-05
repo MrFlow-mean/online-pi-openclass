@@ -10,6 +10,7 @@ from app.models import (
     WorkspaceState,
 )
 from app.routers import workspace as workspace_router
+from app.services.course_store import SqliteCourseStore
 from app.services.lesson_factory import create_empty_lesson
 
 
@@ -44,7 +45,15 @@ def test_create_package_without_summary_keeps_summary_empty(monkeypatch) -> None
     assert saved_workspaces == [workspace]
 
 
-def test_generate_lesson_without_target_uses_standalone_pool(monkeypatch) -> None:
+def _install_store(monkeypatch, tmp_path, workspace: WorkspaceState) -> SqliteCourseStore:
+    store = SqliteCourseStore(tmp_path / "workspace-router.sqlite3", legacy_json_path=None)
+    store.save_for_user(_user().id, workspace)
+    monkeypatch.setattr(workspace_router, "get_course_store", lambda: store)
+    monkeypatch.setattr(workspace_router, "load_workspace_for_user", store.load_for_user)
+    return store
+
+
+def test_generate_lesson_without_target_uses_standalone_pool(monkeypatch, tmp_path) -> None:
     standalone_package = CoursePackage(id="course_standalone", title="单独课程", summary="", lessons=[])
     package_lesson = create_empty_lesson("包内旧课")
     course_package = CoursePackage(
@@ -57,106 +66,70 @@ def test_generate_lesson_without_target_uses_standalone_pool(monkeypatch) -> Non
         workspace_tab_order=[package_lesson.id],
     )
     workspace = WorkspaceState(packages=[standalone_package, course_package], active_package_id=course_package.id)
-    saved_workspaces = []
-
-    monkeypatch.setattr(
-        workspace_router,
-        "load_workspace_for_user_with_revision",
-        lambda user_id: (workspace, 0),
-    )
-    monkeypatch.setattr(
-        workspace_router,
-        "save_workspace_for_user_if_revision",
-        lambda user_id, next_workspace, *, expected_revision: saved_workspaces.append(next_workspace),
-    )
+    store = _install_store(monkeypatch, tmp_path, workspace)
 
     response = workspace_router.generate_lesson(
         GenerateLessonRequest(topic="独立新课", start_blank=True),
+        response_mode="full",
         user=_user(),
     )
 
-    assert [lesson.title for lesson in standalone_package.lessons] == ["独立新课"]
-    assert [lesson.title for lesson in course_package.lessons] == ["包内旧课"]
-    assert workspace.active_package_id == standalone_package.id
+    reloaded = store.load_for_user(_user().id)
+    assert [lesson.title for lesson in reloaded.packages[0].lessons] == ["独立新课"]
+    assert [lesson.title for lesson in reloaded.packages[1].lessons] == ["包内旧课"]
+    assert reloaded.active_package_id == standalone_package.id
     assert response.is_standalone is True
-    assert saved_workspaces == [workspace]
 
 
-def test_generate_lesson_without_topic_creates_pending_untitled_page(monkeypatch) -> None:
+def test_generate_lesson_without_topic_creates_pending_untitled_page(monkeypatch, tmp_path) -> None:
     standalone_package = CoursePackage(id="course_standalone", title="单独课程", summary="", lessons=[])
     workspace = WorkspaceState(packages=[standalone_package], active_package_id=standalone_package.id)
-    monkeypatch.setattr(
-        workspace_router,
-        "load_workspace_for_user_with_revision",
-        lambda _user_id: (workspace, 0),
-    )
-    monkeypatch.setattr(
-        workspace_router,
-        "save_workspace_for_user_if_revision",
-        lambda *_args, **_kwargs: None,
-    )
+    store = _install_store(monkeypatch, tmp_path, workspace)
 
     response = workspace_router.generate_lesson(
         GenerateLessonRequest(timezone="Asia/Shanghai"),
+        response_mode="full",
         user=_user(),
     )
 
-    lesson = standalone_package.lessons[0]
+    lesson = store.load_for_user(_user().id).packages[0].lessons[0]
     assert lesson.title == "无标题"
     assert lesson.history_graph.commits[0].metadata["auto_title_pending"] is True
     assert lesson.history_graph.commits[0].metadata["auto_title_timezone"] == "Asia/Shanghai"
     assert response.active_lesson_id == lesson.id
 
 
-def test_generate_lesson_with_target_keeps_course_package_content_isolated(monkeypatch) -> None:
+def test_generate_lesson_with_target_keeps_course_package_content_isolated(monkeypatch, tmp_path) -> None:
     standalone_package = CoursePackage(id="course_standalone", title="单独课程", summary="", lessons=[])
     course_package = CoursePackage(id="course_package", title="课程包", summary="", lessons=[])
     workspace = WorkspaceState(packages=[standalone_package, course_package], active_package_id=standalone_package.id)
-    saved_workspaces = []
-
-    monkeypatch.setattr(
-        workspace_router,
-        "load_workspace_for_user_with_revision",
-        lambda user_id: (workspace, 0),
-    )
-    monkeypatch.setattr(
-        workspace_router,
-        "save_workspace_for_user_if_revision",
-        lambda user_id, next_workspace, *, expected_revision: saved_workspaces.append(next_workspace),
-    )
+    store = _install_store(monkeypatch, tmp_path, workspace)
 
     response = workspace_router.generate_lesson(
         GenerateLessonRequest(topic="包内新课", target_package_id=course_package.id, start_blank=True),
+        response_mode="full",
         user=_user(),
     )
 
-    assert standalone_package.lessons == []
-    assert [lesson.title for lesson in course_package.lessons] == ["包内新课"]
-    assert workspace.active_package_id == course_package.id
+    reloaded = store.load_for_user(_user().id)
+    assert reloaded.packages[0].lessons == []
+    assert [lesson.title for lesson in reloaded.packages[1].lessons] == ["包内新课"]
+    assert reloaded.active_package_id == course_package.id
     assert response.is_standalone is False
-    assert saved_workspaces == [workspace]
 
 
-def test_generate_lesson_without_blank_flag_still_creates_codex_only_document(monkeypatch) -> None:
+def test_generate_lesson_without_blank_flag_still_creates_codex_only_document(monkeypatch, tmp_path) -> None:
     package = CoursePackage(id="course", title="Course", summary="", lessons=[])
     workspace = WorkspaceState(packages=[package], active_package_id=package.id)
-    monkeypatch.setattr(
-        workspace_router,
-        "load_workspace_for_user_with_revision",
-        lambda _user_id: (workspace, 0),
-    )
-    monkeypatch.setattr(
-        workspace_router,
-        "save_workspace_for_user_if_revision",
-        lambda *_args, **_kwargs: None,
-    )
+    store = _install_store(monkeypatch, tmp_path, workspace)
 
     workspace_router.generate_lesson(
         GenerateLessonRequest(topic="Codex document", start_blank=False),
+        response_mode="full",
         user=_user(),
     )
 
-    lesson = package.lessons[0]
+    lesson = store.load_for_user(_user().id).packages[0].lessons[0]
     assert lesson.board_document.content_text == ""
     assert lesson.learning_requirements is None
     assert lesson.board_task_requirements is None

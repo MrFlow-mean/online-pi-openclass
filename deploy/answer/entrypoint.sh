@@ -4,6 +4,23 @@ set -eu
 /usr/bin/answer init
 /usr/bin/answer upgrade
 
+# Tag creation is a baseline OpenClass community capability. Grant it to the
+# default Answer user role so signed-in users do not need reputation to create
+# a tag, while every other reputation-gated privilege remains unchanged.
+sqlite3 /data/answer.db <<'SQL'
+BEGIN IMMEDIATE;
+INSERT INTO role_power_rel (created_at, updated_at, role_id, power_type)
+SELECT datetime('now'), datetime('now'), 1, 'tag.add'
+WHERE EXISTS (SELECT 1 FROM role WHERE id = 1)
+  AND EXISTS (SELECT 1 FROM power WHERE power_type = 'tag.add')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM role_power_rel
+    WHERE role_id = 1 AND power_type = 'tag.add'
+  );
+COMMIT;
+SQL
+
 openclass_answer_min_tags="${OPENCLASS_ANSWER_MIN_TAGS:-0}"
 case "$openclass_answer_min_tags" in
   0|1|2|3|4|5) ;;
@@ -105,7 +122,7 @@ VALUES (
       '<script>' || CAST(readfile('/opt/openclass/openclass-sso-bridge.js') AS TEXT) || '</script>' ||
       '<script>' || CAST(readfile('/opt/openclass/openclass-ridoc-bridge.js') AS TEXT) || '</script>',
     'custom_css', CAST(readfile('/opt/openclass/openclass-theme.css') AS TEXT),
-    'custom_header', '<a class="openclass-home-link" href="' || @openclass_home_url || '" aria-label="返回 OpenClass 主页"><span aria-hidden="true">←</span><span>返回主页</span></a>',
+    'custom_header', '<a class="openclass-home-link" href="' || @openclass_home_url || '" aria-label="Return to OpenClass home"><span aria-hidden="true">←</span><span>Back to home</span></a>',
     'custom_footer', '',
     'custom_sidebar', ''
   ),
@@ -169,7 +186,7 @@ SET content = json_set(
     updated_at = datetime('now')
 WHERE type = 'advanced';
 UPDATE site_info
-SET content = json_set(content, '$.name', 'OpenClass 学习社区'),
+SET content = json_set(content, '$.name', 'OpenClass Learning Community'),
     updated_at = datetime('now')
 WHERE type = 'general'
   AND json_extract(content, '$.name') = 'OpenClass Learning Community';

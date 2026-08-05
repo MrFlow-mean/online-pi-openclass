@@ -226,7 +226,7 @@
   var style = document.createElement("style");
   style.textContent = [
     "blockquote.openclass-history-reference{position:relative;margin:16px 0;padding:18px 20px 16px;border:1px solid #bae6fd;border-radius:14px;background:#f0f9ff;color:#0c4a6e;cursor:pointer;transition:border-color .15s ease,background .15s ease,transform .15s ease}",
-    "blockquote.openclass-history-reference:before{content:'OpenClass · 历史节点引用';display:block;margin-bottom:7px;font-size:11px;font-weight:700;letter-spacing:.08em;color:#0369a1}",
+    "blockquote.openclass-history-reference:before{content:'OpenClass · History reference';display:block;margin-bottom:7px;font-size:11px;font-weight:700;letter-spacing:.08em;color:#0369a1}",
     "blockquote.openclass-history-reference:hover{border-color:#38bdf8;background:#e0f2fe;transform:translateY(-1px)}",
     "blockquote.openclass-history-reference:focus-visible{outline:3px solid rgba(14,165,233,.3);outline-offset:2px}",
     "blockquote.openclass-history-reference p{margin:0}",
@@ -263,7 +263,7 @@
     card.classList.add("openclass-history-reference");
     card.setAttribute("role", "link");
     card.setAttribute("tabindex", "0");
-    card.setAttribute("aria-label", "打开引用的课堂历史节点");
+    card.setAttribute("aria-label", "Open referenced course history node");
     anchor.setAttribute("tabindex", "-1");
     card.addEventListener("click", function openReference(event) {
       event.preventDefault();

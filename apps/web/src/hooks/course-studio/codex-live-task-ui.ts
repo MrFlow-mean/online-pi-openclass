@@ -167,21 +167,21 @@ function eventRunLabel(payload: CodexLiveBridgeEvent, status: CodexLiveRunStatus
     return payload.activity.label;
   }
   if (status === "waiting") {
-    return "等待确认任务处理方式";
+    return "Waiting for confirmation of task processing method";
   }
   if (status === "queued") {
-    return "任务已排队";
+    return "Task queued";
   }
   if (status === "running") {
-    return "工作流正在执行";
+    return "Workflow is executing";
   }
   if (status === "completed") {
-    return "Chatbot 工作流已完成";
+    return "Chatbot workflow completed";
   }
   if (status === "cancelled") {
-    return "任务已取消";
+    return "Task canceled";
   }
-  return payload.message || "Chatbot 工作流执行失败";
+  return payload.message || "Chatbot workflow execution failed";
 }
 
 function shouldPreserveTerminalRun(
@@ -243,7 +243,7 @@ export function applyCodexLiveTaskEvent(
         [runId]: {
           ...previous,
           speechStatus: "failed",
-          label: "工作流已完成，语音输出未完成",
+          label: "The workflow is completed, but the voice output is not completed",
         },
       },
     };
@@ -301,7 +301,7 @@ export function resolveCodexLivePendingTask(
         : {
             ...run,
             status: action === "dismiss" ? "cancelled" : "queued",
-            label: action === "dismiss" ? "任务已取消" : "正在更新任务安排",
+            label: action === "dismiss" ? "Task canceled" : "Updating task schedule",
           };
   }
   return {
@@ -346,7 +346,7 @@ export function handleCodexLiveTaskEvent(
   const turnId = exactTurnId ?? (delegationId ? delegationTurnId(delegationId) : null);
 
   if (payload.type === "codex_live.workflow.input_pending" && delegationId && turnId) {
-    const label = "检测到运行中的新话语，请选择如何处理";
+    const label = "New running utterance detected, please choose what to do";
     onToolStatusUpdate({ lessonId, turnId, delegationId, label, status: "waiting" });
     setVoiceStatusText(label);
     return true;
@@ -356,20 +356,20 @@ export function handleCodexLiveTaskEvent(
       lessonId,
       turnId,
       delegationId,
-      label: "重复任务已忽略，原任务仍在执行",
+      label: "Duplicate tasks have been ignored and the original tasks are still being executed.",
       status: "cancelled",
     });
-    setVoiceStatusText("重复指令已忽略");
+    setVoiceStatusText("Duplicate instructions ignored");
     return true;
   }
   if (payload.type === "codex_live.workflow.queued" && delegationId && turnId) {
-    const label = `任务已排队${payload.position ? ` · 第 ${payload.position} 项` : ""}`;
+    const label = `Task queued${payload.position ? ` · position ${payload.position}` : ""}`;
     onToolStatusUpdate({ lessonId, turnId, delegationId, label, status: "queued" });
     setVoiceStatusText(label);
     return true;
   }
   if (payload.type === "codex_live.workflow.started" && delegationId && turnId) {
-    const label = "正在理解任务并准备工作流";
+    const label = "Understanding tasks and preparing workflows";
     setVoiceStatusText(label);
     onToolStatusUpdate({ lessonId, turnId, delegationId, label, status: "running" });
     logWorkflowStarted(delegationId, turnId);
@@ -392,7 +392,7 @@ export function handleCodexLiveTaskEvent(
       lessonId,
       turnId,
       delegationId,
-      label: "正在生成工作流结果",
+      label: "Generating workflow results",
       status: "running",
     });
     return true;
@@ -402,7 +402,7 @@ export function handleCodexLiveTaskEvent(
     const succeeded = payload.result.status === "ok" && payload.result.model_output.status === "ok";
     const isBoardFreeRoute = payload.route === "ordinary_chat" || payload.route === "unclear";
     if (!isBoardFreeRoute) {
-      const label = succeeded ? "Chatbot 工作流已完成" : "Chatbot 工作流执行失败";
+      const label = succeeded ? "Chatbot workflow completed" : "Chatbot workflow execution failed";
       onToolStatusUpdate({
         lessonId,
         turnId,
@@ -411,7 +411,7 @@ export function handleCodexLiveTaskEvent(
         status: succeeded ? "completed" : "error",
       });
     }
-    setVoiceStatusText(succeeded ? "Codex Live 已完成本回合工作流" : "Chatbot 工作流执行失败");
+    setVoiceStatusText(succeeded ? "Codex Live has completed this round of workflow" : "Chatbot workflow execution failed");
     return true;
   }
   if (
@@ -420,14 +420,14 @@ export function handleCodexLiveTaskEvent(
     turnId
   ) {
     if (payload.reason === "ordinary_chat") {
-      setVoiceStatusText("Codex Live 已完成普通对话路由");
+      setVoiceStatusText("Codex Live has completed normal conversation routing");
       return true;
     }
     onToolStatusUpdate({
       lessonId,
       turnId,
       delegationId,
-      label: "任务已取消",
+      label: "Task canceled",
       status: "cancelled",
     });
     return true;
@@ -435,7 +435,7 @@ export function handleCodexLiveTaskEvent(
   if (payload.type === "codex_live.speech.error") {
     const run = runForEvent(nextState, payload);
     if (run?.documentResultSucceeded) {
-      const label = "工作流已完成，语音输出未完成";
+      const label = "The workflow is completed, but the voice output is not completed";
       if (run.visibleAsTask && turnId) {
         onToolStatusUpdate({
           lessonId,
@@ -450,7 +450,7 @@ export function handleCodexLiveTaskEvent(
     return true;
   }
   if (payload.type === "codex_live.workflow.error" || payload.type === "codex_live.error") {
-    const message = payload.message || "Codex Live Chatbot 工作流通道发生错误";
+    const message = payload.message || "An error occurred in the Codex Live Chatbot workflow channel";
     const run = runForEvent(nextState, payload);
     if (run?.documentResultSucceeded) {
       return true;

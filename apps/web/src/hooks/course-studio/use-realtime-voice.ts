@@ -192,7 +192,7 @@ export function freezeRealtimeTurnSnapshot(
   textModel: AIModelSelection
 ): RealtimeTurnSnapshot {
   if (references.length > 8) {
-    throw new Error("Realtime 回合最多允许 8 个冻结引用");
+    throw new Error("Realtime rounds allow up to 8 frozen references");
   }
   return {
     identity: { ...identity },
@@ -279,7 +279,7 @@ export function useRealtimeVoice({
   });
 
   const [voiceActive, setVoiceActive] = useState(false);
-  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接实时语音 Chatbot");
+  const [voiceStatusText, setVoiceStatusText] = useState("Click on the microphone to connect to the real-time voice chatbot");
   const [codexLiveTaskState, setCodexLiveTaskState] = useState<CodexLiveTaskState>(createCodexLiveTaskState);
 
   useEffect(() => {
@@ -299,8 +299,8 @@ export function useRealtimeVoice({
     if (voiceActive && nextReferences.length !== previousCount) {
       setVoiceStatusText(
         nextReferences.length
-          ? `Realtime 已保留 ${nextReferences.length} 个板书引用`
-          : "Realtime 已清空板书引用"
+          ? `Realtime retained ${nextReferences.length} board references`
+          : "Realtime has cleared the board reference"
       );
     }
     const codexLiveSocket = codexLiveSocketRef.current;
@@ -513,7 +513,7 @@ export function useRealtimeVoice({
     realtimeLessonTitleRef.current = null;
   }
 
-  function stopRealtimeSession(statusText = "语音 Chatbot 已断开") {
+  function stopRealtimeSession(statusText = "Voice Chatbot is disconnected") {
     disposeRealtimeSession();
     window.speechSynthesis?.cancel();
     setVoiceActive(false);
@@ -566,18 +566,18 @@ export function useRealtimeVoice({
     if (openAIRealtimeToolsEnabledRef.current) {
       const dataChannel = realtimeChannelRef.current;
       if (!dataChannel || !sendOpenAITurnDecisionRequest(dataChannel)) {
-        setVoiceStatusText("Realtime 回合决策通道未就绪");
+        setVoiceStatusText("Realtime round decision channel is not ready");
         return;
       }
-      setVoiceStatusText("Realtime 正在判断本轮需求与板书路径");
+      setVoiceStatusText("Realtime is determining the needs of this round and the path written on the board");
       return;
     }
     if (openAIClientDelegationEnabledRef.current) {
-      setVoiceStatusText("Codex Live 正在交给 Chatbot 工作流处理");
+      setVoiceStatusText("Codex Live is being handed over to Chatbot workflow processing");
       return;
     }
     if (chatRequestInFlightRef.current) {
-      setVoiceStatusText("正在处理上一句语音，请稍等片刻");
+      setVoiceStatusText("The previous voice sentence is being processed, please wait a moment.");
       return;
     }
     onSubmitTranscript(normalized);
@@ -656,7 +656,7 @@ export function useRealtimeVoice({
       beginRealtimeTurn();
       stopGoogleQueuedPlayback();
       googleOutputTranscriptRef.current = "";
-      setVoiceStatusText("检测到插话，已停止上一段回答");
+      setVoiceStatusText("Interruption detected, the previous reply has been stopped.");
     }
     const outputText = serverContent.outputTranscription?.text;
     if (outputText && !serverContent.interrupted) {
@@ -711,16 +711,16 @@ export function useRealtimeVoice({
         socket.send(JSON.stringify(session.setup));
       };
       socket.onerror = () => {
-        rejectStart("Google Gemini Live WebSocket 连接失败");
+        rejectStart("Google Gemini Live WebSocket connection failed");
       };
       socket.onclose = (event) => {
         if (!streamingStarted) {
           rejectStart(
-            `Google Gemini Live WebSocket 在初始化前关闭（${event.code}${event.reason ? `：${event.reason}` : ""}）`
+            `Google Gemini Live WebSocket closed before initialization (${event.code}${event.reason ? `: ${event.reason}` : ""})`
           );
         }
         if (googleRealtimeSocketRef.current === socket) {
-          stopRealtimeSession("Google Gemini Live 会话已结束");
+          stopRealtimeSession("Google Gemini Live session ended");
         }
       };
       socket.onmessage = (event) => {
@@ -734,7 +734,7 @@ export function useRealtimeVoice({
                 rejectStart(message);
                 return;
               }
-              stopRealtimeSession("Google Gemini Live 会话已结束");
+              stopRealtimeSession("Google Gemini Live session ended");
               setError(message);
               return;
             }
@@ -743,7 +743,7 @@ export function useRealtimeVoice({
               beginGoogleAudioStreaming(socket, mediaStream, audioContext);
               setVoiceActive(true);
               setBusyAction((current) => (current === "voice-connect" ? null : current));
-              setVoiceStatusText(`Google Gemini Live 已连接，语音音色：${session.voice}`);
+              setVoiceStatusText(`Google Gemini Live connected with voice ${session.voice}`);
               resolveStart();
               return;
             }
@@ -765,7 +765,7 @@ export function useRealtimeVoice({
         if (!settled) {
           settled = true;
           socket.close();
-          reject(new Error("Codex Live Chatbot 工作流通道连接超时"));
+          reject(new Error("Codex Live Chatbot workflow channel connection timeout"));
         }
       }, 20_000);
       const resolveStart = () => {
@@ -791,15 +791,15 @@ export function useRealtimeVoice({
         }));
       };
       socket.onerror = () => {
-        rejectStart("Codex Live Chatbot 工作流通道连接失败");
+        rejectStart("Codex Live Chatbot workflow channel connection failed");
       };
       socket.onclose = (event) => {
         if (!settled) {
-          rejectStart(`Codex Live Chatbot 工作流通道在初始化前关闭（${event.code}）`);
+          rejectStart(`Codex Live Chatbot workflow channel closed before initialization (${event.code})`);
         }
         if (codexLiveSocketRef.current === socket) {
           codexLiveSocketRef.current = null;
-          stopRealtimeSession("Codex Live Chatbot 工作流通道已结束");
+          stopRealtimeSession("Codex Live Chatbot workflow channel ended");
         }
       };
       socket.onmessage = (event) => {
@@ -898,18 +898,18 @@ export function useRealtimeVoice({
       return;
     }
     if (voiceActive || busyAction === "voice-connect") {
-      stopRealtimeSession("语音 Chatbot 已手动断开");
+      stopRealtimeSession("Voice Chatbot has been manually disconnected");
       return;
     }
     if (!activeLesson) {
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      setError("当前浏览器无法访问麦克风。请使用支持麦克风的浏览器，并通过 localhost 或 HTTPS 打开页面。");
+      setError("The current browser cannot access the microphone. Please use a microphone-enabled browser and open the page via localhost or HTTPS.");
       return;
     }
     if (selectedRealtimeOption && !selectedRealtimeOption.enabled) {
-      setError(`当前未配置 ${PROVIDER_LABELS[selectedRealtimeModel.provider]} 的实时语音 API Key。`);
+      setError(`No realtime voice API key is configured for ${PROVIDER_LABELS[selectedRealtimeModel.provider]}.`);
       return;
     }
     if (!(await flushAutoSave("voice"))) {
@@ -918,7 +918,7 @@ export function useRealtimeVoice({
 
     setBusyAction("voice-connect");
     const realtimeLabel = modelButtonLabel(selectedRealtimeOption ?? null, selectedRealtimeModel);
-    setVoiceStatusText(`正在连接 ${realtimeLabel}…`);
+    setVoiceStatusText(`Connecting to ${realtimeLabel}…`);
     setError(null);
 
     try {
@@ -963,7 +963,7 @@ export function useRealtimeVoice({
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 Chatbot 工作流`);
+          setVoiceStatusText(`${realtimeLabel} connected. Speech will enter the Chatbot workflow first.`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }
@@ -972,7 +972,7 @@ export function useRealtimeVoice({
           peerConnection.connectionState === "closed" ||
           peerConnection.connectionState === "disconnected"
         ) {
-          stopRealtimeSession("语音会话已结束");
+          stopRealtimeSession("Voice session ended");
         }
       };
 
@@ -1021,7 +1021,7 @@ export function useRealtimeVoice({
             const turnSnapshot = realtimeTurnSnapshotRef.current;
             const turnId = turnIdentity.turnId;
             const providerReference = payload.response_id ?? payload.item_id ?? functionCall.callId;
-            const toolLabel = functionCall.name === "read_board_context" ? "正在定位并读取板书" : "正在交给 Chatbot 工作流处理";
+            const toolLabel = functionCall.name === "read_board_context" ? "Locating and reading board content" : "Being handed over to Chatbot workflow for processing";
             const publishPreRouteTaskStatus = shouldPublishRealtimeToolTaskStatus(
               functionCall.name
             );
@@ -1035,7 +1035,7 @@ export function useRealtimeVoice({
             });
             const clientSessionId = realtimeClientSessionIdRef.current;
             if (!clientSessionId) {
-              const message = "Realtime 客户端会话标识已失效";
+              const message = "Realtime client session ID has expired";
               if (publishPreRouteTaskStatus) {
                 onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
               }
@@ -1046,7 +1046,7 @@ export function useRealtimeVoice({
               !turnSnapshot ||
               turnSnapshot.identity.inputEventId !== turnIdentity.inputEventId
             ) {
-              const message = "Realtime 回合缺少提交时冻结的输入快照";
+              const message = "Realtime round missing input snapshot frozen on commit";
               if (publishPreRouteTaskStatus) {
                 onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
               }
@@ -1100,7 +1100,7 @@ export function useRealtimeVoice({
                 });
               }
             } catch (toolError) {
-              const message = toolError instanceof Error ? toolError.message : "Realtime 工具执行失败";
+              const message = toolError instanceof Error ? toolError.message : "Realtime tool execution failed";
               if (publishPreRouteTaskStatus) {
                 onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
               }
@@ -1114,12 +1114,12 @@ export function useRealtimeVoice({
             const referenceCount = Number(toolResult.model_output.reference_count ?? 0);
             const completedLabel = functionCall.name === "read_board_context"
               ? referenceCount > 1
-                ? `${referenceCount} 个板书引用已就绪`
-                : "板书上下文已就绪"
-              : "Chatbot 工作流已完成";
+                ? `${referenceCount} board references ready`
+                : "Board context is ready"
+              : "Chatbot workflow completed";
             const failedLabel = toolResult.status === "ok" && modelStatus === "not_found"
-              ? "未定位到明确板书范围"
-              : "Realtime 工具执行失败";
+              ? "No clear board content range has been located."
+              : "Realtime tool execution failed";
             const publishRoutedTaskStatus = shouldPublishRealtimeToolTaskStatus(
               functionCall.name,
               toolResult
@@ -1133,7 +1133,7 @@ export function useRealtimeVoice({
                 status: succeeded ? "completed" : "error",
               });
             }
-            setVoiceStatusText(succeeded ? `${completedLabel}，Realtime 正在回答` : failedLabel);
+            setVoiceStatusText(succeeded ? `${completedLabel}; Realtime is responding` : failedLabel);
             sendOpenAIFunctionOutput(dataChannel, functionCall.callId, toolResult.model_output);
           }
           const inputItemId = payload.item_id ?? currentTurnId();
@@ -1202,11 +1202,11 @@ export function useRealtimeVoice({
               onToolStatusUpdate({
                 lessonId,
                 turnId: currentTurnId(),
-                label: toolError instanceof Error ? toolError.message : "Realtime 工具执行失败",
+                label: toolError instanceof Error ? toolError.message : "Realtime tool execution failed",
                 status: "error",
               });
             }
-            setError(toolError instanceof Error ? toolError.message : "Realtime 工具执行失败");
+            setError(toolError instanceof Error ? toolError.message : "Realtime tool execution failed");
           }
         })();
       };
@@ -1229,7 +1229,7 @@ export function useRealtimeVoice({
 
       if (realtimeResponse.client_delegation_enabled) {
         if (!realtimeResponse.delegation_websocket_url) {
-          throw new Error("Codex Live 响应缺少 Chatbot 工作流通道");
+          throw new Error("Codex Live response is missing Chatbot workflow channel");
         }
         await startCodexLiveBridge(realtimeResponse.delegation_websocket_url);
       }
@@ -1240,14 +1240,14 @@ export function useRealtimeVoice({
       });
 
       setVoiceStatusText(
-        `${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪${
+        `${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} ready${
           realtimeResponse.tools_enabled || realtimeResponse.client_delegation_enabled
-            ? "，可读取板书并运行 Chatbot 工作流"
-            : "，正在受控转写"
+            ? ", can read board content and run Chatbot workflow"
+            : ", being transcribed under controlled"
         }`
       );
     } catch (voiceError) {
-      stopRealtimeSession("语音连接失败");
+      stopRealtimeSession("Voice connection failed");
       setError(realtimeConnectionErrorMessage(voiceError, selectedRealtimeModel));
     }
   }
@@ -1275,7 +1275,7 @@ export function useRealtimeVoice({
       setError(
         snapshotError instanceof Error
           ? snapshotError.message
-          : "Realtime 回合输入快照无效"
+          : "Realtime turn input snapshot is invalid"
       );
       return false;
     }
@@ -1300,7 +1300,7 @@ export function useRealtimeVoice({
         selections: turnSnapshot.references,
         text_model: turnSnapshot.textModel,
       }));
-      setVoiceStatusText("Codex Live 正在处理文字消息");
+      setVoiceStatusText("Codex Live is processing text messages");
       return true;
     }
     dataChannel?.send(JSON.stringify({
@@ -1317,7 +1317,7 @@ export function useRealtimeVoice({
     } else {
       dataChannel?.send(JSON.stringify({ type: "response.create" }));
     }
-    setVoiceStatusText("Realtime 正在处理文字消息");
+    setVoiceStatusText("Realtime is processing text messages");
     return true;
   }
 
@@ -1332,8 +1332,8 @@ export function useRealtimeVoice({
     );
     setVoiceStatusText(
       action === "dismiss"
-        ? "已忽略这段话"
-        : "正在更新任务安排"
+        ? "This paragraph has been ignored"
+        : "Updating task schedule"
     );
     return true;
   }
@@ -1379,7 +1379,7 @@ export function useRealtimeVoice({
     if (!realtimeLessonIdRef.current || realtimeLessonIdRef.current === activeLesson?.id) {
       return;
     }
-    stopRealtimeSessionEvent("已切换课程，语音会话已自动断开");
+    stopRealtimeSessionEvent("Courses have been switched and the voice session has been automatically disconnected");
   }, [activeLesson?.id]);
 
   return {

@@ -22,7 +22,10 @@ import {
   modelSelectionKey,
   PROVIDER_LABELS,
 } from "@/components/course-studio/model-catalog";
-import { latestExecutedNeedSnapshot } from "@/components/course-studio/current-need-snapshot";
+import {
+  latestExecutedNeedSnapshot,
+  latestGenerationFailureSnapshot,
+} from "@/components/course-studio/current-need-snapshot";
 import { popoverPositionFromDomSelection } from "@/components/course-studio/selection-utils";
 import { sourceQuerySelectionLabel } from "@/components/course-studio/source-query-scope";
 import { LearningClarityCard } from "@/components/learning-clarity-card";
@@ -56,37 +59,37 @@ import type { ChatMessage, LessonComposerState } from "@/components/course-studi
 type ModelMenu = "text" | "realtime" | null;
 
 const BOARD_TASK_ACTION_LABELS: Partial<Record<NonNullable<BoardTaskRequirementSheet["requested_action"]>, string>> = {
-  write: "写入",
-  edit: "修改",
-  explain: "讲解",
-  delete: "删除",
-  interact: "互动",
-  chat: "互动",
+  write: "write",
+  edit: "Revise",
+  explain: "explain",
+  delete: "delete",
+  interact: "interactive",
+  chat: "interactive",
 };
 
 const BOARD_EXTENT_LABELS: Record<NonNullable<BoardTaskRequirementSheet["content_extent"]>, string> = {
-  sentence: "句子",
-  paragraph: "段落",
-  section: "小节",
-  article: "文章",
-  whole_board: "整篇板书",
+  sentence: "sentence",
+  paragraph: "paragraph",
+  section: "Section",
+  article: "article",
+  whole_board: "The whole board content",
 };
 
 const BOARD_DESTINATION_LABELS: Record<BoardTaskRequirementSheet["document_destination"], string> = {
-  current_lesson: "当前 lesson",
-  new_lesson: "新 lesson",
-  unresolved: "待确认",
+  current_lesson: "current lesson",
+  new_lesson: "new lesson",
+  unresolved: "To be confirmed",
 };
 
 function boardTaskActionLabel(action: BoardTaskRequirementSheet["requested_action"]) {
-  return action ? BOARD_TASK_ACTION_LABELS[action] ?? action : "待确认";
+  return action ? BOARD_TASK_ACTION_LABELS[action] ?? action : "To be confirmed";
 }
 
 function boardTaskLocationLabel(task: BoardTaskRequirementSheet) {
   const kindLabels: Record<NonNullable<BoardTaskRequirementSheet["location_kind"]>, string> = {
-    target_range: "目标范围",
-    insertion_anchor: "插入位置",
-    unspecified: "待确认",
+    target_range: "target range",
+    insertion_anchor: "insertion position",
+    unspecified: "To be confirmed",
   };
   const kind = kindLabels[task.location_kind ?? "unspecified"];
   const hint = task.target_hint || task.target_location?.display_label || task.location_status;
@@ -97,7 +100,7 @@ export function boardTaskConfirmationPayload(
   confirmation: NonNullable<ChatRequestPayload["board_task_confirmation"]>
 ): ChatRequestPayload {
   return {
-    message: confirmation === "confirm" ? "确认执行当前板书任务" : "取消当前板书任务",
+    message: confirmation === "confirm" ? "Confirm execution of current board content task" : "Cancel the current board content task",
     interaction_mode: "ask",
     board_task_confirmation: confirmation,
   };
@@ -105,7 +108,7 @@ export function boardTaskConfirmationPayload(
 
 function composerSelectionLabel(selection: SelectionRef) {
   if (selection.kind === "source") {
-    return selection.source_scope_kind === "source" ? "整份资料" : "资料章节";
+    return selection.source_scope_kind === "source" ? "entire information" : "Information section";
   }
   if (selection.kind === "board" && selection.location_kind === "target_range") {
     return "TargetRange";
@@ -113,14 +116,14 @@ function composerSelectionLabel(selection: SelectionRef) {
   if (selection.kind === "board" && selection.location_kind === "insertion_anchor") {
     return "InsertionAnchor";
   }
-  return selection.kind === "board" ? "板书选区" : "对话引用";
+  return selection.kind === "board" ? "board selection" : "dialogue quotes";
 }
 
 function composerSelectionToggleLabel(selection: SelectionRef, included: boolean) {
   if (selection.kind === "source") {
-    return included ? "包含资料" : "忽略资料";
+    return included ? "Contains information" : "Ignore data";
   }
-  return included ? "包含选区" : "忽略选区";
+  return included ? "Contains selection" : "Ignore selection";
 }
 
 function hasVisibleLearningClarity(
@@ -162,16 +165,17 @@ function CurrentNeedCard({
     return (
       <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">当前任务</p>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">current task</p>
           <span className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-sky-700">
             <LoaderCircle className="h-3 w-3 animate-spin" />
-            识别中
+
+            Recognizing
           </span>
         </div>
         <div className="mt-3 h-2 rounded-full bg-white">
           <div className="h-full w-1/3 rounded-full bg-sky-500 transition-all" />
         </div>
-        <p className="mt-3 text-xs leading-6 text-sky-950">正在把你的新问题整理成位置、动作和怎么做。</p>
+        <p className="mt-3 text-xs leading-6 text-sky-950">Your new questions are being organized into where, what, and what to do.</p>
       </div>
     );
   }
@@ -180,25 +184,29 @@ function CurrentNeedCard({
     !activeBoardTask && !activeRequirementSheet && !currentNeedPending
       ? latestExecutedNeedSnapshot(lesson, targetCommitId)
       : null;
+  const generationFailure = !activeBoardTask
+    ? latestGenerationFailureSnapshot(lesson, targetCommitId)
+    : null;
 
   if (executedNeed?.kind === "board_task") {
     const task = executedNeed.boardTask;
     return (
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">当前任务</p>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">current task</p>
           <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
-            已被执行
+
+            has been executed
           </span>
         </div>
         <div className="mt-3 h-2 rounded-full bg-white">
           <div className="h-full w-full rounded-full bg-emerald-500 transition-all" />
         </div>
         <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
-          <p>链路：{boardWorkflowLabel(task.board_workflow ?? "act_on_existing_board")}</p>
-          <p>位置：{boardTaskLocationLabel(task)}</p>
-          <p>动作：{boardTaskActionLabel(task.requested_action)}</p>
-          <p>内容：{task.question_or_topic || "已执行的板书任务"}</p>
+          <p>link:{boardWorkflowLabel(task.board_workflow ?? "act_on_existing_board")}</p>
+          <p>Location:{boardTaskLocationLabel(task)}</p>
+          <p>action:{boardTaskActionLabel(task.requested_action)}</p>
+          <p>content:{task.question_or_topic || "Board content tasks executed"}</p>
         </div>
       </div>
     );
@@ -211,7 +219,7 @@ function CurrentNeedCard({
         barTone="bg-emerald-500"
         clarityStatus={executedNeed.clarityStatus}
         lesson={lesson}
-        statusLabelOverride="已被执行"
+        statusLabelOverride="has been executed"
         targetCommitId={executedNeed.commit.id}
       />
     );
@@ -220,16 +228,16 @@ function CurrentNeedCard({
   if (activeBoardTask) {
     const progress = Math.max(0, Math.min(100, activeBoardTask.progress));
     const statusLabel = isChatBusy
-      ? "执行中"
+      ? "Executing"
       : activeBoardTask.confirmation_status === "awaiting"
-        ? "等待确认"
+        ? "Waiting for confirmation"
         : progress >= 100
-          ? "已完成"
-          : "收集中";
+          ? "Completed"
+          : "Collecting";
     return (
       <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">当前任务</p>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">current task</p>
           <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-sky-700">
             {statusLabel} · {progress}%
           </span>
@@ -238,19 +246,19 @@ function CurrentNeedCard({
           <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${progress}%` }} />
         </div>
         <div className="mt-3 grid gap-2 text-xs leading-5 text-sky-950">
-          <p>链路：{boardWorkflowLabel(activeBoardTask.board_workflow ?? "act_on_existing_board")}</p>
-          <p>位置：{boardTaskLocationLabel(activeBoardTask)}</p>
-          <p>动作：{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
-          <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>
-          <p>篇幅：{activeBoardTask.content_extent ? BOARD_EXTENT_LABELS[activeBoardTask.content_extent] : "待确认"}</p>
-          <p>归属：{BOARD_DESTINATION_LABELS[activeBoardTask.document_destination]}</p>
+          <p>link:{boardWorkflowLabel(activeBoardTask.board_workflow ?? "act_on_existing_board")}</p>
+          <p>Location:{boardTaskLocationLabel(activeBoardTask)}</p>
+          <p>action:{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
+          <p>content:{activeBoardTask.question_or_topic || "To be confirmed"}</p>
+          <p>space:{activeBoardTask.content_extent ? BOARD_EXTENT_LABELS[activeBoardTask.content_extent] : "To be confirmed"}</p>
+          <p>Attribution:{BOARD_DESTINATION_LABELS[activeBoardTask.document_destination]}</p>
           {activeBoardTask.special_interaction_requirements && activeBoardTask.special_interaction_requirements !== "none" ? (
-            <p>互动要求：{activeBoardTask.special_interaction_requirements}</p>
+            <p>Interaction requirements:{activeBoardTask.special_interaction_requirements}</p>
           ) : null}
         </div>
         {activeBoardTask.confirmation_status === "awaiting" ? (
           <div className="mt-3 rounded-lg border border-sky-200 bg-white p-3">
-            <p className="text-xs leading-6 text-sky-900">该板书任务需要你的明确确认。</p>
+            <p className="text-xs leading-6 text-sky-900">This board task requires your explicit confirmation.</p>
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 type="button"
@@ -259,7 +267,8 @@ function CurrentNeedCard({
                 className="inline-flex items-center gap-1.5 rounded-md bg-sky-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Check className="h-3.5 w-3.5" />
-                确认执行
+
+                Confirm execution
               </button>
               <button
                 type="button"
@@ -268,13 +277,14 @@ function CurrentNeedCard({
                 className="inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-900 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <X className="h-3.5 w-3.5" />
-                取消任务
+
+                Cancel task
               </button>
             </div>
           </div>
         ) : null}
         {activeBoardTask.missing_items.length ? (
-          <p className="mt-3 text-xs leading-6 text-sky-900">待补充：{activeBoardTask.missing_items.join("、")}</p>
+          <p className="mt-3 text-xs leading-6 text-sky-900">To be added:{activeBoardTask.missing_items.join("、")}</p>
         ) : null}
       </div>
     );
@@ -284,9 +294,12 @@ function CurrentNeedCard({
     return (
       <LearningClarityCard
         activeRequirementSheet={activeRequirementSheet}
-        barTone={barTone}
+        barTone={generationFailure ? "bg-red-500" : barTone}
         clarityStatus={clarityStatus}
         lesson={lesson}
+        statusLabelOverride={generationFailure ? "Generation failed" : undefined}
+        statusMessageOverride={generationFailure?.reason}
+        statusTone={generationFailure ? "error" : "default"}
         targetCommitId={targetCommitId}
       />
     );
@@ -296,13 +309,13 @@ function CurrentNeedCard({
     return (
       <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-600">当前任务</p>
-          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-gray-600">待输入</span>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-600">current task</p>
+          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-gray-600">To be entered</span>
         </div>
         <div className="mt-3 h-2 rounded-full bg-white">
           <div className="h-full w-0 rounded-full bg-gray-400" />
         </div>
-        <p className="mt-3 text-xs leading-6 text-gray-700">等待新的板书任务。</p>
+        <p className="mt-3 text-xs leading-6 text-gray-700">Waiting for new board tasks.</p>
       </div>
     );
   }
@@ -310,9 +323,12 @@ function CurrentNeedCard({
   return (
     <LearningClarityCard
       activeRequirementSheet={activeRequirementSheet}
-      barTone={barTone}
+      barTone={generationFailure ? "bg-red-500" : barTone}
       clarityStatus={clarityStatus}
       lesson={lesson}
+      statusLabelOverride={generationFailure ? "Generation failed" : undefined}
+      statusMessageOverride={generationFailure?.reason}
+      statusTone={generationFailure ? "error" : "default"}
       targetCommitId={targetCommitId}
     />
   );
@@ -330,24 +346,25 @@ function CodexLiveTaskQueuePanel({
     return null;
   }
   const actionLabels: Array<[CodexLiveTaskAction, string]> = [
-    ["supplement", "补充当前任务"],
-    ["replace", "替换当前任务"],
-    ["queue", "排到下一项"],
-    ["dismiss", "忽略"],
+    ["supplement", "Supplement current tasks"],
+    ["replace", "Replace current task"],
+    ["queue", "Move to next item"],
+    ["dismiss", "neglect"],
   ];
   return (
     <div className="mb-2 rounded-2xl border border-sky-200 bg-sky-50 p-3" aria-live="polite">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold text-sky-950">Codex Live 任务</p>
+        <p className="text-xs font-semibold text-sky-950">Codex Live tasks</p>
         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-700">
           {summary.runningCount ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-          运行 {summary.runningCount} · 排队 {summary.queuedCount} · 待确认 {summary.pendingCount}
+
+          run {summary.runningCount}  · queue {summary.queuedCount}  · To be confirmed {summary.pendingCount}
         </span>
       </div>
       {state.pendingTasks.map((task) => (
         <div key={task.delegationId} className="mt-2 rounded-xl border border-sky-100 bg-white p-2.5">
-          <p className="text-xs leading-5 text-gray-800">{task.text || "检测到新的语音输入"}</p>
-          <p className="mt-1 text-[11px] text-gray-500">当前任务仍在运行，请明确这段话的用途。</p>
+          <p className="text-xs leading-5 text-gray-800">{task.text || "New voice input detected"}</p>
+          <p className="mt-1 text-[11px] text-gray-500">The current task is still running, please clarify the purpose of this paragraph.</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {actionLabels.map(([action, label]) => (
               <button
@@ -384,12 +401,12 @@ function CodexLiveLoadingMessage({
     return null;
   }
   return (
-    <article className="flex gap-3" aria-live="polite" aria-label="Codex Live 正在加载">
+    <article className="flex gap-3" aria-live="polite" aria-label="Codex Live is loading">
       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-700 shadow-sm">
         <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
       </div>
       <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 space-y-2">
-        <p className="text-[11px] font-semibold text-sky-800">Codex Live 正在加载</p>
+        <p className="text-[11px] font-semibold text-sky-800">Codex Live is loading</p>
         <div className="rounded-2xl rounded-tl-md border border-sky-200 bg-sky-50 px-4 py-3 text-[12px] leading-5 text-sky-900 shadow-sm">
           <div className="flex items-center gap-2">
             <span className="flex gap-1" aria-hidden="true">
@@ -397,7 +414,7 @@ function CodexLiveLoadingMessage({
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 [animation-delay:120ms]" />
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 [animation-delay:240ms]" />
             </span>
-            <span>{statusText || "任务仍在运行，请稍候"}</span>
+            <span>{statusText || "The task is still running, please wait"}</span>
           </div>
         </div>
       </div>
@@ -532,7 +549,7 @@ export function CourseStudioChatSidebar({
       window.open(`${objectUrl}#page=${page}`, "_blank", "noopener,noreferrer");
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "无法打开引用资料");
+      onError(error instanceof Error ? error.message : "Unable to open citation");
     }
   }
 
@@ -583,7 +600,8 @@ export function CourseStudioChatSidebar({
           <div className="space-y-5">
             {previewCommit ? (
               <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs leading-6 text-violet-800">
-                正在查看 {previewCommit.label} 时的交流记录。
+
+                Viewing {previewCommit.label}  communication records at that time.
               </div>
             ) : null}
 
@@ -653,10 +671,11 @@ export function CourseStudioChatSidebar({
                     type="button"
                     onClick={() => void onSpeakMessage(message.content)}
                     className="ml-11 mt-1 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
-                    aria-label="播报这条回复"
+                    aria-label="Report this reply"
                   >
                     <Volume2 className="h-3 w-3" />
-                    播报
+
+                    broadcast
                   </button>
                 ) : null}
               </div>
@@ -667,9 +686,9 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && !interactionLocked && clarificationQuestions.length ? (
             <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">需求澄清</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">Requirements clarification</p>
               <p className="mt-2 text-xs leading-6 text-sky-900">
-                {latestBoardDecision?.reason ?? "AI 还需要再确认一点学习目标，才能决定后面的讲义策略。"}
+                {latestBoardDecision?.reason ?? "AI still needs to confirm a few more learning goals before it can decide on the subsequent lecture strategy."}
               </p>
               <div className="mt-3 space-y-2">
                 {clarificationQuestions.map((question, index) => (
@@ -704,7 +723,7 @@ export function CourseStudioChatSidebar({
           />
           <ModelPicker
             kind="realtime"
-            label="语音模型"
+            label="speech model"
             icon={<Volume2 className="h-4 w-4 shrink-0 text-gray-600" />}
             openModelMenu={openModelMenu}
             setOpenModelMenu={setOpenModelMenu}
@@ -753,7 +772,7 @@ export function CourseStudioChatSidebar({
           {sourceQueryAllReady || sourceQuerySelections.length ? (
             <div className="mx-2.5 mt-2.5 space-y-1.5">
               <div className="flex items-center justify-between px-1 text-[10px] text-blue-700">
-                <span>资料问答范围</span>
+                <span>Data question and answer scope</span>
                 <button
                   type="button"
                   onClick={() =>
@@ -765,15 +784,16 @@ export function CourseStudioChatSidebar({
                   }
                   className="hover:text-blue-950"
                 >
-                  清空范围
+
+                  clear range
                 </button>
               </div>
               {sourceQueryAllReady ? (
                 <div className="flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-2.5 py-1.5">
                   <div className="flex min-w-0 items-center gap-2">
                     <TextQuote className="h-4 w-4 shrink-0 text-blue-600" />
-                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">全部资料</span>
-                    <p className="truncate text-xs text-blue-900">当前课程全部可问答资料</p>
+                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">All information</span>
+                    <p className="truncate text-xs text-blue-900">All available Q&A materials for the current course</p>
                   </div>
                 </div>
               ) : sourceQuerySelections.map((selection, index) => (
@@ -784,7 +804,7 @@ export function CourseStudioChatSidebar({
                   <div className="flex min-w-0 items-center gap-2">
                     <TextQuote className="h-4 w-4 shrink-0 text-blue-600" />
                     <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">
-                      {selection.source_scope_kind === "chapter" ? "章节" : selection.source_scope_kind === "page_range" ? "页段" : "资料"}
+                      {selection.source_scope_kind === "chapter" ? "chapter" : selection.source_scope_kind === "page_range" ? "page segment" : "material"}
                     </span>
                     <p className="truncate text-xs text-blue-900">{sourceQuerySelectionLabel(selection)}</p>
                   </div>
@@ -796,7 +816,7 @@ export function CourseStudioChatSidebar({
                         sourceQuerySelections: current.sourceQuerySelections.filter((_item, itemIndex) => itemIndex !== index),
                       }))
                     }
-                    aria-label={`移除资料问答范围 ${index + 1}`}
+                    aria-label={`Remove source Q&A scope ${index + 1}`}
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-blue-500 transition hover:bg-white hover:text-blue-900"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -809,9 +829,10 @@ export function CourseStudioChatSidebar({
             <div className="mx-2.5 mt-2.5 space-y-1.5">
               {composerSelections.length > 1 ? (
                 <div className="flex items-center justify-between px-1 text-[10px] text-gray-500">
-                  <span>已保留 {composerSelections.length} 个引用</span>
+                  <span>Reserved {composerSelections.length}  citations</span>
                   <button type="button" onClick={onClearSelection} className="hover:text-black">
-                    清空全部
+
+                    Clear all
                   </button>
                 </div>
               ) : null}
@@ -827,7 +848,8 @@ export function CourseStudioChatSidebar({
                       <TextQuote className="h-4 w-4 shrink-0 text-gray-500" />
                     )}
                     <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700">
-                      引用 {index + 1} · {composerSelectionLabel(selection)}
+
+                      Quote {index + 1} · {composerSelectionLabel(selection)}
                     </span>
                     <p className="min-w-0 truncate text-xs leading-5 text-gray-700">
                       “{selection.excerpt.replace(/\s+/g, " ").slice(0, 160)}”
@@ -848,9 +870,9 @@ export function CourseStudioChatSidebar({
                         };
                       })
                     }
-                    aria-label={`移除引用 ${index + 1}`}
+                    aria-label={`Remove reference ${index + 1}`}
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-black"
-                    title="移除这个引用"
+                    title="Remove this reference"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -906,18 +928,18 @@ export function CourseStudioChatSidebar({
             }}
             placeholder={
               interactionLocked
-                ? "合并期间对话已暂停，提交或放弃合并后可继续"
+                ? "The conversation has been paused during the merge and can be continued after submitting or abandoning the merge."
                 : isPreviewMode
-                  ? "点击输入会回到当前版本并继续对话"
+                  ? "Clicking enter will return to the current version and continue the conversation"
                   : composerMode === "direct_edit"
-                    ? "描述要怎么改这段板书，或直接说“重写整篇”..."
+                    ? "Describe how you would change this piece of board content, or simply say \"rewrite the entire article\"..."
                     : sourceQueryAllReady || sourceQuerySelections.length
-                      ? "询问选中资料中的内容"
+                      ? "Ask about the content of the selected data"
                     : composerSelection
                       ? composerSelection.kind === "source"
-                        ? "基于引用章节继续提问"
-                        : "基于选中内容继续追问"
-                      : "给 OpenClass 发消息..."
+                        ? "Continue to ask questions based on the cited chapter"
+                        : "Continue to ask questions based on the selected content"
+                      : "Send a message to OpenClass..."
             }
             className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400"
           />
@@ -956,8 +978,8 @@ export function CourseStudioChatSidebar({
                   <TextQuote className="h-3.5 w-3.5" />
                   {composerSelections.length > 1
                     ? includeSelectionInPrompt
-                      ? `包含 ${composerSelections.length} 个引用`
-                      : `忽略 ${composerSelections.length} 个引用`
+                      ? `Include ${composerSelections.length} references`
+                      : `Ignore ${composerSelections.length} references`
                     : composerSelectionToggleLabel(composerSelection, includeSelectionInPrompt)}
                 </button>
               ) : null}
@@ -973,8 +995,8 @@ export function CourseStudioChatSidebar({
                   void onSubmitChat();
                 }
               }}
-              aria-label={isChatBusy ? "停止回复" : "发送消息"}
-              title={isChatBusy ? "停止回复" : "发送消息"}
+              aria-label={isChatBusy ? "Stop replying" : "Send message"}
+              title={isChatBusy ? "Stop replying" : "Send message"}
               disabled={
                 !isChatBusy &&
                 (interactionLocked ||
@@ -1024,7 +1046,7 @@ function ModelPicker({
         type="button"
         data-testid={`${kind}-model-picker-button`}
         aria-expanded={openModelMenu === kind}
-        aria-label={`${label}，当前模型 ${modelButtonLabel(selectedOption, selectedModel)}`}
+        aria-label={`${label}, current model ${modelButtonLabel(selectedOption, selectedModel)}`}
         onClick={() => setOpenModelMenu((current) => (current === kind ? null : kind))}
         className="flex h-10 w-full items-center justify-center gap-1.5 rounded-full bg-gray-100 px-3 text-sm text-gray-900 transition-colors hover:bg-gray-200"
       >
@@ -1064,7 +1086,7 @@ function ModelPicker({
                     <span className="block truncate font-medium">{option.label}</span>
                     <span className="mt-0.5 block truncate text-xs leading-4 text-gray-400">
                       {PROVIDER_LABELS[option.provider]} / {option.model}
-                      {option.configured ? "" : " / 未配置"}
+                      {option.configured ? "" : "/ not configured"}
                     </span>
                   </span>
                   {selected ? <Check className="h-4 w-4 shrink-0 text-gray-900" /> : null}

@@ -23,7 +23,7 @@ type PublicCourseActionsProps = {
 
 export function PublicCourseActions({
   course,
-  language = "zh-CN",
+  language = "en",
   compact = false,
   disabled = false,
   onDownload,
@@ -32,8 +32,8 @@ export function PublicCourseActions({
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const detailHref = publicProjectHref(course.kind, course.id);
-  const detailsLabel = language === "en" ? "Details" : "详情";
-  const downloadLabel = language === "en" ? "Download" : "下载";
+  const detailsLabel = language === "en" ? "Details" : "Details";
+  const downloadLabel = language === "en" ? "Download" : "download";
 
   async function downloadCourse() {
     setIsDownloading(true);
@@ -52,7 +52,7 @@ export function PublicCourseActions({
         throw new Error(
           language === "en"
             ? "The downloaded project did not contain an editable course."
-            : "下载后的项目中没有可编辑课程。",
+            : "There are no editable courses in the downloaded project.",
         );
       }
       router.push(`/studio?lesson=${encodeURIComponent(lessonId)}`);
@@ -70,7 +70,7 @@ export function PublicCourseActions({
           ? downloadError.message
           : language === "en"
             ? "The course could not be downloaded."
-            : "暂时无法下载这门课程。",
+            : "This course is currently unavailable for download.",
       );
     } finally {
       setIsDownloading(false);
@@ -107,7 +107,7 @@ export function PublicCourseActions({
           {isDownloading
             ? language === "en"
               ? "Downloading…"
-              : "正在下载…"
+              : "Downloading…"
             : downloadLabel}
         </button>
       </div>

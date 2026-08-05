@@ -206,7 +206,8 @@ export function AccountMenu({
                 onClick={() => setOpen(false)}
               >
                 <WalletCards className="h-4 w-4 text-stone-400" />
-                积分与充值
+
+                Credits and top-up
               </Link>
             ) : null}
             <button

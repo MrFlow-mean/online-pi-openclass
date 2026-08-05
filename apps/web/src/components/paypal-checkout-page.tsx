@@ -26,19 +26,19 @@ export function PayPalCheckoutPage({ packageId }: PayPalCheckoutPageProps) {
 
     async function loadPackage() {
       if (!packageId) {
-        setError("请先选择要充值的点数。");
+        setError("Please select the points you want to top up first.");
         setLoading(false);
         return;
       }
       try {
         const overview = await api.getCreditWallet();
         const selectedPackage = overview.packages.find((item) => item.id === packageId);
-        if (!selectedPackage) throw new Error("该充值套餐不存在或已下架。");
-        if (!overview.wallet.paypal_configured) throw new Error("PayPal 收款配置尚未生效。");
+        if (!selectedPackage) throw new Error("The top-up package does not exist or has been removed from the shelves.");
+        if (!overview.wallet.paypal_configured) throw new Error("PayPal payment configuration has not yet taken effect.");
         if (!disposed) setPaymentPackage(selectedPackage);
       } catch (loadError) {
         if (!disposed) {
-          setError(loadError instanceof Error ? loadError.message : "无法加载支付信息");
+          setError(loadError instanceof Error ? loadError.message : "Unable to load payment information");
         }
       } finally {
         if (!disposed) setLoading(false);
@@ -74,10 +74,11 @@ export function PayPalCheckoutPage({ packageId }: PayPalCheckoutPageProps) {
             className="inline-flex items-center gap-2 text-sm font-semibold text-stone-600 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            返回选择点数
+
+            Return selection points
           </Link>
           <span className="inline-flex items-center gap-2 text-xs font-medium text-stone-500">
-            <LockKeyhole className="h-3.5 w-3.5" /> PayPal 安全支付
+            <LockKeyhole className="h-3.5 w-3.5" />  PayPal secure payment
           </span>
         </div>
 
@@ -86,12 +87,12 @@ export function PayPalCheckoutPage({ packageId }: PayPalCheckoutPageProps) {
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-stone-400">
               OpenClass Checkout
             </p>
-            <h1 className="mt-2 text-2xl font-semibold">完成支付</h1>
+            <h1 className="mt-2 text-2xl font-semibold">Complete payment</h1>
           </div>
 
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-20 text-sm text-stone-500">
-              <LoaderCircle className="h-5 w-5 animate-spin" /> 正在加载支付方式
+              <LoaderCircle className="h-5 w-5 animate-spin" />  Loading payment method
             </div>
           ) : null}
 
@@ -124,7 +125,8 @@ export function PayPalCheckoutPage({ packageId }: PayPalCheckoutPageProps) {
               href="/wallet"
               className="mt-6 inline-flex w-full items-center justify-center rounded-lg bg-stone-950 px-4 py-3 text-sm font-semibold text-white"
             >
-              返回选择充值金额
+
+              Return to select top-up amount
             </Link>
           ) : null}
         </section>

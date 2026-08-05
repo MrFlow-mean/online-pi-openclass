@@ -51,21 +51,21 @@ function subscribe(onStoreChange: () => void): () => void {
 }
 
 function getSnapshot(): InterfaceLanguage {
-  if (typeof window === "undefined") {
-    return "zh-CN";
+  if (typeof window !== "undefined") {
+    readLanguageFromDomStorage();
   }
-  return readLanguageFromDomStorage();
+  return "en";
 }
 
 function getServerSnapshot(): InterfaceLanguage {
-  return "zh-CN";
+  return "en";
 }
 
 export function InterfaceLanguageProvider({ children }: { children: ReactNode }) {
   const language = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   useEffect(() => {
-    document.documentElement.lang = language === "en" ? "en" : "zh-CN";
+    document.documentElement.lang = "en";
   }, [language]);
 
   const value = useMemo<InterfaceLanguageValue>(() => {
@@ -74,7 +74,7 @@ export function InterfaceLanguageProvider({ children }: { children: ReactNode })
       language,
       texts,
       intlLocale: texts.intlLocale,
-      htmlLang: language === "en" ? "en" : "zh-CN",
+      htmlLang: "en",
     };
   }, [language]);
 
@@ -92,7 +92,7 @@ export function useInterfaceLanguage(): InterfaceLanguageValue {
       language,
       texts,
       intlLocale: texts.intlLocale,
-      htmlLang: language === "en" ? "en" : "zh-CN",
+      htmlLang: "en",
     };
   }
   return ctx;

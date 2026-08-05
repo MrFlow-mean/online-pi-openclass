@@ -5,14 +5,17 @@ from pathlib import Path
 import pytest
 
 from app.models import (
+    RetrievalEvidence,
     SourceChapter,
     SourceChunk,
     SourceIngestionRecord,
     SourceQueryRef,
     SourceQueryScope,
+    SourceRange,
     SourceStructure,
 )
 from app.services.source_evidence_store import SourceEvidenceStore
+from app.services.source_range_reader import SourceRangeReadResult
 from app.services.source_retrieval_service import SourceRetrievalError, SourceRetrievalService
 from app.services.source_structure_store import SourceStructureStore
 
@@ -134,6 +137,132 @@ def test_chapter_scope_cannot_retrieve_a_sibling_chapter(tmp_path: Path) -> None
     assert result.bundle.evidence_items
     assert {item.chapter_id for item in result.bundle.evidence_items} == {selected_chapter.id}
     assert all("sibling" not in item.expanded_text for item in result.bundle.evidence_items)
+
+
+def test_chapter_scope_reads_verified_on_demand_catalog_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, source_store, structure_store = _service(tmp_path)
+    content_hash = "f" * 64
+    source = SourceIngestionRecord(
+        id="source_on_demand",
+        owner_user_id="user_1",
+        package_id="package_1",
+        title="On-demand source",
+        file_name="on-demand.pdf",
+        mime_type="application/pdf",
+        status="ready",
+        metadata={"content_hash": content_hash},
+    )
+    chapter_range = SourceRange(
+        kind="pdf_pages",
+        start=21,
+        end=24,
+        display_label="pp. 21-24",
+    )
+    chapter = SourceChapter(
+        id="chapter_on_demand",
+        owner_user_id="user_1",
+        package_id="package_1",
+        source_ingestion_id=source.id,
+        title="Selected on-demand chapter",
+        path=["Selected on-demand chapter"],
+        anchor_status="verified",
+        mapping_status="verified",
+        range=chapter_range,
+        source_content_hash=content_hash,
+        catalog_version=7,
+    )
+    source_store.save_source(source)
+    structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id="user_1",
+            package_id="package_1",
+            source_ingestion_id=source.id,
+            status="ready",
+            strategy="codex_directory_v1",
+            source_content_hash=content_hash,
+            catalog_version=7,
+            metadata={
+                "catalog_pipeline": "codex_directory_v1",
+                "directory_status": "incomplete",
+                "work_state": "working",
+            },
+        ),
+        chapters=[chapter],
+        chunks=[],
+    )
+    observed_selection = None
+
+    def fake_range_read(**kwargs) -> SourceRangeReadResult:
+        nonlocal observed_selection
+        observed_selection = kwargs["selection"]
+        return SourceRangeReadResult(
+            evidence_items=[
+                RetrievalEvidence(
+                    source_ingestion_id=source.id,
+                    source_title=source.title,
+                    chapter_id=chapter.id,
+                    section_path=chapter.path,
+                    page_range="pp. 21-24",
+                    expanded_text="Authenticated on-demand chapter body.",
+                    excerpt="Authenticated on-demand chapter body.",
+                    token_count=9,
+                    metadata={"page_start": 21, "page_end": 24},
+                )
+            ],
+            catalog_version=7,
+            source_content_hash=content_hash,
+            source_range=chapter_range.model_dump(mode="json"),
+        )
+
+    monkeypatch.setattr(
+        "app.services.source_retrieval_service.read_verified_source_range",
+        fake_range_read,
+    )
+
+    with pytest.raises(SourceRetrievalError, match="请先引用已验证章节"):
+        service.retrieve(
+            owner_user_id="user_1",
+            package_id="package_1",
+            lesson_id="lesson_1",
+            query="explain the source",
+            scope=SourceQueryScope(
+                mode="source",
+                refs=[
+                    SourceQueryRef(
+                        source_ingestion_id=source.id,
+                        source_content_hash=content_hash,
+                    )
+                ],
+            ),
+        )
+
+    result = service.retrieve(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        query="explain this chapter",
+        scope=SourceQueryScope(
+            mode="chapter",
+            refs=[
+                SourceQueryRef(
+                    source_ingestion_id=source.id,
+                    source_content_hash=content_hash,
+                    source_chapter_id=chapter.id,
+                    page_start=21,
+                    page_end=24,
+                )
+            ],
+        ),
+    )
+
+    assert observed_selection is not None
+    assert observed_selection.source_range == chapter_range
+    assert result.bundle.token_count == 9
+    assert result.bundle.evidence_items[0].expanded_text == "Authenticated on-demand chapter body."
+    assert result.citations[0].page_start == 21
 
 
 def test_source_scope_rejects_a_stale_content_hash(tmp_path: Path) -> None:

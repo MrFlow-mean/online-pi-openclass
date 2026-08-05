@@ -34,7 +34,8 @@ export function SelectionPopover({
         className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
       >
         <TextQuote className="h-4 w-4" />
-        引用到输入框
+
+        Reference to input box
       </button>
       <span className="h-5 w-px bg-gray-200" aria-hidden="true" />
       <button
@@ -43,7 +44,8 @@ export function SelectionPopover({
         className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
       >
         <Box className="h-4 w-4" />
-        引用到图形
+
+        Reference to graphics
       </button>
     </div>
   );

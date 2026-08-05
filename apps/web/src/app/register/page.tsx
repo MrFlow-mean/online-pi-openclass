@@ -3,8 +3,8 @@ import type { Metadata } from "next";
 import { AuthPanel } from "@/components/auth-panel";
 
 export const metadata: Metadata = {
-  title: "注册",
-  description: "注册开放课堂账号。",
+  title: "Create Account",
+  description: "Create an OpenClass account.",
 };
 
 export default function RegisterPage() {

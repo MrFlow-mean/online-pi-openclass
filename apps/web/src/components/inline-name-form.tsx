@@ -21,8 +21,8 @@ type InlineNameFormProps = {
 export function InlineNameForm({
   label,
   placeholder,
-  confirmLabel = "确认",
-  cancelLabel = "取消",
+  confirmLabel = "confirm",
+  cancelLabel = "Cancel",
   isBusy = false,
   variant = "sidebar",
   className,

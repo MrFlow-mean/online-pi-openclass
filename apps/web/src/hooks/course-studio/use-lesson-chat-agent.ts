@@ -65,7 +65,27 @@ type UseLessonChatAgentOptions = {
   busyAction: string | null;
 };
 
-const DEFAULT_LEARNING_REQUIREMENT_FAILURE_REASON = "本轮学习需求没有成功更新，请重试刚才的输入。";
+const DEFAULT_LEARNING_REQUIREMENT_FAILURE_REASON = "This round of learning requirements was not updated successfully, please try again the input just now.";
+const DEFAULT_BOARD_GENERATION_FAILURE_REASON =
+  "Board generation did not finish. The confirmed learning requirements were retained and can be retried.";
+const INTERRUPTED_CHAT_RECOVERY_DELAYS_MS = [
+  0,
+  500,
+  1000,
+  2000,
+  4000,
+  8000,
+  15000,
+  30000,
+  30000,
+] as const;
+
+function waitForInterruptedChatRecovery(delayMs: number) {
+  if (delayMs <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+}
 
 function upsertAgentActivity(
   events: AgentActivityEvent[],
@@ -80,6 +100,12 @@ function upsertAgentActivity(
 
 export function recoveredLearningRequirementFailureReason(commit: CommitRecord | null): string | null {
   const metadata = commit?.metadata;
+  if (metadata?.kind === "learning_requirement_generation_failed") {
+    const generationFailureReason = metadata.generation_failure_reason;
+    return typeof generationFailureReason === "string" && generationFailureReason.trim()
+      ? generationFailureReason.trim()
+      : DEFAULT_BOARD_GENERATION_FAILURE_REASON;
+  }
   if (
     metadata?.learning_requirement_operation_status !== "failed" &&
     metadata?.refinement_route !== "refinement_failed"
@@ -124,7 +150,12 @@ export function useLessonChatAgent({
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
   const chatAbortRequestedRef = useRef(false);
-  const textChatSessionIdRef = useRef<string | null>(null);
+  const activeChatCancellationRef = useRef<{
+    lessonId: string;
+    sessionId: string;
+    inputEventId: string;
+  } | null>(null);
+  const textChatSessionIdsRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     activeLessonIdRef.current = activeLesson?.id ?? null;
@@ -134,6 +165,7 @@ export function useLessonChatAgent({
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
   const composerAttachments = activeComposerState.composerAttachments;
+  const sourceQuerySelections = activeComposerState.sourceQuerySelections ?? [];
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit" || busyAction === "chat-edit";
 
   type ChatTurnBusyAction = "chat" | "agent-edit" | "chat-edit";
@@ -151,6 +183,7 @@ export function useLessonChatAgent({
     conversationMessages: ChatMessage[];
     userMessageContent: string;
     submittedSelection: SelectionRef | null;
+    submittedSourceSelections?: SelectionRef[];
     busyActionName: ChatTurnBusyAction;
     flushReason: AutoSaveReason;
     clearComposerInput?: boolean;
@@ -193,25 +226,40 @@ export function useLessonChatAgent({
     );
   }
 
+  function clearSelectionForLesson(lessonId: string) {
+    updateLessonComposerState(lessonId, (current) => ({
+      ...current,
+      composerMode: "ask",
+      includeSelectionInPrompt: true,
+      composerSelection: null,
+      composerSelections: [],
+      sourceQuerySelections: [],
+      sourceQueryAllReady: false,
+    }));
+    if (activeLessonIdRef.current === lessonId) {
+      clearSelection();
+    }
+  }
+
   function conversationFromMessages(messages: ChatMessage[]) {
     return messages.slice(-8).map(({ role, content }) => ({ role, content }));
   }
 
   function displayContentForPayload(payload: ChatRequestPayload) {
     if (payload.board_generation_action === "start") {
-      return "开始生成板书";
+      return "Start generating board content";
     }
     if (payload.teaching_action === "continue") {
-      return "继续讲下一个标题";
+      return "Continue to the next title";
     }
     if (payload.teaching_action === "restart") {
-      return "从第一个标题重新讲";
+      return "Retelling from the first title";
     }
-    const content = payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
+    const content = payload.interaction_mode === "direct_edit" ? `Direct lesson edit: ${payload.message}` : payload.message;
     if (!payload.attachments?.length) {
       return content;
     }
-    return `${content}\n\n附件：${payload.attachments.map((attachment) => attachment.name).join("、")}`;
+    return `${content}\n\nAttachments: ${payload.attachments.map((attachment) => attachment.name).join(", ")}`;
   }
 
   function latestCommitFromPackage(coursePackage: CoursePackage, lessonId: string): CommitRecord | null {
@@ -271,6 +319,7 @@ export function useLessonChatAgent({
     conversationMessages,
     userMessageContent,
     submittedSelection,
+    submittedSourceSelections = [],
     busyActionName,
     flushReason,
     clearComposerInput = false,
@@ -284,25 +333,36 @@ export function useLessonChatAgent({
       return;
     }
     const lessonId = lesson.id;
-    if (!textChatSessionIdRef.current) {
-      textChatSessionIdRef.current = createTextChatSessionId();
+    let textChatSessionId = textChatSessionIdsRef.current.get(lessonId);
+    if (!textChatSessionId) {
+      textChatSessionId = createTextChatSessionId();
+      textChatSessionIdsRef.current.set(lessonId, textChatSessionId);
     }
-    const identifiedPayload = freezeTextChatTurnIdentity(payload, textChatSessionIdRef.current);
+    const identifiedPayload = freezeTextChatTurnIdentity(payload, textChatSessionId);
     const payloadWithConversation: ChatRequestPayload = {
       ...identifiedPayload,
       post_generation_action: identifiedPayload.post_generation_action ?? "stop_after_generation",
       text_model: identifiedPayload.text_model ?? selectedTextModel,
       conversation: identifiedPayload.conversation ?? conversationFromMessages(conversationMessages),
     };
+    const hasSubmittedSourceScope = Boolean(payloadWithConversation.source_query_scope);
 
     if (!payloadWithConversation.message.trim()) {
       return;
     }
 
-    const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
+    const userMessage = createChatMessage(
+      "user",
+      userMessageContent,
+      "ready",
+      undefined,
+      submittedSelection,
+      null,
+      { sourceSelections: submittedSourceSelections }
+    );
     const pendingAssistantMessage: ChatMessage = {
       ...createChatMessage("assistant", "", "pending"),
-      statusLabel: payloadWithConversation.source_query_scope ? "正在检索资料原文" : "正在保存当前文档",
+      statusLabel: payloadWithConversation.source_query_scope ? "Retrieving original information" : "Saving current document",
     };
     let requestStarted = false;
     let streamedChatContent = "";
@@ -315,6 +375,7 @@ export function useLessonChatAgent({
     let requestStartedAtMs = Date.now();
     const abortController = new AbortController();
     let canStreamDocumentPreview = false;
+    const isRequestLessonActive = () => activeLessonIdRef.current === lessonId;
 
     function flushStreamingDocumentPreview() {
       if (!canStreamDocumentPreview || !streamedDocumentText) {
@@ -367,7 +428,13 @@ export function useLessonChatAgent({
           )
           .filter((message) => message.id !== pendingAssistantMessage.id || Boolean(stoppedContent))
       );
-      setError(null);
+      if (isRequestLessonActive()) {
+        setError(
+          payloadWithConversation.board_generation_action === "start" || sawReadyForBoardRequirementUpdate
+            ? "Board generation was stopped. Confirmed learning requirements were retained and can be retried."
+            : null
+        );
+      }
     }
 
     chatAbortRequestedRef.current = false;
@@ -408,6 +475,9 @@ export function useLessonChatAgent({
         }
         return;
       }
+      if (payloadWithConversation.source_query_scope) {
+        clearSelectionForLesson(lessonId);
+      }
       const beforeRequestResult = await beforeRequest?.({
         lessonId,
         pendingMessageId: pendingAssistantMessage.id,
@@ -427,7 +497,12 @@ export function useLessonChatAgent({
       }
       requestStarted = true;
       requestStartedAtMs = Date.now();
-      updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
+      activeChatCancellationRef.current = {
+        lessonId: requestLesson.id,
+        sessionId: identifiedPayload.session_id,
+        inputEventId: identifiedPayload.input_event_id,
+      };
+      updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "Replying" });
       const response = await api.streamChatOnLesson(
         requestLesson.id,
         payloadWithConversation,
@@ -448,9 +523,11 @@ export function useLessonChatAgent({
               content: streamedChatContent,
               agentActivity: streamedAgentActivity,
               statusLabel:
-                submittedSelection?.kind === "source" && payloadWithConversation.post_generation_action === "auto_explain"
-                  ? "正在从第一个标题开始讲解"
-                  : "正在回复",
+                hasSubmittedSourceScope &&
+                sawReadyForBoardRequirementUpdate &&
+                Boolean(streamedDocumentText.trim())
+                  ? "Starting from the first title"
+                  : "Replying",
             });
           },
           onDocumentDelta(delta) {
@@ -458,8 +535,8 @@ export function useLessonChatAgent({
               return;
             }
             streamedDocumentText += delta;
-            if (submittedSelection?.kind === "source") {
-              updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在生成板书" });
+            if (hasSubmittedSourceScope) {
+              updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "Generating board content" });
             }
             scheduleStreamingDocumentPreview();
           },
@@ -468,26 +545,30 @@ export function useLessonChatAgent({
               sawReadyForBoardRequirementUpdate = true;
               updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
                 statusLabel:
-                  payload.requirement_phase === "frozen" ? "正在生成板书" : "学习需求已确认",
+                  payload.requirement_phase === "frozen" ? "Generating board content" : "Learning needs confirmed",
               });
             }
-            setClarificationQuestions(payload.clarification_questions);
-            setLearningClarity(payload.learning_clarification);
-            setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
-            if (submittedSelection?.kind === "source") {
-              updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "资料范围已定位" });
+            if (isRequestLessonActive()) {
+              setClarificationQuestions(payload.clarification_questions);
+              setLearningClarity(payload.learning_clarification);
+              setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
+            }
+            if (hasSubmittedSourceScope) {
+              updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "Data range has been located" });
             }
           },
           onBoardTaskUpdate(payload) {
-            setStreamedRequirementSheet(null);
-            setLearningClarity(null);
-            setClarificationQuestions([]);
             const nextTask = payload.active_board_task_sheet ?? payload.board_task_sheet;
-            setStreamedBoardTaskSheet(nextTask);
-            onTransientBoardFocusChange(
-              lessonId,
-              resolvedBoardFocusForTurn("learning_need", nextTask)
-            );
+            if (isRequestLessonActive()) {
+              setStreamedRequirementSheet(null);
+              setLearningClarity(null);
+              setClarificationQuestions([]);
+              setStreamedBoardTaskSheet(nextTask);
+              onTransientBoardFocusChange(
+                lessonId,
+                resolvedBoardFocusForTurn("learning_need", nextTask)
+              );
+            }
           },
         },
         { signal: abortController.signal }
@@ -518,6 +599,7 @@ export function useLessonChatAgent({
           }
         : userMessage;
       updateCoursePackage(response.course_package, {
+        mergeLessonId: requestLesson.id,
         activeLessonId: activeLessonIdForAsyncPackage(
           response.course_package,
           requestLesson.id,
@@ -528,33 +610,35 @@ export function useLessonChatAgent({
       if (failedStreamingDocumentPreview) {
         setStreamingDocumentPreview(requestLesson.id, failedStreamingDocumentPreview);
       }
-      if (response.board_document_operation_status === "failed") {
-        setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，请重试。");
+      if (isRequestLessonActive() && response.board_document_operation_status === "failed") {
+        setError(response.board_document_operation_failure_reason ?? "The document generation on the right failed, please try again.");
       }
-      if (response.learning_requirement_operation_status === "failed") {
+      if (isRequestLessonActive() && response.learning_requirement_operation_status === "failed") {
         setError(
           response.learning_requirement_operation_failure_reason ??
-            "本轮学习需求没有成功更新，请重试。"
+            "This round of learning requirements was not updated successfully, please try again."
         );
       }
-      if (response.auto_teaching_operation_status === "failed") {
-        setError("板书已生成，但自动讲解未完成；可以发送“从第一个标题重新讲”重试。\n" +
+      if (isRequestLessonActive() && response.auto_teaching_operation_status === "failed") {
+        setError("The board content has been generated, but the automatic explanation has not been completed; you can send \"Restart from the first title\" to try again." +
           (response.auto_teaching_operation_failure_reason ?? ""));
       }
-      setLatestBoardDecision(response.board_decision);
-      setClarificationQuestions(response.clarification_questions);
-      setLearningClarity(response.learning_clarification);
       const nextBoardTaskSheet = response.active_board_task_sheet ?? response.board_task_sheet ?? null;
-      setStreamedRequirementSheet(
-        response.requirement_cleared || nextBoardTaskSheet
-          ? null
-          : response.active_requirement_sheet ?? response.learning_requirement_sheet
-      );
-      setStreamedBoardTaskSheet(nextBoardTaskSheet);
-      onTransientBoardFocusChange(
-        lessonId,
-        resolvedBoardFocusForTurn(response.turn_decision?.intent, nextBoardTaskSheet)
-      );
+      if (isRequestLessonActive()) {
+        setLatestBoardDecision(response.board_decision);
+        setClarificationQuestions(response.clarification_questions);
+        setLearningClarity(response.learning_clarification);
+        setStreamedRequirementSheet(
+          response.requirement_cleared || nextBoardTaskSheet
+            ? null
+            : response.active_requirement_sheet ?? response.learning_requirement_sheet
+        );
+        setStreamedBoardTaskSheet(nextBoardTaskSheet);
+        onTransientBoardFocusChange(
+          lessonId,
+          resolvedBoardFocusForTurn(response.turn_decision?.intent, nextBoardTaskSheet)
+        );
+      }
       const chatbotMessage = response.chatbot_message.trim();
       const streamedFallbackMessage = streamedChatContent.trim();
       const finalAgentActivity = response.agent_activity?.length ? response.agent_activity : streamedAgentActivity;
@@ -618,35 +702,82 @@ export function useLessonChatAgent({
           .filter((message) => message.id !== pendingAssistantMessage.id),
         ...assistantMessages,
       ]);
-      clearSelection();
+      clearSelectionForLesson(lessonId);
     } catch (chatError) {
       if (abortController.signal.aborted && chatAbortRequestedRef.current) {
         finishCancelledTurn();
         return;
       }
-      const rawErrorMessage = chatError instanceof Error ? chatError.message : "聊天失败";
+      const rawErrorMessage = chatError instanceof Error ? chatError.message : "Chat failed";
       const isTransientNetworkError =
         rawErrorMessage.toLowerCase().includes("network error") ||
         rawErrorMessage.toLowerCase().includes("failed to fetch");
       const userFacingError =
         payloadWithConversation.board_generation_action === "start" && isTransientNetworkError
-          ? "板书生成连接中断，可以再次点击“开始生成板书”重试；已确认的学习需求会保留。"
+          ? "The board generation connection was interrupted. Select \"Start generating board\" to retry; your confirmed learning needs will be retained."
           : sawReadyForBoardRequirementUpdate && isTransientNetworkError
-            ? "学习需求已确认，但板书生成连接中断；可以点击“开始生成板书”继续。"
+            ? "Your learning needs are confirmed, but board generation was interrupted. Select \"Start generating board\" to continue."
             : rawErrorMessage;
-      if (isMissingChatStreamFinalError(chatError)) {
+      if (isMissingChatStreamFinalError(chatError) || isTransientNetworkError) {
         try {
-          const refreshedPackage = await api.getCoursePackage();
-          const refreshedLesson = lessonFromPackage(refreshedPackage, requestLesson.id);
-          const recoveredCommit =
-            refreshedLesson !== null
-              ? recoveredCommitForTurn(refreshedLesson, payloadWithConversation.message, requestStartedAtMs)
-              : null;
+          updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
+            statusLabel: "Restoring saved result",
+          });
+          let refreshedPackage: CoursePackage | null = null;
+          let refreshedLesson: Lesson | null = null;
+          let recoveredCommit: CommitRecord | null = null;
+          let turnStatus: "running" | "finished" | null = null;
+          let lastRefreshError: unknown = null;
+          for (const delayMs of INTERRUPTED_CHAT_RECOVERY_DELAYS_MS) {
+            await waitForInterruptedChatRecovery(delayMs);
+            if (abortController.signal.aborted && chatAbortRequestedRef.current) {
+              finishCancelledTurn();
+              return;
+            }
+            try {
+              const status = await api.getChatTurnStatus(requestLesson.id, {
+                session_id: identifiedPayload.session_id,
+                input_event_id: identifiedPayload.input_event_id,
+              });
+              turnStatus = status.status;
+            } catch (statusError) {
+              lastRefreshError = statusError;
+            }
+            try {
+              const candidatePackage = await api.getCoursePackage();
+              const candidateLesson = lessonFromPackage(candidatePackage, requestLesson.id);
+              const candidateCommit =
+                candidateLesson !== null
+                  ? recoveredCommitForTurn(
+                      candidateLesson,
+                      payloadWithConversation.message,
+                      requestStartedAtMs
+                    )
+                  : null;
+              refreshedPackage = candidatePackage;
+              refreshedLesson = candidateLesson;
+              recoveredCommit = candidateCommit;
+            } catch (refreshAttemptError) {
+              lastRefreshError = refreshAttemptError;
+            }
+            if (recoveredCommit || (turnStatus === "finished" && refreshedPackage)) {
+              break;
+            }
+          }
+          if (!refreshedPackage) {
+            throw lastRefreshError ?? new Error("Refresh failed");
+          }
           updateCoursePackage(refreshedPackage, {
-            activeLessonId: activeLessonIdForAsyncPackage(refreshedPackage, requestLesson.id, requestLesson.id),
+            mergeLessonId: requestLesson.id,
+            activeLessonId: activeLessonIdForAsyncPackage(
+              refreshedPackage,
+              requestLesson.id,
+              activeLessonIdRef.current,
+              refreshedPackage.active_lesson_id ?? requestLesson.id
+            ),
             rebuildMessageLessonIds: recoveredCommit ? [requestLesson.id] : undefined,
           });
-          if (refreshedLesson) {
+          if (refreshedLesson && isRequestLessonActive()) {
             setStreamedRequirementSheet(
               recoveredCommit || refreshedLesson.board_task_requirements
                 ? null
@@ -657,7 +788,9 @@ export function useLessonChatAgent({
             setClarificationQuestions([]);
           }
           if (recoveredCommit) {
-            setError(recoveredLearningRequirementFailureReason(recoveredCommit));
+            if (isRequestLessonActive()) {
+              setError(recoveredLearningRequirementFailureReason(recoveredCommit));
+            }
             return;
           }
           updateLessonMessages(lessonId, (current) =>
@@ -666,17 +799,25 @@ export function useLessonChatAgent({
                 message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
             )
           );
-          setError("聊天连接在最终结果返回前中断，本轮没有写入历史；可以重试。");
+          if (isRequestLessonActive()) {
+            setError(
+              turnStatus === "running"
+                ? "The chat connection was interrupted, but generation is still running in the background. Refresh later to load the saved result."
+                : "The chat connection was interrupted before the final result was returned, and no history was written this round; you can try again."
+            );
+          }
           return;
         } catch (refreshError) {
-          const refreshMessage = refreshError instanceof Error ? refreshError.message : "刷新失败";
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : "Refresh failed";
           updateLessonMessages(lessonId, (current) =>
             current.filter(
               (message) =>
                 message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
             )
           );
-          setError(`${rawErrorMessage}；刷新最新历史失败：${refreshMessage}`);
+          if (isRequestLessonActive()) {
+            setError(`${rawErrorMessage}; could not refresh the latest history: ${refreshMessage}`);
+          }
           return;
         }
       }
@@ -696,11 +837,16 @@ export function useLessonChatAgent({
           )
         );
       }
-      setError(userFacingError);
+      if (isRequestLessonActive()) {
+        setError(userFacingError);
+      }
     } finally {
       clearStreamingDocumentPreviewFrame();
       if (chatAbortControllerRef.current === abortController) {
         chatAbortControllerRef.current = null;
+      }
+      if (activeChatCancellationRef.current?.inputEventId === identifiedPayload.input_event_id) {
+        activeChatCancellationRef.current = null;
       }
       chatAbortRequestedRef.current = false;
       chatRequestInFlightRef.current = false;
@@ -713,6 +859,15 @@ export function useLessonChatAgent({
       return;
     }
     chatAbortRequestedRef.current = true;
+    const activeCancellation = activeChatCancellationRef.current;
+    if (activeCancellation) {
+      void api
+        .cancelChatOnLesson(activeCancellation.lessonId, {
+          session_id: activeCancellation.sessionId,
+          input_event_id: activeCancellation.inputEventId,
+        })
+        .catch(() => undefined);
+    }
     chatAbortControllerRef.current.abort();
   }
 
@@ -732,9 +887,9 @@ export function useLessonChatAgent({
         message:
           chatInput.trim() ||
           (composerAttachments.length
-            ? "请查看我添加的附件。"
+            ? "Please see the attachment I added."
             : includedSelections.length
-              ? "请结合我引用的内容回答。"
+              ? "Please answer based on what I quoted."
               : ""),
         selection: includedSelections[includedSelections.length - 1] ?? null,
         selections: includedSelections,
@@ -762,6 +917,12 @@ export function useLessonChatAgent({
       conversationMessages: activeMessages,
       userMessageContent: displayContentForPayload(payloadForTurn),
       submittedSelection,
+      submittedSourceSelections:
+        payloadForTurn.source_query_scope?.mode === "all_ready_sources"
+          ? [{ kind: "source", excerpt: "当前课程全部可用资料", source_scope_kind: "source" }]
+          : payloadForTurn.source_query_scope
+            ? sourceQuerySelections
+            : [],
       busyActionName: payloadForTurn.interaction_mode === "direct_edit" ? "agent-edit" : "chat",
       flushReason: "chat",
       clearComposerInput: !payloadOverride || isBoardGenerationControl,
@@ -778,12 +939,12 @@ export function useLessonChatAgent({
     const sourceCommitId = sourceMessage.commitId;
     const baseCommitId = sourceMessage.parentCommitIds?.[0];
     if (!sourceCommitId || !baseCommitId || !editedMessage) {
-      setError("这条消息缺少可分叉的历史版本");
+      setError("This message lacks a forkable history");
       return;
     }
     const sourceIndex = activeMessages.findIndex((message) => message.id === sourceMessage.id);
     if (sourceIndex < 0) {
-      setError("没有找到要编辑的历史消息");
+      setError("No historical message found for editing");
       return;
     }
     const originalMessage = sourceMessage.editableContent ?? sourceMessage.content;
@@ -816,7 +977,7 @@ export function useLessonChatAgent({
         pendingAssistant,
       ],
       beforeRequest: async ({ lessonId, pendingMessageId }) => {
-        updatePendingAssistant(lessonId, pendingMessageId, { statusLabel: "正在创建新链路" });
+        updatePendingAssistant(lessonId, pendingMessageId, { statusLabel: "Creating new link" });
         const branchName = nextEditBranchName(activeLesson);
         const branchedPackage = await api.createBranch(activeLesson.id, branchName, baseCommitId);
         const applied = updateCoursePackage(branchedPackage, {
@@ -837,7 +998,7 @@ export function useLessonChatAgent({
       return;
     }
     await handleSubmitChat({
-      message: "继续下一项",
+      message: "Continue to next item",
       interaction_mode: "ask",
       teaching_action: "continue",
     });

@@ -28,7 +28,7 @@ export function ForgotPasswordPanel() {
       const params = new URLSearchParams({ challenge: result.challenge_id, email });
       router.push(`/reset-password?${params.toString()}`);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "无法发送重置验证码");
+      setError(caught instanceof Error ? caught.message : "Unable to send reset verification code");
       setResetKey((value) => value + 1);
     } finally {
       setBusy(false);
@@ -36,17 +36,19 @@ export function ForgotPasswordPanel() {
   }
 
   return (
-    <AuthFormShell title="找回密码" description="输入注册邮箱。若账号存在，我们会发送一次性验证码；提示信息不会泄露邮箱是否已注册。">
+    <AuthFormShell title="Retrieve password" description="Enter your registered email address. If the account exists, we will send a one-time verification code; the prompt information will not reveal whether the email address is registered.">
       <form className="space-y-5" onSubmit={(event) => void submit(event)}>
         <label className="block text-sm font-semibold text-stone-800">
-          注册邮箱
+
+          Register email
           <input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} className={inputClass} />
         </label>
         <TurnstileWidget action="password_forgot" onTokenChange={setToken} resetKey={resetKey} />
         {error ? <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
         <button disabled={busy || !turnstileSubmissionReady(token)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-stone-950 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
           {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-          发送验证码
+
+          Send verification code
         </button>
       </form>
     </AuthFormShell>
@@ -69,11 +71,11 @@ export function ResetPasswordPanel() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!challengeId) {
-      setError("重置请求缺少 challenge_id，请重新发送验证码。");
+      setError("The reset request is missing challenge_id, please resend the verification code.");
       return;
     }
     if (password !== confirmation) {
-      setError("两次输入的新密码不一致。");
+      setError("The new passwords entered twice are inconsistent.");
       return;
     }
     setBusy(true);
@@ -86,9 +88,9 @@ export function ResetPasswordPanel() {
         password_confirmation: confirmation,
         turnstile_token: token,
       });
-      setMessage(result.message || "密码已更新，请使用新密码登录。");
+      setMessage(result.message || "The password has been updated, please use the new password to log in.");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "密码重置失败");
+      setError(caught instanceof Error ? caught.message : "Password reset failed");
       setResetKey((value) => value + 1);
     } finally {
       setBusy(false);
@@ -96,19 +98,20 @@ export function ResetPasswordPanel() {
   }
 
   return (
-    <AuthFormShell title="设置新密码" description={email ? `验证码已发送至 ${email}。` : "填写邮件中的验证码和新密码。"}>
+    <AuthFormShell title="Set new password" description={email ? `A verification code was sent to ${email}.` : "Enter the verification code from your email and choose a new password."}>
       {message ? (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-800">{message}</div>
       ) : (
         <form className="space-y-5" onSubmit={(event) => void submit(event)}>
-          <label className="block text-sm font-semibold text-stone-800">6 位验证码<input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} className={inputClass} /></label>
-          <label className="block text-sm font-semibold text-stone-800">新密码<input required minLength={8} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} className={inputClass} /></label>
-          <label className="block text-sm font-semibold text-stone-800">确认新密码<input required minLength={8} type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className={inputClass} /></label>
+          <label className="block text-sm font-semibold text-stone-800">6 digit verification code<input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} className={inputClass} /></label>
+          <label className="block text-sm font-semibold text-stone-800">New Password<input required minLength={8} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} className={inputClass} /></label>
+          <label className="block text-sm font-semibold text-stone-800">Confirm new password<input required minLength={8} type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className={inputClass} /></label>
           <TurnstileWidget action="password_reset" onTokenChange={setToken} resetKey={resetKey} />
           {error ? <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
           <button disabled={busy || !turnstileSubmissionReady(token)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-stone-950 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
             {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-            更新密码
+
+            Update password
           </button>
         </form>
       )}

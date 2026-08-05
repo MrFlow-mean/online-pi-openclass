@@ -86,7 +86,7 @@ type KnowledgeIconItem = {
 const authProviderRetryDelaysMs = [0, 250, 750] as const;
 
 async function loadAuthProvidersWithRetry() {
-  let lastError: unknown = new Error("登录方式加载失败");
+  let lastError: unknown = new Error("Could not load sign-in methods");
   for (const delayMs of authProviderRetryDelaysMs) {
     if (delayMs > 0) {
       await new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -103,15 +103,15 @@ async function loadAuthProvidersWithRetry() {
 const socialSignInOptions: SocialSignInOption[] = [
   {
     id: "google",
-    label: "使用 Google 登录",
-    providerLabel: "Google 账号",
+    label: "Sign in with Google",
+    providerLabel: "Google account",
     className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
     brand: "google",
   },
   {
     id: "github",
-    label: "使用 GitHub 登录",
-    providerLabel: "GitHub 账号",
+    label: "Sign in with GitHub",
+    providerLabel: "GitHub account",
     className: "border-[#24292f] bg-[#24292f] text-white hover:bg-black",
     brand: "github",
   },
@@ -149,7 +149,7 @@ const knowledgeTextItems: KnowledgeTextItem[] = [
     style: { "--rot": "-15deg" },
   },
   {
-    content: "格物致知",
+    content: "Investigate things to gain knowledge",
     className: "auth-scale-grow absolute left-[15%] top-[20%] text-4xl font-bold text-[#5c4c3c] opacity-10 md:text-5xl",
     style: { "--rot": "12deg" },
   },
@@ -164,7 +164,7 @@ const knowledgeTextItems: KnowledgeTextItem[] = [
     style: { "--rot": "-20deg" },
   },
   {
-    content: "日本語",
+    content: "Japanese",
     className: "auth-float-wave absolute right-[40%] top-[8%] text-3xl text-[#6d93a7] opacity-[0.12] md:text-4xl",
     style: { "--rot": "5deg" },
   },
@@ -666,7 +666,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         if (!disposed) {
           setCurrentUser(null);
           setAuthProviders([]);
-          setError("无法连接登录服务，请确认后端正在运行后刷新页面重试。");
+          setError("Could not connect to the sign-in service. Refresh the page and try again.");
         }
       } finally {
         if (!disposed) {
@@ -751,7 +751,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         clearPendingCodexLogin();
         setCodexLogin(null);
         setCodexLoginStatus("expired");
-        setError("ChatGPT 登录已过期，请重新发起登录");
+        setError("ChatGPT sign-in expired. Please start again.");
         return;
       }
       let status;
@@ -776,7 +776,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         } catch {
           // Keep the pending marker and retry after transient status failures.
         }
-        setError(statusError instanceof Error ? statusError.message : "ChatGPT 登录状态检查失败");
+        setError(statusError instanceof Error ? statusError.message : "Could not check ChatGPT sign-in status");
         scheduleNextPoll();
         return;
       }
@@ -790,7 +790,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
             scheduleNextPoll();
           }
         } catch (completionError) {
-          setError(completionError instanceof Error ? completionError.message : "ChatGPT 登录完成失败");
+          setError(completionError instanceof Error ? completionError.message : "Could not complete ChatGPT sign-in");
           scheduleNextPoll();
         }
         return;
@@ -799,7 +799,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       if (["failed", "cancelled", "expired"].includes(status.status)) {
         clearPendingCodexLogin();
         setCodexLogin(null);
-        setError(status.error || "ChatGPT 登录未完成");
+        setError(status.error || "ChatGPT sign-in was not completed");
         return;
       }
       setError(null);
@@ -828,7 +828,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "操作失败");
+      setError(submitError instanceof Error ? submitError.message : "Operation failed");
       setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
@@ -837,10 +837,10 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
   async function handleRegistrationCodeRequest() {
     if (!turnstileSubmissionReady(turnstileToken)) {
-      setError("请先完成人机验证，再发送邮箱验证码");
+      setError("Complete human verification before requesting an email code.");
       setNotice(null);
       document
-        .querySelector<HTMLElement>('[aria-label="Cloudflare Turnstile 人机验证"]')
+        .querySelector<HTMLElement>("[aria-label=\"Cloudflare Turnstile human verification\"]")
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
@@ -856,7 +856,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       setNotice(response.message);
       setTurnstileResetKey((value) => value + 1);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "验证码发送失败");
+      setError(submitError instanceof Error ? submitError.message : "Could not send the verification code");
       setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
@@ -871,11 +871,11 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
     try {
       if (password !== passwordConfirmation) {
-        setError("两次输入的密码不一致");
+        setError("The passwords do not match.");
         return;
       }
       if (!registrationChallengeId) {
-        setError("请先发送并填写邮箱验证码");
+        setError("Request and enter an email verification code first.");
         return;
       }
       const payload = await api.registerEmail({
@@ -892,7 +892,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "注册失败");
+      setError(submitError instanceof Error ? submitError.message : "Registration failed");
       setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
@@ -919,7 +919,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "操作失败");
+      setError(submitError instanceof Error ? submitError.message : "Operation failed");
       setTurnstileResetKey((value) => value + 1);
     } finally {
       setIsLoading(false);
@@ -954,12 +954,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     try {
       const payload = await api.startGuestSession();
       if (!payload.token) {
-        throw new Error("游客会话未返回有效令牌");
+        throw new Error("Guest session did not return a valid token");
       }
       storeGuestAuthToken(payload.token);
       navigateAfterAuth("/studio");
     } catch (guestError) {
-      setError(guestError instanceof Error ? guestError.message : "游客访问失败");
+      setError(guestError instanceof Error ? guestError.message : "Could not start a guest session");
     } finally {
       setIsLoading(false);
     }
@@ -967,7 +967,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
   async function handleChatGPTLogin() {
     if (!chatGPTPlatformProvider?.configured) {
-      setError("ChatGPT 平台登录当前不可用");
+      setError("ChatGPT sign-in is currently unavailable");
       return;
     }
     setIsLoading(true);
@@ -977,7 +977,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       if (!readGuestAuthToken()) {
         const guest = await api.startGuestSession();
         if (!guest.token) {
-          throw new Error("游客会话未返回有效令牌");
+          throw new Error("Guest session did not return a valid token");
         }
         storeGuestAuthToken(guest.token);
       }
@@ -987,7 +987,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       setCodexLoginStatus("pending");
       window.open(login.verification_url, "_blank", "noopener,noreferrer");
     } catch (loginError) {
-      setError(loginError instanceof Error ? loginError.message : "无法开始 ChatGPT 登录");
+      setError(loginError instanceof Error ? loginError.message : "Could not start ChatGPT sign-in");
     } finally {
       setIsLoading(false);
     }
@@ -1005,7 +1005,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     try {
       await api.cancelCodexLogin(loginId);
     } catch (cancelError) {
-      setError(cancelError instanceof Error ? cancelError.message : "无法取消 ChatGPT 登录");
+      setError(cancelError instanceof Error ? cancelError.message : "Could not cancel ChatGPT sign-in");
     } finally {
       setIsLoading(false);
     }
@@ -1023,7 +1023,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setError(null);
     const provider = authProviders.find((item) => item.id === option.id);
     if (!provider?.configured) {
-      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client/App ID 与 Secret。你也可以使用邮箱注册或登录。`);
+      setNotice(`${option.providerLabel} requires an OAuth Client/App ID and Secret in the server .env. You can also register or sign in with email.`);
       return;
     }
     const nextPath =
@@ -1049,7 +1049,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 onClick={() => void handleHomeAccess()}
                 disabled={isAuthBusy}
                 className="flex min-w-0 items-center gap-3 text-left disabled:cursor-wait disabled:opacity-70"
-                aria-label="进入产品主页"
+                aria-label="Go to product homepage"
               >
                 <BrandMark
                   alt=""
@@ -1057,7 +1057,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   priority
                   size={80}
                 />
-                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">开放课堂</span>
+                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">OpenClass</span>
               </button>
               <button
                 type="button"
@@ -1066,49 +1066,55 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-3 text-sm font-semibold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
               >
                 <ArrowLeft className="h-4 w-4" />
-                主页
+
+                Home
               </button>
             </div>
 
             <div className="mb-6 sm:mb-7">
               <h1 className="auth-display text-4xl font-bold leading-[1.08] text-[#3a312b] sm:text-5xl">
-                构筑思维
+
+                Structure ideas
                 <br />
                 <span className="bg-gradient-to-r from-[#ead9b3] via-[#d2b77c] to-[#a78651] bg-clip-text text-transparent">
-                  优雅呈现
+
+                  Create with clarity
                 </span>
               </h1>
               <p className="mt-4 text-base leading-7 text-[#5c4c3c]/70">
-                将课堂灵感转化为结构化课程包、讲义与可复用的学习资料。欢迎回来，登录以继续创作。
+
+                Turn ideas into structured courses, clear lessons, and reusable learning resources. Sign in to keep creating.
               </p>
             </div>
 
             {isCheckingSession ? (
               <div className="flex min-h-80 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white/80 text-sm font-medium text-[#5c4c3c]">
                 <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                正在检查登录状态
+
+                Checking sign-in status
               </div>
             ) : currentUser ? (
               <div className="rounded-lg border border-[#ebe2d2] bg-white p-6 shadow-[0_18px_48px_rgba(58,49,43,0.08)]">
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[#3a312b] text-white">
                   <ShieldCheck className="h-5 w-5" />
                 </div>
-                <h2 className="auth-display mt-5 text-2xl font-bold text-[#3a312b]">已登录</h2>
+                <h2 className="auth-display mt-5 text-2xl font-bold text-[#3a312b]">You’re signed in</h2>
                 <p className="mt-2 break-all text-sm text-[#5c4c3c]">{userAccountLabel(currentUser)}</p>
-                <p className="mt-1 text-xs text-[#8d8377]">权限：{currentUser.role === "admin" ? "管理员" : "普通用户"}</p>
+                <p className="mt-1 text-xs text-[#8d8377]">Role: {currentUser.role === "admin" ? "Administrator" : "Member"}</p>
                 <div className="mt-6 flex flex-col gap-2 sm:flex-row">
                   <Link
                     href={currentUser.role === "admin" ? "/admin" : "/"}
                     className="inline-flex h-11 items-center justify-center rounded-lg bg-[#3a312b] px-4 text-sm font-bold text-white transition hover:bg-[#1f1a17]"
                   >
-                    {currentUser.role === "admin" ? "进入后台" : "回到主页"}
+                    {currentUser.role === "admin" ? "Open admin dashboard" : "Return home"}
                   </Link>
                   <button
                     type="button"
                     onClick={handleLogout}
                     className="inline-flex h-11 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white px-4 text-sm font-bold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b]"
                   >
-                    退出登录
+
+                    Log out
                   </button>
                 </div>
               </div>
@@ -1127,9 +1133,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                       ) : (
                         <Image src="/chatgpt-logo.png" alt="" width={20} height={20} className="h-5 w-5 rounded-sm" />
                       )}
-                      <span className="whitespace-nowrap">使用 ChatGPT 登录</span>
+                      <span className="whitespace-nowrap">Continue with ChatGPT</span>
                       {!chatGPTPlatformProvider.configured ? (
-                        <span className="shrink-0 rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-semibold">暂不可用</span>
+                        <span className="shrink-0 rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-semibold">Not available yet</span>
                       ) : null}
                     </button>
                   ) : null}
@@ -1153,7 +1159,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         <SocialBrandIcon brand={option.brand} />
                         <span className="whitespace-nowrap">{option.label}</span>
                         {isUnconfigured ? (
-                          <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>未配置</span>
+                          <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>Not configured</span>
                         ) : null}
                       </button>
                     );
@@ -1162,8 +1168,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 {codexLogin ? (
                   <div className="mb-5 rounded-lg border border-[#b9cbb8] bg-[#f1f7ef] px-3 py-3 text-sm leading-6 text-[#496a4c]">
-                    <p className="font-semibold">请在 ChatGPT 页面完成登录</p>
-                    <p className="mt-1">输入设备码：<span className="font-mono font-bold">{codexLogin.user_code}</span></p>
+                    <p className="font-semibold">Complete sign-in on the ChatGPT page</p>
+                    <p className="mt-1">Enter device code: <span className="font-mono font-bold">{codexLogin.user_code}</span></p>
                     <div className="mt-2 flex items-center gap-3">
                       <a
                         href={codexLogin.verification_url}
@@ -1171,7 +1177,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         rel="noreferrer"
                         className="font-semibold text-[#3a312b] underline underline-offset-2"
                       >
-                        打开 ChatGPT
+
+                        Open ChatGPT
                       </a>
                       <button
                         type="button"
@@ -1179,7 +1186,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         disabled={isLoading}
                         className="font-semibold text-[#8d8377] underline underline-offset-2 disabled:opacity-60"
                       >
-                        取消
+
+                        Cancel
                       </button>
                     </div>
                   </div>
@@ -1193,7 +1201,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 <div className="mb-5 flex items-center gap-3 text-xs font-semibold text-[#8d8377]">
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
-                  {isRegister ? "使用邮箱注册" : "或使用邮箱/手机号"}
+                  {isRegister ? "Create an account with email" : "Or continue with email or phone"}
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
                 </div>
 
@@ -1208,7 +1216,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         mode === item ? "bg-white text-[#3a312b] shadow-sm" : "text-[#8d8377] hover:text-[#3a312b]"
                       )}
                     >
-                      {item === "register" ? "注册" : "登录"}
+                      {item === "register" ? "Create account" : "Sign in"}
                     </Link>
                   ))}
                 </div>
@@ -1227,7 +1235,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         !useEmailCode ? "bg-[#f7f3eb] text-[#3a312b]" : "text-[#8d8377] hover:text-[#3a312b]"
                       )}
                     >
-                      密码登录
+
+                      Password
                     </button>
                     <button
                       type="button"
@@ -1243,7 +1252,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         useEmailCode ? "bg-[#f7f3eb] text-[#3a312b]" : "text-[#8d8377] hover:text-[#3a312b]"
                       )}
                     >
-                      邮箱验证码
+
+                      Email code
                     </button>
                   </div>
                 ) : null}
@@ -1262,7 +1272,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 >
                   <AuthInput
                     id="account"
-                    label={isRegister || useEmailCode ? "邮箱" : "邮箱或手机号"}
+                    label={isRegister || useEmailCode ? "Email" : "Email or phone number"}
                     type={isRegister || useEmailCode ? "email" : "text"}
                     value={accountIdentifier}
                     onChange={(value) => {
@@ -1286,13 +1296,13 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   {isRegister ? (
                     <AuthInput
                       id="username"
-                      label="用户名"
+                      label="Username"
                       type="text"
                       value={username}
                       onChange={setUsername}
                       minLength={2}
                       autoComplete="nickname"
-                      placeholder="用于展示的用户名"
+                      placeholder="Display username"
                       Icon={User}
                     />
                   ) : null}
@@ -1300,7 +1310,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   {!isRegister && useEmailCode && emailChallengeId ? (
                     <AuthInput
                       id="email-code"
-                      label="6 位验证码"
+                      label="6-digit verification code"
                       type="text"
                       value={emailCode}
                       onChange={setEmailCode}
@@ -1318,36 +1328,37 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     <div className="space-y-4">
                       {!isRegister ? (
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
+                          <span className="text-sm font-semibold text-[#5c4c3c]">Password</span>
                           <Link
                             href="/forgot-password"
                             className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
                           >
-                            忘记密码？
+
+                            Forgot password?
                           </Link>
                         </div>
                       ) : null}
                       <AuthInput
                         id="password"
-                        label={isRegister ? "密码" : ""}
+                        label={isRegister ? "Password" : ""}
                         type="password"
                         value={password}
                         onChange={setPassword}
                         minLength={8}
                         autoComplete={isRegister ? "new-password" : "current-password"}
-                        placeholder={isRegister ? "至少 8 位" : "••••••••"}
+                        placeholder={isRegister ? "At least 8 characters" : "••••••••"}
                         Icon={LockKeyhole}
                       />
                       {isRegister ? (
                         <AuthInput
                           id="password-confirmation"
-                          label="确认密码"
+                          label="Confirm Password"
                           type="password"
                           value={passwordConfirmation}
                           onChange={setPasswordConfirmation}
                           minLength={8}
                           autoComplete="new-password"
-                          placeholder="再次输入密码"
+                          placeholder="Re-enter your password"
                           Icon={ShieldCheck}
                         />
                       ) : null}
@@ -1358,7 +1369,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
                       <AuthInput
                         id="registration-email-code"
-                        label="邮箱验证码"
+                        label="Email verification code"
                         type="text"
                         value={emailCode}
                         onChange={setEmailCode}
@@ -1367,7 +1378,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         minLength={6}
                         pattern="[0-9]{6}"
                         autoComplete="one-time-code"
-                        placeholder="6 位验证码"
+                        placeholder="6-digit verification code"
                         Icon={LockKeyhole}
                       />
                       <button
@@ -1376,7 +1387,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         disabled={isAuthBusy}
                         className="h-[50px] whitespace-nowrap rounded-lg border border-[#d2a878] bg-white px-4 text-sm font-semibold text-[#5c4c3c] shadow-sm transition hover:bg-[#f7f3eb] disabled:cursor-wait disabled:opacity-60"
                       >
-                        {registrationChallengeId ? "重新发送" : "发送验证码"}
+                        {registrationChallengeId ? "Resend" : "Send verification code"}
                       </button>
                     </div>
                   ) : null}
@@ -1397,18 +1408,18 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
-                    {isRegister ? "注册" : useEmailCode ? (emailChallengeId ? "验证并登录" : "发送验证码") : "进入工作台"}
+                    {isRegister ? "Create account" : useEmailCode ? (emailChallengeId ? "Verify and sign in" : "Send verification code") : "Open Studio"}
                   </button>
                 </form>
 
                 <p className="mt-5 text-center text-sm text-[#5c4c3c]/70">
-                  {isRegister ? "已有账号？" : "还没有账号？"}
+                  {isRegister ? "Already have an account?" : "Don’t have an account yet?"}
                   <Link
                     href={`/${alternateMode}${authModeSearch}`}
                     onClick={() => handleAuthModeChange(alternateMode)}
                     className="ml-1 border-b border-[#3a312b] pb-0.5 font-semibold text-[#3a312b] transition hover:border-[#d2a878] hover:text-[#b88952]"
                   >
-                    {isRegister ? "返回登录" : "邮箱注册"}
+                    {isRegister ? "Return to sign in" : "Create account"}
                   </Link>
                 </p>
 
@@ -1420,16 +1431,18 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-4 py-3 text-sm font-bold text-[#5c4c3c] shadow-sm transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                    游客登录（使用记录不会被缓存）
+
+                    Continue as guest (activity is not saved)
                   </button>
                 ) : null}
 
                 <p className="mt-5 text-center text-xs leading-5 text-[#5c4c3c]/60">
-                  继续使用即表示你已阅读
-                  <Link href="/terms" className="mx-1 underline transition hover:text-[#3a312b]">服务条款</Link>
-                  与
-                  <Link href="/privacy" className="mx-1 underline transition hover:text-[#3a312b]">隐私政策</Link>
-                  。
+
+                  By continuing, you agree to the
+                  <Link href="/terms" className="mx-1 underline transition hover:text-[#3a312b]">Terms of Service</Link>
+
+                  and
+                  <Link href="/privacy" className="mx-1 underline transition hover:text-[#3a312b]">Privacy Policy</Link>.
                 </p>
               </>
             )}

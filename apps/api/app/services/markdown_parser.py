@@ -9,6 +9,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 _BLOCK_MATH_PLACEHOLDER = "\uE000BLOCKMATH:{index}\uE001"
+_INLINE_MATH_PIPE_PLACEHOLDER = "\uE002"
 _CHINESE_ORDERED_RE = re.compile(r"^(\d+)、\s+")
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+")
 _MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s+")
@@ -17,6 +18,7 @@ _MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|")
 _MARKDOWN_FENCE_RE = re.compile(r"^```")
 _MARKDOWN_BLOCKQUOTE_RE = re.compile(r"^>\s?")
 _BLOCK_MATH_LINE_RE = re.compile(r"^(\\\[|\$\$)")
+_INLINE_MATH_RE = re.compile(r"\\\[[^\n]*?\\\]|\\\([^\n]*?\\\)|\$\$[^\n]*?\$\$|\$(?!\$)[^\n$]+?\$(?!\$)")
 
 
 def _is_structural_line(line: str) -> bool:
@@ -36,6 +38,22 @@ def _is_structural_line(line: str) -> bool:
 
 def _normalize_chinese_ordered_lists(text: str) -> str:
     return "\n".join(_CHINESE_ORDERED_RE.sub(r"\1. ", line) for line in text.splitlines())
+
+
+def _protect_table_math_pipes(text: str) -> str:
+    def protect_line(line: str) -> str:
+        if not _MARKDOWN_TABLE_ROW_RE.match(line):
+            return line
+        return _INLINE_MATH_RE.sub(
+            lambda match: match.group(0).replace("|", _INLINE_MATH_PIPE_PLACEHOLDER),
+            line,
+        )
+
+    return "\n".join(protect_line(line) for line in text.splitlines())
+
+
+def _restore_table_math_pipes(value: str) -> str:
+    return value.replace(_INLINE_MATH_PIPE_PLACEHOLDER, "|")
 
 
 def _extract_block_math(text: str, normalize_latex: Callable[[str], str]) -> tuple[str, dict[str, str]]:
@@ -132,6 +150,7 @@ def _insert_paragraph_breaks(text: str) -> str:
 
 def _preprocess_markdown(text: str, normalize_latex: Callable[[str], str]) -> tuple[str, dict[str, str]]:
     normalized = _normalize_chinese_ordered_lists(text)
+    normalized = _protect_table_math_pipes(normalized)
     normalized, placeholders = _extract_block_math(normalized, normalize_latex)
     normalized = _insert_paragraph_breaks(normalized)
     return normalized, placeholders
@@ -153,7 +172,7 @@ def _inline_token_content(tokens: list[Token], index: int) -> str:
     token = tokens[index]
     if token.type != "inline":
         return ""
-    return token.content
+    return _restore_table_math_pipes(token.content)
 
 
 def _walk_inline_tokens(

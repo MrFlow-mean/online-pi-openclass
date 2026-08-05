@@ -5,7 +5,7 @@ const workspace = {
   packages: [
     {
       id: "package_standalone",
-      title: "单独课程",
+      title: "individual courses",
       summary: "",
       visibility: "private",
       publication_review: {
@@ -44,22 +44,22 @@ const pageSettings = {
 
 const copiedDocument = {
   id: "document_personal_copy",
-  title: "真实公开课程",
+  title: "Real public courses",
   content_json: {
     type: "doc",
-    content: [{ type: "paragraph", content: [{ type: "text", text: "公开课程讲义" }] }],
+    content: [{ type: "paragraph", content: [{ type: "text", text: "Open course handouts" }] }],
   },
-  content_html: "<p>公开课程讲义</p>",
-  content_text: "公开课程讲义",
+  content_html: "<p>Public course handouts</p>",
+  content_text: "Open course handouts",
   page_settings: pageSettings,
 };
 
 const copiedLesson = {
   id: "lesson_personal_copy",
-  title: "真实公开课程",
+  title: "Real public courses",
   slug: "real-public-course-copy",
-  summary: "这条结果来自课程搜索 API。",
-  tags: ["公开", "可检索"],
+  summary: "This result comes from the course search API.",
+  tags: ["public", "Searchable"],
   visibility: "private",
   publication_review: {
     id: "review_personal_copy",
@@ -98,8 +98,8 @@ const copiedLesson = {
           kind: "initial_document",
           history_node_kind: "system",
           published_conversation: [
-            { role: "user", content: "公开课程中的原问题" },
-            { role: "assistant", content: "公开课程中的原回答" },
+            { role: "user", content: "Original question in public course" },
+            { role: "assistant", content: "Original answer in public course" },
           ],
         },
       },
@@ -143,7 +143,7 @@ test("search mode hides the home chrome and groups owned and public course resul
         id: "searcher",
         email: "searcher@example.com",
         role: "user",
-        display_name: "搜索用户",
+        display_name: "Search users",
         avatar_url: null,
         created_at: "2026-07-28T00:00:00+00:00",
         last_login_at: null,
@@ -182,11 +182,11 @@ test("search mode hides the home chrome and groups owned and public course resul
           {
             id: "lesson_owned_search",
             kind: "lesson",
-            owner_display_name: "搜索用户",
+            owner_display_name: "Search users",
             owner_avatar_url: null,
-            title: "我的私有课程",
-            summary: "这条本人课程可以被当前用户搜索到。",
-            tags: ["个人"],
+            title: "My private course",
+            summary: "This personal course can be searched by the current user.",
+            tags: ["personal"],
             lesson_count: 1,
             updated_at: "2026-07-28T02:00:00+00:00",
             visibility: "private",
@@ -198,11 +198,11 @@ test("search mode hides the home chrome and groups owned and public course resul
           {
             id: "lesson_public_search",
             kind: "lesson",
-            owner_display_name: "公开课作者",
+            owner_display_name: "Open class author",
             owner_avatar_url: null,
-            title: "真实公开课程",
-            summary: "这条结果来自课程搜索 API。",
-            tags: ["公开", "可检索"],
+            title: "Real public courses",
+            summary: "This result comes from the course search API.",
+            tags: ["public", "Searchable"],
             lesson_count: 1,
             updated_at: "2026-07-28T01:00:00+00:00",
             visibility: "public",
@@ -235,40 +235,40 @@ test("search mode hides the home chrome and groups owned and public course resul
   });
 
   await page.goto("/");
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
-  await expect(page.getByRole("link", { name: "打开积分与充值" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "打开 GitHub 仓库" })).toBeVisible();
+  await expect(page.getByLabel("Add course package")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open credits and top-up" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open GitHub repository" })).toBeVisible();
 
-  const search = page.getByPlaceholder(/搜索.*课程/);
+  const search = page.getByPlaceholder(/Search open courses/i);
   await search.click();
 
-  await expect(page.getByLabel("添加课程包")).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "打开积分与充值" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "打开 GitHub 仓库" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "搜索课程" })).toBeVisible();
+  await expect(page.getByLabel("Add course package")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open credits and top-up" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open GitHub repository" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Search courses" })).toBeVisible();
 
-  await search.fill("真实内容");
-  await expect(page.getByRole("heading", { name: "我的课程" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "我的私有课程" })).toBeVisible();
-  await expect(page.getByText("私有", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "其他用户的公开课程" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "真实公开课程", exact: true })).toBeVisible();
-  expect(requestedQuery).toBe("真实内容");
-  await expect(page.getByText("公开课作者")).toBeVisible();
-  await expect(page.getByRole("link", { name: "详情 真实公开课程" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载 真实公开课程" })).toBeVisible();
-  await expect(page.getByText("筛选")).toHaveCount(0);
-  await expect(page.getByText("排序方式")).toHaveCount(0);
-  await page.getByRole("button", { name: "收藏 真实公开课程" }).click();
+  await search.fill("real content");
+  await expect(page.getByRole("heading", { name: "My courses" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "My private course" })).toBeVisible();
+  await expect(page.getByText("Private", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Public courses" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Real public courses", exact: true })).toBeVisible();
+  expect(requestedQuery).toBe("real content");
+  await expect(page.getByText("Open class author")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Details Real public courses" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Real public courses" })).toBeVisible();
+  await expect(page.getByText("filter")).toHaveCount(0);
+  await expect(page.getByText("sort by")).toHaveCount(0);
+  await page.getByRole("button", { name: "Star Real public courses" }).click();
   await expect.poll(() => starredLessonId).toBe("lesson_public_search");
-  await expect(page.getByRole("button", { name: "取消收藏 真实公开课程" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Unstar Real public courses" })).toBeVisible();
 
-  await page.getByRole("button", { name: "退出搜索" }).click();
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  await page.getByRole("button", { name: "Exit search" }).click();
+  await expect(page.getByLabel("Add course package")).toBeVisible();
 
   await search.click();
-  await search.fill("真实内容");
-  await page.getByRole("button", { name: "下载 真实公开课程" }).click();
+  await search.fill("real content");
+  await page.getByRole("button", { name: "Download Real public courses" }).click();
   await expect.poll(() => downloadedLessonId).toBe("lesson_public_search");
 });
 
@@ -293,7 +293,7 @@ test("downloaded public course conversations render in the personal studio", asy
         id: "searcher",
         email: "searcher@example.com",
         role: "user",
-        display_name: "搜索用户",
+        display_name: "Search users",
         avatar_url: null,
         created_at: "2026-07-28T00:00:00+00:00",
         last_login_at: null,
@@ -313,6 +313,6 @@ test("downloaded public course conversations render in the personal studio", asy
   );
 
   await page.goto("/studio");
-  await expect(page.getByText("公开课程中的原问题", { exact: true })).toBeVisible();
-  await expect(page.getByText("公开课程中的原回答", { exact: true })).toBeVisible();
+  await expect(page.getByText("Original question in public course", { exact: true })).toBeVisible();
+  await expect(page.getByText("Original answer in public course", { exact: true })).toBeVisible();
 });

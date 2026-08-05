@@ -35,7 +35,7 @@ async function communityRequest<T>(path: string, init?: RequestInit): Promise<T>
   });
   if (!response.ok) {
     const raw = await response.text();
-    let message = raw || `社区请求失败（${response.status}）`;
+    let message = raw || `Community request failed (${response.status})`;
     try {
       const parsed = JSON.parse(raw) as { detail?: unknown };
       if (typeof parsed.detail === "string") {

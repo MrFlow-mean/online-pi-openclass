@@ -77,7 +77,7 @@ export function useSourceBatchManagement({
     if (disabled || isRemoving || selectedIds.length === 0) {
       return;
     }
-    if (!window.confirm(`确定删除选中的 ${selectedIds.length} 份资料吗？删除后将无法在本课程中检索或引用。`)) {
+    if (!window.confirm(`Delete the ${selectedIds.length} selected sources? They will no longer be searchable or referenceable in this course.`)) {
       return;
     }
 
@@ -100,7 +100,7 @@ export function useSourceBatchManagement({
       if (failedIds.length === 0) {
         setIsActive(false);
       } else {
-        onError(`${removedIds.length} 份资料删除成功，${failedIds.length} 份删除失败，请重试。`);
+        onError(`${removedIds.length} sources removed; ${failedIds.length} could not be removed. Please retry.`);
       }
     } finally {
       setIsRemoving(false);

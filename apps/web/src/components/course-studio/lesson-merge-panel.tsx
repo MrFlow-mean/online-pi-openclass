@@ -32,15 +32,15 @@ function shortCommit(value: string) {
 
 function conflictKindLabel(conflict: LessonMergeConflictView) {
   if (conflict.kind === "board") {
-    return "板书块";
+    return "board block";
   }
   if (conflict.kind === "learning_requirement") {
-    return "学习需求";
+    return "learning needs";
   }
   if (conflict.kind === "board_task") {
-    return "当前板书任务";
+    return "Current board content tasks";
   }
-  return "资料引用";
+  return "Data citation";
 }
 
 function ConflictCard({
@@ -67,10 +67,10 @@ function ConflictCard({
   }
 
   const options: Array<{ value: LessonMergeResolution; label: string }> = [
-    { value: "target", label: "当前" },
-    { value: "source", label: "来源" },
-    { value: "both", label: "两者" },
-    { value: "clear", label: "清空" },
+    { value: "target", label: "current" },
+    { value: "source", label: "source" },
+    { value: "both", label: "both" },
+    { value: "clear", label: "Clear" },
   ];
 
   return (
@@ -88,7 +88,7 @@ function ConflictCard({
             conflict.resolved ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
           )}
         >
-          {conflict.resolved ? "已解决" : "待处理"}
+          {conflict.resolved ? "Resolved" : "Pending"}
         </span>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
@@ -109,7 +109,7 @@ function ConflictCard({
         ))}
       </div>
       <details className="mt-3 rounded-lg bg-gray-50 p-3">
-        <summary className="cursor-pointer text-xs font-semibold text-gray-600">自定义决议</summary>
+        <summary className="cursor-pointer text-xs font-semibold text-gray-600">Custom resolution</summary>
         <textarea
           value={customText}
           onChange={(event) => setCustomText(event.target.value)}
@@ -121,7 +121,8 @@ function ConflictCard({
           onClick={applyCustom}
           className="mt-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700"
         >
-          应用自定义值
+
+          Apply custom value
         </button>
       </details>
     </article>
@@ -154,25 +155,27 @@ export function LessonMergePanel({
           {session.source_branch_name} → {session.target_branch_name}
         </p>
         <dl className="mt-3 space-y-1 text-[11px] leading-5 text-gray-600">
-          <div className="flex justify-between gap-3"><dt>共同祖先</dt><dd className="font-mono">{shortCommit(session.base_commit_id)}</dd></div>
-          <div className="flex justify-between gap-3"><dt>当前 head</dt><dd className="font-mono">{shortCommit(session.target_head_commit_id)}</dd></div>
-          <div className="flex justify-between gap-3"><dt>来源 head</dt><dd className="font-mono">{shortCommit(session.source_head_commit_id)}</dd></div>
+          <div className="flex justify-between gap-3"><dt>common ancestor</dt><dd className="font-mono">{shortCommit(session.base_commit_id)}</dd></div>
+          <div className="flex justify-between gap-3"><dt>current head</dt><dd className="font-mono">{shortCommit(session.target_head_commit_id)}</dd></div>
+          <div className="flex justify-between gap-3"><dt>Sourcehead</dt><dd className="font-mono">{shortCommit(session.source_head_commit_id)}</dd></div>
         </dl>
         <p className="mt-3 text-[11px] text-gray-500">
-          {isDraftDirty ? "正在自动保存板书草案…" : `草案已保存 · v${session.version}`}
+          {isDraftDirty ? "Automatically saving board draft..." : `Draft saved · v${session.version}`}
         </p>
       </section>
 
       {stale ? (
         <section className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          分支 head 已变化，旧草案仍保留，但不能提交。
+
+          The branch head has changed and the old draft is still retained but cannot be submitted.
           <button
             type="button"
             onClick={() => void onRecompute()}
             className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-900 px-3 py-2 text-xs font-semibold text-white"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            基于最新 head 重新计算
+
+            Recalculate based on the latest head
           </button>
         </section>
       ) : null}
@@ -180,9 +183,9 @@ export function LessonMergePanel({
       <section>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">合并冲突</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">merge conflicts</p>
             <p className="mt-1 text-xs font-semibold text-gray-700">
-              {unresolvedCount ? `${unresolvedCount} 项待处理` : "所有冲突已解决"}
+              {unresolvedCount ? `${unresolvedCount} unresolved` : "All conflicts resolved"}
             </p>
           </div>
           <button
@@ -192,7 +195,7 @@ export function LessonMergePanel({
             className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
           >
             {isAIProposing ? <Square className="h-3.5 w-3.5 fill-current" /> : <Bot className="h-3.5 w-3.5" />}
-            {isAIProposing ? "取消 AI" : "AI 合并"}
+            {isAIProposing ? "Cancel AI" : "AI merge"}
           </button>
         </div>
         {latestActivity ? (
@@ -212,7 +215,8 @@ export function LessonMergePanel({
           ))}
           {!session.conflicts.length ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-              确定性合并已生成无冲突草案。
+
+              A deterministic merge has produced a conflict-free draft.
             </div>
           ) : null}
         </div>
@@ -220,7 +224,8 @@ export function LessonMergePanel({
 
       {session.draft_runtime.invalidated_teaching_state ? (
         <p className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-xs leading-6 text-gray-600">
-          旧教学进度与板书位置已失效，已保留在审计中；下次教学将基于合并后板书重建。
+
+          The old teaching progress and board content positions have expired and have been retained in the audit; the next teaching will be rebuilt based on the merged board content.
         </p>
       ) : null}
 
@@ -231,7 +236,8 @@ export function LessonMergePanel({
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700"
         >
           <Trash2 className="h-3.5 w-3.5" />
-          放弃草案
+
+          abandon draft
         </button>
         <button
           type="button"
@@ -240,7 +246,8 @@ export function LessonMergePanel({
           className="inline-flex items-center justify-center gap-2 rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Save className="h-3.5 w-3.5" />
-          提交合并
+
+          Commit merge
         </button>
       </div>
     </div>

@@ -45,7 +45,7 @@ function waitForPeerConnection(
   }
   return new Promise((resolve, reject) => {
     const timeoutId = window.setTimeout(
-      () => finish(new Error("Codex Live 音频连接超时")),
+      () => finish(new Error("Codex Live audio connection timeout")),
       LIVE_CONNECT_TIMEOUT_MS
     );
     const onAbort = () => finish(new DOMException("Aborted", "AbortError"));
@@ -53,7 +53,7 @@ function waitForPeerConnection(
       if (peerConnection.connectionState === "connected") {
         finish();
       } else if (["failed", "closed", "disconnected"].includes(peerConnection.connectionState)) {
-        finish(new Error("Codex Live 音频连接已断开"));
+        finish(new Error("Codex Live audio connection disconnected"));
       }
     };
     const finish = (error?: Error) => {
@@ -93,7 +93,7 @@ function waitForSeekableMetadata(
   return new Promise((resolve, reject) => {
     let probingDuration = false;
     const timeoutId = window.setTimeout(
-      () => finish(new Error("浏览器无法读取 Codex Live 音频时长")),
+      () => finish(new Error("The browser cannot read the Codex Live audio duration")),
       AUDIO_METADATA_TIMEOUT_MS
     );
     const onAbort = () => finish(new DOMException("Aborted", "AbortError"));
@@ -141,7 +141,7 @@ export async function startCodexLiveSpeech({
 }: CodexLiveSpeechOptions): Promise<CodexLiveSpeechPlayback> {
   const mimeType = preferredAudioMimeType();
   if (mimeType === null) {
-    throw new Error("当前浏览器不支持可拖动的 Codex Live 音频");
+    throw new Error("The current browser does not support draggable Codex Live audio");
   }
 
   const peerConnection = new RTCPeerConnection();
@@ -176,7 +176,7 @@ export async function startCodexLiveSpeech({
     rejectRemoteTrack = reject;
   });
   remoteTrackTimer = window.setTimeout(
-    () => rejectRemoteTrack(new Error("Codex Live 没有建立远端音频轨道")),
+    () => rejectRemoteTrack(new Error("Codex Live does not create remote audio track")),
     LIVE_CONNECT_TIMEOUT_MS
   );
 
@@ -249,7 +249,7 @@ export async function startCodexLiveSpeech({
       return;
     }
     if (!recordedChunks.length) {
-      fail(new Error("Codex Live 没有返回可播放的音频"));
+      fail(new Error("Codex Live does not return playable audio"));
       return;
     }
 
@@ -259,13 +259,13 @@ export async function startCodexLiveSpeech({
       mimeType ? { type: mimeType } : undefined
     );
     if (!recordedAudio.size) {
-      fail(new Error("Codex Live 返回了空音频"));
+      fail(new Error("Codex Live returned empty audio"));
       return;
     }
 
     audioUrl = URL.createObjectURL(recordedAudio);
     audio.src = audioUrl;
-    audio.onerror = () => fail(new Error("浏览器没有成功播放 Codex Live 音频"));
+    audio.onerror = () => fail(new Error("The browser did not successfully play Codex Live audio"));
 
     try {
       const duration = await waitForSeekableMetadata(audio, signal);
@@ -277,10 +277,10 @@ export async function startCodexLiveSpeech({
       audio.ontimeupdate = () => onElapsed(audio.currentTime);
       audio.onplay = () => onPlaying(audio, liveModel, liveVoice);
       audio.onended = stop;
-      onStatus("Codex Live 音频已生成，正在播报");
+      onStatus("Codex Live audio has been generated and is being broadcast");
       await audio.play();
     } catch (error) {
-      fail(error instanceof Error ? error : new Error("浏览器没有成功播放 Codex Live 音频"));
+      fail(error instanceof Error ? error : new Error("The browser did not successfully play Codex Live audio"));
     }
   };
 
@@ -293,11 +293,11 @@ export async function startCodexLiveSpeech({
       window.clearTimeout(completionTimer);
       completionTimer = null;
     }
-    onStatus("Codex Live 正在整理可拖动音频…");
+    onStatus("Codex Live is organizing draggable audio…");
     drainTimer = window.setTimeout(() => {
       drainTimer = null;
       if (!mediaRecorder || mediaRecorder.state !== "recording") {
-        fail(new Error("Codex Live 没有建立音频录制轨道"));
+        fail(new Error("Codex Live does not create audio recording track"));
         return;
       }
       mediaRecorder.stop();
@@ -324,7 +324,7 @@ export async function startCodexLiveSpeech({
           recordedChunks.push(dataEvent.data);
         }
       };
-      mediaRecorder.onerror = () => fail(new Error("浏览器录制 Codex Live 音频失败"));
+      mediaRecorder.onerror = () => fail(new Error("Browser fails to record Codex Live audio"));
       mediaRecorder.onstop = () => {
         if (!stopped) {
           void playRecordedAudio();
@@ -338,7 +338,7 @@ export async function startCodexLiveSpeech({
       resolveRemoteTrack();
     } catch (error) {
       const normalizedError =
-        error instanceof Error ? error : new Error("浏览器无法录制 Codex Live 音频");
+        error instanceof Error ? error : new Error("The browser cannot record Codex Live audio");
       rejectRemoteTrack(normalizedError);
       fail(normalizedError);
     }
@@ -348,7 +348,7 @@ export async function startCodexLiveSpeech({
     try {
       const payload = JSON.parse(String(event.data)) as RealtimeEvent;
       if (payload.type === "response.created") {
-        onStatus("Codex Live 正在生成语音…");
+        onStatus("Codex Live is generating speech…");
       } else if (
         payload.type === "response.done" ||
         payload.type === "response.audio.done" ||
@@ -356,7 +356,7 @@ export async function startCodexLiveSpeech({
       ) {
         finishCaptureAfterDrain();
       } else if (payload.type === "error") {
-        fail(new Error(payload.error?.message || "Codex Live 播报失败"));
+        fail(new Error(payload.error?.message || "Codex Live broadcast failed"));
       }
     } catch {
       // Ignore unrelated transport events.
@@ -377,7 +377,7 @@ export async function startCodexLiveSpeech({
       signal
     );
     if (!response.delegation_websocket_url) {
-      throw new Error("Codex Live 响应缺少播报控制通道");
+      throw new Error("Codex Live response to missing broadcast control channel");
     }
     liveModel = response.model;
     liveVoice = response.voice;
@@ -386,17 +386,17 @@ export async function startCodexLiveSpeech({
 
     const bridgeReady = new Promise<void>((resolve, reject) => {
       const timeoutId = window.setTimeout(
-        () => reject(new Error("Codex Live 播报控制通道连接超时")),
+        () => reject(new Error("Codex Live reports control channel connection timeout")),
         LIVE_CONNECT_TIMEOUT_MS
       );
       const finishReady = () => {
         window.clearTimeout(timeoutId);
         resolve();
       };
-      bridgeSocket!.onerror = () => reject(new Error("Codex Live 播报控制通道连接失败"));
+      bridgeSocket!.onerror = () => reject(new Error("Codex Live reports control channel connection failure"));
       bridgeSocket!.onclose = () => {
         if (!stopped && !transportClosing) {
-          fail(new Error("Codex Live 播报控制通道已断开"));
+          fail(new Error("Codex Live broadcast control channel has been disconnected"));
         }
       };
       bridgeSocket!.onmessage = (event) => {
@@ -405,12 +405,12 @@ export async function startCodexLiveSpeech({
           if (payload.type === "codex_live.ready") {
             finishReady();
           } else if (payload.type === "codex_live.announcement.accepted") {
-            onStatus("Codex Live 已接收播报内容");
+            onStatus("Codex Live has received the broadcast content");
           } else if (
             payload.type === "codex_live.announcement.error" ||
             payload.type === "codex_live.error"
           ) {
-            fail(new Error(payload.message || "Codex Live 播报失败"));
+            fail(new Error(payload.message || "Codex Live broadcast failed"));
           } else if (
             payload.type === "codex_live.transcript.done" &&
             payload.role === "assistant"
@@ -429,14 +429,14 @@ export async function startCodexLiveSpeech({
       remoteTrackReady,
     ]);
     if (bridgeSocket.readyState !== WebSocket.OPEN) {
-      throw new Error("Codex Live 播报控制通道尚未就绪");
+      throw new Error("Codex Live broadcast control channel is not ready yet");
     }
     bridgeSocket.send(JSON.stringify({ type: "announcement.play", text }));
     completionTimer = window.setTimeout(
-      () => fail(new Error("Codex Live 播报等待超时")),
+      () => fail(new Error("Codex Live broadcast wait timeout")),
       LIVE_RESPONSE_TIMEOUT_MS
     );
-    onStatus("Codex Live 正在生成可拖动音频…");
+    onStatus("Codex Live is generating draggable audio…");
     return {
       audio,
       model: response.model,
@@ -446,7 +446,7 @@ export async function startCodexLiveSpeech({
     };
   } catch (error) {
     const normalizedError =
-      error instanceof Error ? error : new Error("Codex Live 播报连接失败");
+      error instanceof Error ? error : new Error("Codex Live reports connection failure");
     fail(normalizedError);
     throw normalizedError;
   }

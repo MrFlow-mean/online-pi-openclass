@@ -15,66 +15,77 @@ type SourceProcessingProgressProps = {
 type SourceProcessingState = {
   label: string;
   detail?: string;
-  value: number;
+  value?: number;
   activity?: AgentActivityEvent[];
 };
 
 const LEGACY_SOURCE_STATUS_PROGRESS: Partial<
   Record<SourceIngestionRecord["status"], SourceProcessingState>
 > = {
-  queued: { label: "等待开始解析", value: 12 },
-  fetching: { label: "正在获取资料", value: 32 },
-  parsing: { label: "正在解析正文", value: 58 },
-  indexing: { label: "正在建立检索索引", value: 78 },
+  queued: { label: "Waiting for parsing to begin", value: 12 },
+  fetching: { label: "Retrieving information", value: 32 },
+  parsing: { label: "Parsing text", value: 58 },
+  indexing: { label: "Building search index", value: 78 },
 };
 
 const DIRECTORY_SOURCE_STATUS_PROGRESS: Partial<
   Record<SourceIngestionRecord["status"], SourceProcessingState>
 > = {
-  queued: { label: "等待建立目录", value: 12 },
-  fetching: { label: "正在获取资料", value: 32 },
-  parsing: { label: "正在读取文件结构", value: 58 },
-  indexing: { label: "正在建立目录", value: 78 },
+  queued: { label: "Waiting for directory creation", value: 12 },
+  fetching: { label: "Retrieving information", value: 32 },
+  parsing: { label: "Reading file structure", value: 58 },
+  indexing: { label: "Creating directory", value: 78 },
 };
 
 const LEGACY_JOB_PHASE_LABELS: Record<string, string> = {
-  uploaded: "文件已接收，正在准备解析",
-  parsing: "正在解析正文",
-  reading_pages: "正在逐页读取正文",
-  mapping_structure: "正在识别目录与正文结构",
-  building_chunks: "正在建立检索片段",
-  extracting_visuals: "正在提取图表与图片",
-  persisting: "正在保存资料索引",
-  transforming: "正在生成导入产物",
+  uploaded: "The file has been received and is being prepared for parsing",
+  parsing: "Parsing text",
+  reading_pages: "Reading text page by page",
+  mapping_structure: "Recognizing table of contents and text structure",
+  building_chunks: "Creating search fragment",
+  extracting_visuals: "Retrieving charts and pictures",
+  persisting: "Saving data index",
+  transforming: "Generating import product",
 };
 
 const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
-  uploaded: "文件已接收，正在准备建立目录",
-  parsing: "正在读取文件结构",
-  reading_directory_metadata: "正在读取目录元数据",
-  locating_toc_pages: "正在定位目录页",
-  mapping_directory_to_pages: "正在绑定目录与文件范围",
-  scanning_heading_regions: "正在检查页面标题区域",
-  normalizing_directory: "文件资料 Agent：读取原文件并生成目录",
-  source_codex_investigation: "文件资料 Agent：调查目录结构",
-  source_codex_scanning_pages: "文件资料 Agent：扫描文件页面",
-  source_codex_mapping_nodes: "文件资料 Agent：映射目录节点",
-  source_codex_verifying_ranges: "文件资料 Agent：验证目录坐标",
-  source_codex_writing_catalog: "文件资料 Agent：写入目录结果",
-  source_codex_ranges_authored: "文件资料 Agent 已提交目录结果",
-  reusing_directory_catalog: "后端任务：复用已完成目录",
-  calibrating_pdf_pages: "文件资料 Agent：核对印刷页码与 PDF 页码",
-  validating_directory: "后端任务：验证目录结构",
-  validating_directory_ranges: "后端任务：验证目录范围",
-  publishing_catalog: "后端任务：保存目录",
-  catalog_ready: "目录已经保存",
+  uploaded: "The file has been received and the directory is being created.",
+  parsing: "Reading file structure",
+  reading_directory_metadata: "Reading directory metadata",
+  locating_toc_pages: "Locating directory page",
+  mapping_directory_to_pages: "Binding directory and file range",
+  scanning_heading_regions: "Checking page title area",
+  normalizing_directory: "Document Agent: Read the original file and generate a directory",
+  source_codex_investigation: "Documentation Agent: Investigate the directory structure",
+  source_codex_scanning_pages: "Document Agent: Scan file pages",
+  source_codex_mapping_nodes: "Document Agent: Mapping directory node",
+  source_codex_verifying_ranges: "File Agent: Verify directory coordinates",
+  source_codex_writing_catalog: "File information Agent: write directory results",
+  source_codex_ranges_authored: "Document Agent has submitted the directory results",
+  reusing_directory_catalog: "Backend tasks: reuse completed directories",
+  calibrating_pdf_pages: "Document Agent: Check printed page numbers and PDF page numbers",
+  validating_directory: "Backend task: verify directory structure",
+  validating_directory_ranges: "Backend task: verify directory scope",
+  publishing_catalog: "Backend tasks: Save directory",
+  catalog_ready: "Directory has been saved",
+  directory_discovery: "确认目录边界",
+  page_calibration: "标定 PDF 与印刷页码",
+  range_mapping: "生成正文范围",
+  validation: "验证目录索引",
+  source_agent_working: "文件 Agent 正在确认目录边界",
+  catalog_snapshot_available: "目录快照已保存",
+  background_catalog_refine: "目录已可用，正在后台补齐正文范围",
 };
 
 export function isDirectoryCatalogSource(source: SourceIngestionRecord) {
   return (
     source.structure_strategy === "codex_directory_v1" ||
     source.ingestion_job?.adapter === "codex_directory_v1" ||
-    source.metadata.catalog_pipeline === "codex_directory_v1"
+    source.ingestion_job?.adapter === "agent_catalog_v2" ||
+    source.ingestion_job?.adapter === "agent_catalog_v3" ||
+    source.metadata.catalog_pipeline === "codex_directory_v1" ||
+    source.metadata.catalog_pipeline === "agent_catalog_v2" ||
+    source.metadata.catalog_pipeline === "agent_catalog_v3"
   );
 }
 
@@ -92,10 +103,20 @@ function activityDetail(event: AgentActivityEvent): string {
   return "";
 }
 
+function sourceActivityLabel(event: AgentActivityEvent): string {
+  const label = publicAgentActivityLabel(event.label);
+  if (!/(继续核对|持续完善)/.test(label)) {
+    return label;
+  }
+  return event.status === "pending" || event.status === "running"
+    ? "正在确认目录边界"
+    : "确认目录边界";
+}
+
 export function SourceCodexActivity({
   events,
   className,
-  title = "后端实时 OpenClass 输出",
+  title = "Backend real-time OpenClass output",
   expandedByDefault = false,
 }: {
   events: AgentActivityEvent[];
@@ -106,7 +127,9 @@ export function SourceCodexActivity({
   if (!events.length) {
     return null;
   }
-  const visibleEvents = events.slice(-4);
+  const visibleEvents = [...events]
+    .sort((left, right) => left.created_at.localeCompare(right.created_at))
+    .slice(-4);
   const latestEvent = visibleEvents.at(-1);
   return (
     <details
@@ -119,7 +142,7 @@ export function SourceCodexActivity({
         <span className="shrink-0 font-semibold tracking-wide">{title}</span>
         {latestEvent ? (
           <span className="truncate text-gray-400">
-            · {publicAgentActivityLabel(latestEvent.label)}
+            · {sourceActivityLabel(latestEvent)}
           </span>
         ) : null}
       </summary>
@@ -137,7 +160,7 @@ export function SourceCodexActivity({
                   )}
                 />
                 <span className="truncate font-medium text-gray-700">
-                  {publicAgentActivityLabel(event.label)}
+                  {sourceActivityLabel(event)}
                 </span>
               </div>
               {detail ? (
@@ -161,7 +184,14 @@ export function SourceProcessingProgress({ label, detail, value, className, acti
     <div className={clsx("min-w-0", className)} aria-live="polite">
       <div className="mb-1.5 flex items-center justify-between gap-3 text-[11px] font-medium text-gray-500">
         <span className="truncate">{label}</span>
-        {isDeterminate ? <span className="shrink-0 tabular-nums text-emerald-700">{normalizedValue}%</span> : null}
+        {isDeterminate ? (
+          <span className="shrink-0 tabular-nums text-emerald-700">{normalizedValue}%</span>
+        ) : (
+          <span className="inline-flex shrink-0 items-center gap-1 text-emerald-700">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" aria-hidden="true" />
+            进行中
+          </span>
+        )}
       </div>
       <div
         role="progressbar"
@@ -169,7 +199,7 @@ export function SourceProcessingProgress({ label, detail, value, className, acti
         aria-valuemin={isDeterminate ? 0 : undefined}
         aria-valuemax={isDeterminate ? 100 : undefined}
         aria-valuenow={normalizedValue}
-        aria-valuetext={isDeterminate ? undefined : "处理中"}
+        aria-valuetext={isDeterminate ? undefined : `${label}，进行中`}
         className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100"
       >
         <div
@@ -203,29 +233,39 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
         sourceProgress?.label ??
         phaseLabels[phase] ??
         statusProgress[job.status]?.label ??
-        (isDirectoryCatalog ? "正在建立目录" : "正在处理资料"),
-      detail: sourceProgress?.detail,
-      value: job.progress,
+        (isDirectoryCatalog ? "Creating directory" : "Processing data"),
+      detail: sourceProgress?.stale
+        ? [sourceProgress.detail, "暂无新进度，可能停滞"].filter(Boolean).join(" · ")
+        : sourceProgress?.detail,
+      value: isDirectoryCatalog
+        ? sourceProgress?.determinate
+          ? sourceProgress.value
+          : undefined
+        : job.progress,
       activity: job.agent_activity ?? [],
     };
   }
   const ingestionState = statusProgress[source.status];
   if (ingestionState) {
-    return { ...ingestionState, activity: [] };
+    return {
+      ...ingestionState,
+      value: isDirectoryCatalog ? undefined : ingestionState.value,
+      activity: [],
+    };
   }
   if (source.status !== "ready") {
     return null;
   }
   if (source.structure_status === "pending") {
     return {
-      label: isDirectoryCatalog ? "正在准备建立目录" : "正在准备结构索引",
+      label: isDirectoryCatalog ? "Preparing to create directory" : "Preparing structure index",
       value: 88,
       activity: [],
     };
   }
   if (source.structure_status === "building") {
     return {
-      label: isDirectoryCatalog ? "正在验证目录范围" : "正在绑定目录与正文",
+      label: isDirectoryCatalog ? "Verifying directory range" : "Binding table of contents and text",
       value: 94,
       activity: [],
     };
@@ -233,8 +273,15 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
   return null;
 }
 
-function latestSourceProgress(events: AgentActivityEvent[]): { label: string; detail?: string } | null {
-  for (const event of events.toReversed()) {
+function latestSourceProgress(events: AgentActivityEvent[]): {
+  label: string;
+  detail?: string;
+  value?: number;
+  determinate: boolean;
+  stale: boolean;
+} | null {
+  const newestFirst = [...events].sort((left, right) => right.created_at.localeCompare(left.created_at));
+  for (const event of newestFirst) {
     const value = event.metadata.source_progress;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       continue;
@@ -242,8 +289,18 @@ function latestSourceProgress(events: AgentActivityEvent[]): { label: string; de
     const progress = value as Record<string, unknown>;
     const label = typeof progress.label === "string" ? progress.label.trim() : "";
     const detail = typeof progress.detail === "string" ? progress.detail.trim() : "";
+    const determinate = progress.determinate === true;
+    const rawValue = typeof progress.progress === "number" ? progress.progress : undefined;
+    const heartbeatAt = typeof progress.heartbeat_at === "string" ? Date.parse(progress.heartbeat_at) : NaN;
+    const stale = Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt > 60_000;
     if (label) {
-      return { label, detail: detail || undefined };
+      return {
+        label: stale ? "暂无新进度，可能停滞" : label,
+        detail: detail || undefined,
+        value: rawValue,
+        determinate: determinate && rawValue !== undefined,
+        stale,
+      };
     }
   }
   return null;

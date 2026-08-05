@@ -9,6 +9,7 @@ import { inlineMathSegments, normalizeLatex, stripOrphanMathDollars } from "@/li
 
 const BLOCK_MATH_PLACEHOLDER = "\uE000BLOCKMATH:{index}\uE001";
 const BLOCK_MATH_PLACEHOLDER_RE = /^\uE000BLOCKMATH:\d+\uE001$/;
+const INLINE_MATH_PIPE_PLACEHOLDER = "\uE002";
 const CHINESE_ORDERED_RE = /^(\d+)、\s+/;
 const MARKDOWN_HEADING_RE = /^#{1,6}\s+/;
 const MARKDOWN_BULLET_RE = /^[-*]\s+/;
@@ -17,6 +18,7 @@ const MARKDOWN_TABLE_ROW_RE = /^\s*\|/;
 const MARKDOWN_FENCE_RE = /^```/;
 const MARKDOWN_BLOCKQUOTE_RE = /^>\s?/;
 const BLOCK_MATH_LINE_RE = /^(\\\[|\$\$)/;
+const INLINE_MATH_RE = /\\\[[^\n]*?\\\]|\\\([^\n]*?\\\)|\$\$[^\n]*?\$\$|\$(?!\$)[^\n$]+?\$(?!\$)/g;
 
 export type MarkdownRenderOptions = {
   closeUnclosedFences?: boolean;
@@ -168,6 +170,21 @@ function normalizeChineseOrderedLists(text: string) {
     .join("\n");
 }
 
+function protectTableMathPipes(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) =>
+      MARKDOWN_TABLE_ROW_RE.test(line)
+        ? line.replace(INLINE_MATH_RE, (formula) => formula.replaceAll("|", INLINE_MATH_PIPE_PLACEHOLDER))
+        : line
+    )
+    .join("\n");
+}
+
+function restoreTableMathPipes(value: string) {
+  return value.replaceAll(INLINE_MATH_PIPE_PLACEHOLDER, "|");
+}
+
 function extractBlockMathAt(lines: string[], index: number): { latex: string; nextIndex: number } | null {
   const line = lines[index]?.trim() ?? "";
   const delimiters: Array<[string, string]> = [
@@ -261,6 +278,7 @@ function insertParagraphBreaks(text: string) {
 
 function preprocessMarkdown(text: string) {
   let normalized = normalizeChineseOrderedLists(text);
+  normalized = protectTableMathPipes(normalized);
   const extracted = extractBlockMath(normalized);
   normalized = insertParagraphBreaks(extracted.text);
   return { text: normalized, placeholders: extracted.placeholders };
@@ -282,7 +300,7 @@ function createParser() {
 }
 
 function inlineTokenContent(tokens: Token[], index: number) {
-  return tokens[index]?.type === "inline" ? tokens[index].content : "";
+  return tokens[index]?.type === "inline" ? restoreTableMathPipes(tokens[index].content) : "";
 }
 
 function blockMathPlaceholderKey(value: string, placeholders: Record<string, string>) {

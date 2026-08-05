@@ -74,14 +74,14 @@ test.beforeEach(async ({ page }) => {
 
 async function enterAsGuest(page: Page) {
   await page.goto("/login?next=%2F");
-  await page.getByRole("button", { name: /游客登录/ }).click();
+  await page.getByRole("button", { name: /Continue as guest/ }).click();
   await expect(page).toHaveURL(/\/studio$/);
-  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+  await expect(page.getByText("This package is empty")).toBeVisible();
 }
 
 async function createLessonInGuestStudio(page: Page, unique: number) {
   await page.route(
-    "**/api/lessons/generate",
+    "**/api/lessons/generate*",
     async (route) => {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       await route.continue({
@@ -94,7 +94,7 @@ async function createLessonInGuestStudio(page: Page, unique: number) {
     },
     { times: 1 }
   );
-  await page.getByRole("button", { name: "新建第一页" }).click();
+  await page.getByRole("button", { name: "Create first page" }).click();
   await expect(page.locator(".ProseMirror")).toBeVisible();
 }
 
@@ -128,13 +128,13 @@ async function serveBoardWithVisual(page: Page, unique: number, assetId: string,
             sourceTitle: `图表资料 ${unique}`,
             sourceLocator: "page:7",
             kind: "chart",
-            caption: "增长趋势",
+            caption: "growing trend",
             source: `图表资料 ${unique}`,
             pageNo: 7,
-            pageRange: "第 7 页",
+            pageRange: "Page 7",
             recreationHtml: '<img src="x" onerror="window.__unsafeVisualHtmlExecuted=true">',
             originalSrc: "",
-            originalAlt: "增长趋势原图",
+            originalAlt: "Growth trend original picture",
           },
         },
         { type: "paragraph", content: [{ type: "text", text: `图表后文 ${unique}` }] },
@@ -185,10 +185,10 @@ test("loads the original board asset with auth and ignores recreation HTML", asy
   await expect(block).toBeVisible();
   await expect(image).toBeVisible();
   await expect(image).toHaveAttribute("src", /^blob:/);
-  await expect(image).toHaveAttribute("alt", "增长趋势原图");
-  await expect(block).toContainText(`来源：图表资料 ${unique} / 第 7 页`);
+  await expect(image).toHaveAttribute("alt", "Growth trend original picture");
+  await expect(block).toContainText(`Source: 图表资料 ${unique} / Page 7`);
   await expect(block.locator(".word-editor__resource-visual-replica")).toHaveCount(0);
-  await expect(block.getByRole("button", { name: /原图/ })).toHaveCount(0);
+  await expect(block.getByRole("button", { name: /original image/i })).toHaveCount(0);
   expect(assetAuthorization).toMatch(/^Bearer /);
   expect(
     await page.evaluate(
@@ -208,7 +208,7 @@ test("keeps a board asset load failure inside the visual block", async ({ page }
     await route.fulfill({
       status: 404,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "板书图片不存在" }),
+      body: JSON.stringify({ detail: "Blackboard picture does not exist" }),
     });
   });
   await serveBoardWithVisual(page, unique, assetId, visualId);
@@ -217,7 +217,7 @@ test("keeps a board asset load failure inside the visual block", async ({ page }
 
   const block = page.locator(`section[data-type="resource-visual-block"][data-board-asset-id="${assetId}"]`);
   await expect(block).toBeVisible();
-  await expect(block.locator(".word-editor__resource-visual-status--error")).toContainText("板书图片不存在");
+  await expect(block.locator(".word-editor__resource-visual-status--error")).toContainText("Blackboard picture does not exist");
   await expect(page.locator('main > div[role="alert"]')).toHaveCount(0);
   await expect(page.locator(".ProseMirror")).toContainText(`图表后文 ${unique}`);
 });

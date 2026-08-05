@@ -2,9 +2,11 @@ import { expect, test } from "@playwright/test";
 
 import {
   activeLessonIdForAsyncPackage,
+  editorUpdateBelongsToDocument,
+  mergeCoursePackageForLesson,
   resolvedBoardFocusForTurn,
 } from "../src/hooks/course-studio/chat-turn-ui-state";
-import type { BoardFocusRef, BoardTaskRequirementSheet, CoursePackage } from "../src/types";
+import type { BoardFocusRef, BoardTaskRequirementSheet, CoursePackage, Lesson } from "../src/types";
 
 const focus = {
   source: "board",
@@ -48,4 +50,38 @@ test("a confirmed new lesson becomes active unless the learner switched tabs", (
       coursePackage.active_lesson_id
     )
   ).toBe("lesson-user-opened");
+});
+
+test("an async lesson response only replaces the lesson that started the turn", () => {
+  const currentSource = { id: "lesson-source", title: "source before" } as Lesson;
+  const currentOpened = { id: "lesson-user-opened", title: "opened current" } as Lesson;
+  const incomingSource = { id: "lesson-source", title: "source generated" } as Lesson;
+  const staleOpened = { id: "lesson-user-opened", title: "opened stale" } as Lesson;
+  const incomingNew = { id: "lesson-new", title: "new lesson" } as Lesson;
+  const currentPackage = {
+    ...coursePackage,
+    active_lesson_id: "lesson-user-opened",
+    workspace_tab_order: ["lesson-source", "lesson-user-opened"],
+    lessons: [currentSource, currentOpened],
+  } as CoursePackage;
+  const incomingPackage = {
+    ...coursePackage,
+    active_lesson_id: "lesson-source",
+    workspace_tab_order: ["lesson-source", "lesson-user-opened", "lesson-new"],
+    lessons: [incomingSource, staleOpened, incomingNew],
+  } as CoursePackage;
+
+  const merged = mergeCoursePackageForLesson(currentPackage, incomingPackage, "lesson-source");
+
+  expect(merged.active_lesson_id).toBe("lesson-user-opened");
+  expect(merged.workspace_tab_order).toEqual(["lesson-source", "lesson-user-opened", "lesson-new"]);
+  expect(merged.lessons.find((lesson) => lesson.id === "lesson-source")?.title).toBe("source generated");
+  expect(merged.lessons.find((lesson) => lesson.id === "lesson-user-opened")?.title).toBe("opened current");
+  expect(merged.lessons.find((lesson) => lesson.id === "lesson-new")?.title).toBe("new lesson");
+});
+
+test("a stale editor callback cannot write into the newly selected document", () => {
+  expect(editorUpdateBelongsToDocument("document-source", "document-source")).toBe(true);
+  expect(editorUpdateBelongsToDocument("document-source", "document-user-opened")).toBe(false);
+  expect(editorUpdateBelongsToDocument(null, "document-user-opened")).toBe(false);
 });

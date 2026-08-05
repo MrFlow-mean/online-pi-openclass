@@ -3,6 +3,7 @@
 import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 
 import { api } from "@/lib/api";
+import { applyLessonWorkspaceDeltaToPackage } from "@/lib/workspace-delta";
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import type { CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import type { CoursePackage, Lesson } from "@/types";
@@ -33,21 +34,32 @@ export function useWorkspaceActions({
   setBusyAction,
 }: UseWorkspaceActionsOptions) {
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
+  const coursePackageRef = useRef<CoursePackage | null>(coursePackage);
+  const workspaceMutationInFlightRef = useRef(false);
 
   useEffect(() => {
     activeLessonIdRef.current = activeLesson?.id ?? null;
   }, [activeLesson?.id]);
 
+  useEffect(() => {
+    coursePackageRef.current = coursePackage;
+  }, [coursePackage]);
+
   async function saveGeneratedLesson(): Promise<boolean> {
     const initialActiveLessonId = activeLesson?.id ?? null;
     setBusyAction("generate");
     try {
-      const nextPackage = await api.generateLesson({
+      const delta = await api.generateLesson({
         branchFromLessonId: coursePackage?.is_standalone ? null : activeLesson?.id,
         startBlank: true,
         targetPackageId: coursePackage?.id,
       });
-      const generatedLessonId = nextPackage.active_lesson_id ?? null;
+      const currentPackage = coursePackageRef.current;
+      if (!currentPackage) {
+        throw new Error("Course workspace is not loaded");
+      }
+      const nextPackage = applyLessonWorkspaceDeltaToPackage(currentPackage, delta);
+      const generatedLessonId = delta.created_lesson?.id ?? delta.active_lesson_id ?? null;
       const currentActiveLessonId = activeLessonIdRef.current;
       const shouldPreserveCurrentLesson =
         currentActiveLessonId !== null &&
@@ -59,7 +71,7 @@ export function useWorkspaceActions({
       });
       return true;
     } catch (generationError) {
-      setError(generationError instanceof Error ? generationError.message : "生成 lesson 失败");
+      setError(generationError instanceof Error ? generationError.message : "Failed to generate lesson");
       return false;
     } finally {
       setBusyAction(null);
@@ -67,10 +79,18 @@ export function useWorkspaceActions({
   }
 
   async function handleCreateLesson() {
-    if (!(await flushAutoSave("create-lesson"))) {
+    if (workspaceMutationInFlightRef.current) {
       return false;
     }
-    return saveGeneratedLesson();
+    workspaceMutationInFlightRef.current = true;
+    try {
+      if (!(await flushAutoSave("create-lesson"))) {
+        return false;
+      }
+      return await saveGeneratedLesson();
+    } finally {
+      workspaceMutationInFlightRef.current = false;
+    }
   }
 
   async function handleOpenLesson(lessonId: string) {
@@ -82,26 +102,37 @@ export function useWorkspaceActions({
       const nextPackage = await api.openLesson(lessonId);
       updateCoursePackage(nextPackage);
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "打开课程失败");
+      setError(openError instanceof Error ? openError.message : "Failed to open course");
     } finally {
       setBusyAction(null);
     }
   }
 
   async function handleCloseLesson(lessonId: string) {
+    if (workspaceMutationInFlightRef.current) {
+      return;
+    }
+    workspaceMutationInFlightRef.current = true;
     if (activeLesson?.id === lessonId && !(await flushAutoSave("close-lesson"))) {
+      workspaceMutationInFlightRef.current = false;
       return;
     }
     setBusyAction("close-lesson");
     try {
-      const nextPackage = await api.closeLesson(lessonId);
+      const currentPackage = coursePackageRef.current;
+      if (!currentPackage) {
+        return;
+      }
+      const delta = await api.closeLesson(lessonId);
+      const nextPackage = applyLessonWorkspaceDeltaToPackage(currentPackage, delta);
       updateCoursePackage(nextPackage, {
         activeLessonId: activeLesson && activeLesson.id !== lessonId ? activeLesson.id : undefined,
       });
     } catch (closeError) {
-      setError(closeError instanceof Error ? closeError.message : "关闭课程失败");
+      setError(closeError instanceof Error ? closeError.message : "Failed to close course");
     } finally {
       setBusyAction(null);
+      workspaceMutationInFlightRef.current = false;
     }
   }
 

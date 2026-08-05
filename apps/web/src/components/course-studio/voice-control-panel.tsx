@@ -142,17 +142,18 @@ export function VoiceControlPanel({
               ) : (
                 <VolumeX className="h-4 w-4 shrink-0 text-gray-400" />
               )}
-              <p className="text-sm font-semibold text-gray-900">AI 回复自动播报</p>
+              <p className="text-sm font-semibold text-gray-900">AI reply automatic broadcast</p>
             </div>
             <p className="mt-2 text-xs leading-5 text-gray-500">
-              AI 在聊天框中生成新回复后，自动使用 Codex Live 生成可拖动的语音。
+
+              AI automatically uses Codex Live to generate draggable speech after generating a new reply in the chat box.
             </p>
           </div>
           <button
             type="button"
             role="switch"
             aria-checked={autoEnabled}
-            aria-label="AI 回复自动播报"
+            aria-label="AI reply automatic broadcast"
             onClick={onAutoToggle}
             className={clsx(
               "relative mt-0.5 h-7 w-12 shrink-0 rounded-full border transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
@@ -171,7 +172,7 @@ export function VoiceControlPanel({
 
       <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">当前播放</p>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Currently playing</p>
           <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600">
             {model || options.model}
             {options.delivery === "realtime_audio" ? " · LIVE" : ""}
@@ -179,7 +180,7 @@ export function VoiceControlPanel({
         </div>
 
         <p className="mt-3 max-h-14 overflow-hidden text-xs leading-5 text-gray-700">
-          {currentText || "生成新的 AI 回复后，这里会显示正在播报的内容。"}
+          {currentText || "After a new AI reply is generated, the content being broadcast will be displayed here."}
         </p>
 
         {options.supports_seek ? <div className="mt-4">
@@ -191,7 +192,7 @@ export function VoiceControlPanel({
             value={duration > 0 ? Math.min(currentTime, duration) : 0}
             disabled={!canSeek}
             onChange={(event) => onSeek(Number(event.target.value))}
-            aria-label="播放进度"
+            aria-label="Playback progress"
             className="h-1.5 w-full cursor-pointer accent-black disabled:cursor-not-allowed disabled:opacity-40"
           />
           <div className="mt-1.5 flex items-center justify-between text-[10px] tabular-nums text-gray-400">
@@ -214,40 +215,44 @@ export function VoiceControlPanel({
               type="button"
               onClick={onCancel}
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-              aria-label="取消生成语音"
+              aria-label="Cancel speech generation"
             >
               <X className="h-3 w-3" />
-              取消
+
+              Cancel
             </button>
           ) : isPlaying && !options.supports_seek ? (
             <button
               type="button"
               onClick={onCancel}
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-              aria-label="停止播报"
+              aria-label="Stop broadcasting"
             >
               <X className="h-3 w-3" />
-              停止
+
+              stop
             </button>
           ) : isPlaying ? (
             <button
               type="button"
               onClick={onPause}
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-              aria-label="暂停播报"
+              aria-label="Pause broadcast"
             >
               <Pause className="h-3 w-3 fill-current" />
-              暂停
+
+              pause
             </button>
           ) : isPaused ? (
             <button
               type="button"
               onClick={onResume}
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-              aria-label="继续播报"
+              aria-label="Continue broadcasting"
             >
               <Play className="h-3 w-3 fill-current" />
-              继续
+
+              continue
             </button>
           ) : canReplay ? (
             <button
@@ -256,17 +261,19 @@ export function VoiceControlPanel({
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
             >
               <RotateCcw className="h-3 w-3" />
-              重新播放
+
+              Replay
             </button>
           ) : null}
         </div>
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">声音设置</p>
+        <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">sound settings</p>
 
         <label className="mt-4 block text-xs font-medium text-gray-700" htmlFor="speech-voice-select">
-          音色
+
+          timbre
         </label>
         <select
           id="speech-voice-select"
@@ -283,7 +290,8 @@ export function VoiceControlPanel({
 
         {options.supports_speech_rate ? <><div className="mt-5 flex items-center justify-between gap-3">
           <label className="text-xs font-medium text-gray-700" htmlFor="speech-rate-range">
-            语速
+
+            speaking speed
           </label>
           <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-semibold tabular-nums text-gray-700">
             {formatSpeechRate(speechRate)}
@@ -335,11 +343,13 @@ export function VoiceControlPanel({
           <span>2.0×</span>
         </div>
         <p className="mt-3 text-[11px] leading-5 text-gray-400">
-          新设置会在下一次自动播报或重新播放时生效。
+
+          The new settings will take effect the next time the auto-announcement or replay occurs.
         </p>
         </> : (
           <p className="mt-4 text-[11px] leading-5 text-gray-400">
-            Codex Live 会按内容自然控制语速；新音色会在下一次播报时生效。
+
+            Codex Live will naturally control the speaking speed according to the content; the new tone will take effect during the next broadcast.
           </p>
         )}
       </section>

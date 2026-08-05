@@ -196,7 +196,8 @@ export function CourseStudioSidePanel({
 
       <div className="flex h-12 items-center justify-between border-b border-gray-200 bg-white px-5">
         <h4 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
-          课程工作台辅助
+
+          Course workbench assistance
         </h4>
         <button
           type="button"

@@ -103,6 +103,62 @@ def test_plan_orders_frozen_visual_evidence_by_source_order_index() -> None:
     assert [item.order_index for item in plan.items] == [1, 2]
 
 
+def test_missing_semantic_placement_is_appended_to_chapter_visual_appendix(
+    tmp_path,
+) -> None:
+    visual = _visual()
+    plan = build_board_insertion_plan([visual], nonce="fixed")
+    document = build_document(title="Board", content_text="Verified chapter explanation")
+
+    outcome = apply_board_insertion_plan(
+        document,
+        plan=plan,
+        placements=[],
+        owner_user_id="owner_a",
+        lesson_id="lesson_a",
+        visual_bytes_resolver=lambda _visual_id: (visual, _PNG),
+        asset_store=_store(tmp_path),
+    )
+
+    assert outcome.skipped == []
+    assert outcome.applied_visual_ids == ["visual_1"]
+    assert outcome.appendix_visual_ids == ["visual_1"]
+    assert "本章教学图表" in outcome.document.content_text
+    assert any(
+        node.get("type") == "resourceVisualBlock"
+        for node in outcome.document.content_json.get("content", [])
+    )
+
+
+def test_unplaced_visual_uses_appendix_when_another_visual_has_a_valid_marker(
+    tmp_path,
+) -> None:
+    first = _visual("visual_1")
+    second = _visual("visual_2", order_index=2)
+    plan = build_board_insertion_plan([first, second], nonce="fixed")
+    document = build_document(
+        title="Board",
+        content_text=f"First explanation\n\n{plan.items[0].marker}\n\nSecond explanation",
+    )
+
+    outcome = apply_board_insertion_plan(
+        document,
+        plan=plan,
+        placements=derive_board_visual_placements(document, plan=plan),
+        owner_user_id="owner_a",
+        lesson_id="lesson_a",
+        visual_bytes_resolver=lambda visual_id: (
+            first if visual_id == "visual_1" else second,
+            _PNG,
+        ),
+        asset_store=_store(tmp_path),
+    )
+
+    assert outcome.skipped == []
+    assert outcome.applied_visual_ids == ["visual_1", "visual_2"]
+    assert outcome.appendix_visual_ids == ["visual_2"]
+
+
 def _placement(item, target: str) -> dict[str, str]:
     return {
         "visual_id": item.visual_id,

@@ -54,7 +54,7 @@ test.beforeEach(async ({ page }) => {
 
 async function enterAsGuest(page: Page, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
-  await page.getByRole("button", { name: /游客登录/ }).click();
+  await page.getByRole("button", { name: /Continue as guest/ }).click();
   await expect(page).toHaveURL(/\/studio$/);
 }
 
@@ -121,13 +121,13 @@ async function enterAsMemberThroughApi(page: Page) {
     },
   ]);
   await page.goto("/");
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  await expect(page.getByLabel("Add course package")).toBeVisible();
   return memberToken;
 }
 
 async function nameNextGeneratedLessonForTest(page: Page, title: string) {
   await page.route(
-    "**/api/lessons/generate",
+    "**/api/lessons/generate*",
     async (route) => {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       await route.continue({
@@ -144,16 +144,16 @@ async function nameNextGeneratedLessonForTest(page: Page, title: string) {
 
 async function createLessonFromEmptyStudio(page: Page, title: string) {
   await page.goto("/studio");
-  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+  await expect(page.getByText("This package is empty")).toBeVisible();
   await nameNextGeneratedLessonForTest(page, title);
-  await page.getByRole("button", { name: "新建第一页" }).click();
+  await page.getByRole("button", { name: "Create first page" }).click();
   await expect(page.getByRole("button", { name: `${title} main` })).toBeVisible();
   await expect(page.locator(".ProseMirror")).toBeVisible();
 }
 
 async function createLessonFromTabBar(page: Page, title: string) {
   await nameNextGeneratedLessonForTest(page, title);
-  await page.getByLabel("新建页面").click();
+  await page.getByLabel("Create page").click();
   await expect(page.getByRole("button", { name: `${title} main` })).toBeVisible();
 }
 
@@ -181,8 +181,10 @@ async function writeEditorTextAndWaitForSave(page: Page, text: string) {
 }
 
 async function openHistoryPanel(page: Page) {
-  await page.getByTitle("展开右侧栏").click();
-  await expect(page.getByText("修订记录")).toBeVisible();
+  await page
+    .getByRole("button", { name: /Expand right sidebar|Expand right column|展开右侧栏/ })
+    .click();
+  await expect(page.getByText("Revision history")).toBeVisible();
 }
 
 test("creates a package and lesson, edits the document, and persists a version", async ({ page }) => {
@@ -204,12 +206,96 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(historyNode.getByRole("button", { name: "Preview" })).toBeVisible();
   await expect(historyNode.getByRole("button", { name: "Restore" })).toBeVisible();
   await expect(historyNode.getByRole("button", { name: "Branch" })).toBeVisible();
-  await historyNode.getByRole("button", { name: "引用到输入框" }).click();
-  await expect(page.getByText("引用 1 · 对话引用")).toBeVisible();
+  await historyNode.getByRole("button", { name: "Reference to input box" }).click();
+  await expect(page.getByText("Quote 1 · Conversation Quote")).toBeVisible();
   await expect(page.getByText(/历史节点：Auto Save 类型：Document/)).toBeVisible();
 
-  await expect(historyNode.getByRole("link", { name: "分享到社区" })).toHaveCount(0);
-  await expect(page.getByText("课程协作", { exact: true })).toHaveCount(0);
+  await expect(historyNode.getByRole("link", { name: "Share to community" })).toHaveCount(0);
+  await expect(page.getByText("Course Collaboration", { exact: true })).toHaveCount(0);
+});
+
+test("uses lesson deltas for create save close reopen and delete without workspace reloads", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `Delta lifecycle ${unique}`;
+  const documentText = `Delta persisted content ${unique}`;
+  await enterAsMemberThroughApi(page);
+  let workspaceRequestCount = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/workspace") {
+      workspaceRequestCount += 1;
+    }
+  });
+  await page.waitForLoadState("networkidle");
+  workspaceRequestCount = 0;
+
+  await page.getByLabel("Add standalone lesson").click();
+  await nameNextGeneratedLessonForTest(page, lessonTitle);
+  const generateResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/lessons/generate" &&
+      new URL(response.url()).searchParams.get("response_mode") === "delta"
+  );
+  await page.getByRole("menuitem", { name: "Create course" }).click();
+  expect((await generateResponse).ok()).toBeTruthy();
+  await expect(page.getByRole("button", { name: `${lessonTitle} main` })).toBeVisible();
+  expect(workspaceRequestCount).toBe(0);
+
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.includes("/document/save") &&
+      new URL(response.url()).searchParams.get("response_mode") === "delta"
+  );
+  await page.locator(".ProseMirror").first().fill(documentText);
+  expect((await saveResponse).ok()).toBeTruthy();
+  expect(workspaceRequestCount).toBe(0);
+
+  const lessonTab = page.getByRole("button", { name: `${lessonTitle} main` });
+  const closeResponse = page.waitForResponse(
+    (response) =>
+      /\/api\/lessons\/[^/]+\/close$/.test(new URL(response.url()).pathname) &&
+      new URL(response.url()).searchParams.get("response_mode") === "delta"
+  );
+  await lessonTab.locator("span").last().evaluate((element) => (element as HTMLElement).click());
+  expect((await closeResponse).ok()).toBeTruthy();
+  await expect(page.locator(".ProseMirror")).toHaveCount(0);
+  expect(workspaceRequestCount).toBe(0);
+
+  const homeWorkspace = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/workspace"
+  );
+  await page.goto("/home");
+  await homeWorkspace;
+  workspaceRequestCount = 0;
+  const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle });
+  await expect(lessonCard).toBeVisible();
+  await lessonCard.click();
+  await expect(page).toHaveURL(/\/studio$/);
+  await expect(page.locator(".ProseMirror")).toContainText(documentText);
+  expect(workspaceRequestCount).toBe(0);
+
+  const secondHomeWorkspace = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/workspace"
+  );
+  await page.goto("/home");
+  await secondHomeWorkspace;
+  workspaceRequestCount = 0;
+  const reopenedCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle });
+  await reopenedCard.getByLabel("Lesson actions menu").click();
+  page.once("dialog", (dialog) => void dialog.accept());
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      /\/api\/lessons\/[^/]+\/delete$/.test(new URL(response.url()).pathname) &&
+      new URL(response.url()).searchParams.get("response_mode") === "delta"
+  );
+  await page
+    .getByRole("button", { name: "Delete", exact: true })
+    .evaluate((element) => (element as HTMLButtonElement).click());
+  expect((await deleteResponse).ok()).toBeTruthy();
+  await expect(reopenedCard).toHaveCount(0);
+  expect(workspaceRequestCount).toBe(0);
+
+  await page.reload();
+  await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle })).toHaveCount(0);
 });
 
 test("uploads immutable standalone lesson and course package versions", async ({ page }) => {
@@ -230,7 +316,7 @@ test("uploads immutable standalone lesson and course package versions", async ({
   await page.reload();
   const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
   await expect(lessonCard).toBeVisible();
-  await lessonCard.getByLabel("打开课程操作菜单").click();
+  await lessonCard.getByLabel("Open the course operation menu").click();
   await page.route(
     `**/api/lessons/${lesson.id}/visibility/stream`,
     async (route) => {
@@ -242,24 +328,24 @@ test("uploads immutable standalone lesson and course package versions", async ({
   const lessonVisibilityResponse = page.waitForResponse(
     (response) => response.url().endsWith(`/api/lessons/${lesson.id}/visibility/stream`) && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "上传课程", exact: true }).click();
-  await expect(lessonCard.getByText("正在核对课程引用范围")).toBeVisible();
-  await expect(lessonCard.getByText("正在定位课程实际引用的资料")).toBeVisible();
-  await expect(lessonCard.getByRole("progressbar", { name: "课程发布扫描进度" })).toBeVisible();
+  await page.getByRole("button", { name: "Upload course", exact: true }).click();
+  await expect(lessonCard.getByText("Checking course reference range")).toBeVisible();
+  await expect(lessonCard.getByText("Locating materials actually cited in the course")).toBeVisible();
+  await expect(lessonCard.getByRole("progressbar", { name: "Course Release Scanning Progress" })).toBeVisible();
   await expect(page.getByText(/AI 正在核对课程实际引用资料的非正文范围/)).toBeVisible();
   expect((await lessonVisibilityResponse).ok()).toBeTruthy();
-  await expect(page.getByText("课程没有上传资料，可以公开。")).toBeVisible();
-  await expect(lessonCard.getByLabel("已上传")).toBeVisible();
+  await expect(page.getByText("The course has no uploaded materials and can be made public.")).toBeVisible();
+  await expect(lessonCard.getByLabel("Uploaded")).toBeVisible();
 
   const publicLessonPath = `/courses/shared/lesson/${lesson.id}`;
   await page.goto(publicLessonPath);
   await expect(page.getByText(lessonTitle).first()).toBeVisible();
-  await expect(page.getByText("Public · 只读")).toBeVisible();
+  await expect(page.getByText("Public · Read only")).toBeVisible();
 
   const historyNodeId = lesson.history_graph.commits[0]?.id;
   expect(historyNodeId).toBeTruthy();
   await page.goto(`${publicLessonPath}?history_node=${encodeURIComponent(historyNodeId!)}`);
-  await expect(page.getByText("当前展示的是该课程被引用的历史节点。")).toBeVisible();
+  await expect(page.getByText("Currently displayed are the historical nodes where the course is referenced.")).toBeVisible();
 
   const unavailableNodeResponse = page.waitForResponse(
     (response) => response.url().includes(`/api/public/lessons/${lesson.id}?history_node=missing-node`)
@@ -270,7 +356,7 @@ test("uploads immutable standalone lesson and course package versions", async ({
 
   await page.goto("/home");
   const blockedLessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle }).first();
-  await blockedLessonCard.getByLabel("打开课程操作菜单").click();
+  await blockedLessonCard.getByLabel("Open the course operation menu").click();
   await page.route(
     `**/api/lessons/${lesson.id}/visibility/stream`,
     async (route) => {
@@ -295,13 +381,13 @@ test("uploads immutable standalone lesson and course package versions", async ({
         findings: [
           {
             source_id: "source_fixture",
-            source_title: "上传资料.pdf",
+            source_title: "Upload information.pdf",
             location: "page 2",
             evidence_excerpt: "All rights reserved.",
             reason: "Rights statement in front matter.",
           },
         ],
-        message: "上传资料的非正文内容中发现版权声明，课程保持 Private。",
+        message: "A copyright statement was found in the non-text content of the uploaded materials, and the course remains Private.",
         started_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
       };
@@ -323,9 +409,9 @@ test("uploads immutable standalone lesson and course package versions", async ({
     },
     { times: 1 }
   );
-  await page.getByRole("button", { name: "上传课程", exact: true }).click();
-  await expect(page.getByText("上传资料的非正文内容中发现版权声明，课程保持 Private。").first()).toBeVisible();
-  await expect(page.getByText("上传资料.pdf · page 2")).toBeVisible();
+  await page.getByRole("button", { name: "Upload course", exact: true }).click();
+  await expect(page.getByText("A copyright statement was found in the non-text content of the uploaded materials, and the course remains Private.").first()).toBeVisible();
+  await expect(page.getByText("Upload information.pdf · page 2")).toBeVisible();
   await expect(page.getByText("All rights reserved.")).toBeVisible();
 
   await createPackageFromHome(page, packageTitle);
@@ -360,18 +446,18 @@ test("uploads immutable standalone lesson and course package versions", async ({
   const packageVisibilityResponse = page.waitForResponse(
     (response) => response.url().endsWith(`/api/packages/${packageContext.packageId}`) && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "课程包 上传", exact: true }).click();
+  await page.getByRole("button", { name: "Course package upload", exact: true }).click();
   expect((await packageVisibilityResponse).ok()).toBeTruthy();
 
   await page.goto(`/courses/shared/package/${packageContext.packageId}`);
   await expect(page.getByText(packageTitle).first()).toBeVisible();
-  await expect(page.getByText("Public · 只读")).toBeVisible();
+  await expect(page.getByText("Public · Read only")).toBeVisible();
 
   await page.goto(
     `/courses/shared/lesson/${packageContext.lessonId}?history_node=${encodeURIComponent(packageContext.historyNodeId!)}`
   );
   await expect(page.getByText(packagedLessonTitle).first()).toBeVisible();
-  await expect(page.getByText("当前展示的是该课程被引用的历史节点。")).toBeVisible();
+  await expect(page.getByText("Currently displayed are the historical nodes where the course is referenced.")).toBeVisible();
 });
 
 test("connects a personal API key from the Models panel without exposing it", async ({ page }) => {
@@ -488,15 +574,15 @@ test("connects a personal API key from the Models panel without exposing it", as
   await enterAsGuestThroughApi(page);
   await createPackageFromHome(page, `个人 API 测试课程包 ${unique}`);
   await createLessonFromEmptyStudio(page, `个人 API 测试页面 ${unique}`);
-  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: /Expand right (sidebar|column)/ }).click();
   await page.getByRole("button", { name: "Models" }).click();
 
   const keyInput = page.getByLabel("DeepSeek API Key");
   await expect(keyInput).toBeVisible();
   await keyInput.fill(privateKey);
-  await page.getByRole("button", { name: "保存 Key" }).click();
+  await page.getByRole("button", { name: "SaveKey" }).click();
 
-  await expect(page.getByRole("status")).toHaveText("DeepSeek API Key 已连接");
+  await expect(page.getByRole("status")).toHaveText("DeepSeek API Key Connected");
   await expect(keyInput).toHaveValue("");
   expect(submittedKey).toBe(privateKey);
   expect(
@@ -509,11 +595,11 @@ test("connects a personal API key from the Models panel without exposing it", as
   await page
     .getByRole("button", { name: /^DeepSeek V4 Flash DeepSeek/ })
     .click();
-  await expect(page.getByText("自有模型 API · 与聊天输入框共用选择状态")).toBeVisible();
+  await expect(page.getByText("Own model API · Shares the selection state with the chat input box")).toBeVisible();
 
-  await page.getByRole("button", { name: "删除", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText("DeepSeek API Key 已删除");
-  await expect(page.getByText("未连接")).toBeVisible();
+  await page.getByRole("button", { name: "delete", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("DeepSeek API Key deleted");
+  await expect(page.getByText("Not connected")).toBeVisible();
   await expect(page.getByText(privateKey)).toHaveCount(0);
 });
 
@@ -524,14 +610,16 @@ test("creates an untitled lesson without asking for a name", async ({ page }) =>
   await page.goto("/studio");
 
   const createResponse = page.waitForResponse(
-    (response) => response.url().endsWith("/api/lessons/generate") && response.request().method() === "POST"
+    (response) =>
+      new URL(response.url()).pathname === "/api/lessons/generate" &&
+      response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "新建第一页" }).click();
+  await page.getByRole("button", { name: "Create first page" }).click();
   const response = await createResponse;
 
   expect(response.request().postDataJSON()).not.toHaveProperty("topic");
-  await expect(page.getByRole("button", { name: "无标题 main" })).toBeVisible();
-  await expect(page.getByLabel("第一页名称")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Untitled main" })).toBeVisible();
+  await expect(page.getByLabel("First page name")).toHaveCount(0);
 });
 
 test("batch selects and deletes uploaded sources", async ({ page }) => {
@@ -572,6 +660,7 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   }));
   let visibleSources = [...sourceRecords];
   const deletedSourceIds: string[] = [];
+  const deleteRequestCounts = new Map<string, number>();
   let legacyStructureRebuildRequests = 0;
   let directoryCatalogRebuildRequests = 0;
 
@@ -595,6 +684,21 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
     catalog_schema_version: "legacy",
     catalog_model: "",
     task_contract: "",
+    work_state: "satisfied",
+    phase: "terminal",
+    directory_status: "complete",
+    index_status: "complete",
+    summary: "",
+    next_plan: "",
+    stop_reason: "",
+    completion_reason: "",
+    directory_gaps: [],
+    pagination_regime_count: 0,
+    unresolved_node_count: 0,
+    locator_method: "",
+    revision: 0,
+    can_refine: false,
+    recent_tool_activity: [],
     chapter_count: 0,
     verified_chapter_count: 0,
     confidence: 0,
@@ -659,8 +763,10 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
     if (request.method() === "DELETE") {
       const sourceId = path.split("/").at(-1) ?? "";
       const removedSource = visibleSources.find((source) => source.id === sourceId);
+      deleteRequestCounts.set(sourceId, (deleteRequestCounts.get(sourceId) ?? 0) + 1);
       deletedSourceIds.push(sourceId);
       visibleSources = visibleSources.filter((source) => source.id !== sourceId);
+      await new Promise((resolve) => setTimeout(resolve, 100));
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -674,44 +780,243 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await enterAsGuest(page);
   await createPackageFromHome(page, `批量资料测试课程包 ${unique}`);
   await createLessonFromEmptyStudio(page, `批量资料测试页面 ${unique}`);
-  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: /Expand right (sidebar|column)/ }).click();
   await page.getByRole("button", { name: "Sources" }).click();
 
-  await expect(page.getByText("GitHub 仓库", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "连接 GitHub" })).toHaveCount(0);
-  await expect(page.getByText("已上传 2 份资料")).toBeVisible();
-  await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
+  await expect(page.getByText("GitHub repository", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect to GitHub" })).toHaveCount(0);
+  await expect(page.getByText("Uploaded 2 information")).toBeVisible();
+  await expect(page.locator("[aria-label^=\"Rename source\"]").first()).toHaveAttribute(
     "aria-label",
-    `重命名资料 批量资料 B ${unique}`
+    `Rename source 批量资料 B ${unique}`
   );
-  await page.getByLabel("资料排序").selectOption("name_asc");
-  await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
+  await page.getByLabel("Data sorting").selectOption("name_asc");
+  await expect(page.locator("[aria-label^=\"Rename source\"]").first()).toHaveAttribute(
     "aria-label",
-    `重命名资料 批量资料 A ${unique}`
+    `Rename source 批量资料 A ${unique}`
   );
-  await page.getByLabel("资料排序").selectOption("uploaded_asc");
-  await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
+  await page.getByLabel("Data sorting").selectOption("uploaded_asc");
+  await expect(page.locator("[aria-label^=\"Rename source\"]").first()).toHaveAttribute(
     "aria-label",
-    `重命名资料 批量资料 A ${unique}`
+    `Rename source 批量资料 A ${unique}`
   );
-  await page.getByLabel(`查看资料目录状态 批量资料 A ${unique}`).click();
-  await page.getByLabel(`重新建立资料目录 批量资料 A ${unique}`).click();
+  await page.getByLabel(`View directory status 批量资料 A ${unique}`).click();
+  await page.getByLabel(`Re-create the data directory 批量资料 A ${unique}`).click();
   await expect.poll(() => legacyStructureRebuildRequests).toBe(1);
   expect(directoryCatalogRebuildRequests).toBe(0);
-  await page.getByRole("button", { name: "批量管理" }).click();
-  await expect(page.getByLabel(`选择资料 批量资料 A ${unique}`)).toBeVisible();
-  await page.getByRole("button", { name: "全选", exact: true }).click();
-  await expect(page.getByText("已选 2 / 2")).toBeVisible();
+
+  await page.getByLabel(`Remove source 批量资料 A ${unique}`).dblclick();
+  await expect.poll(() => deleteRequestCounts.get(sourceRecords[0].id)).toBe(1);
+  await expect(page.getByLabel(`Remove source 批量资料 A ${unique}`)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Batch management" }).click();
+  await expect(page.getByLabel(`Select source 批量资料 B ${unique}`)).toBeVisible();
+  await page.getByRole("button", { name: "Select all", exact: true }).click();
+  await expect(page.getByText("Selected 1 / 1")).toBeVisible();
 
   page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("确定删除选中的 2 份资料吗");
+    expect(dialog.message()).toContain("Delete the 1 selected sources?");
     await dialog.accept();
   });
-  await page.getByRole("button", { name: "批量删除已选资料" }).click();
+  await page.getByRole("button", { name: "Delete selected data in batches" }).click();
 
   await expect.poll(() => deletedSourceIds).toEqual(sourceRecords.map((source) => source.id));
-  await expect(page.getByRole("button", { name: "批量管理" })).toHaveCount(0);
-  await expect(page.getByText("拖拽文件到这里，或点击上传资料。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Batch management" })).toHaveCount(0);
+  await expect(page.getByText("Drag and drop files here, or click to upload data.")).toBeVisible();
+});
+
+test("backs off active source polling and stops once ingestion is ready", async ({ page }) => {
+  const unique = Date.now();
+  const requestTimes: number[] = [];
+  const createdAt = new Date().toISOString();
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ package_id: "package-test", catalogs: [] }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      requestTimes.push(Date.now());
+      const ready = requestTimes.length >= 3;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: `polling-source-${unique}`,
+            owner_user_id: "guest-test",
+            package_id: "package-test",
+            title: `Polling source ${unique}`,
+            source_type: "local_file",
+            source_uri: null,
+            file_name: `polling-${unique}.txt`,
+            mime_type: "text/plain",
+            size_bytes: 12,
+            status: ready ? "ready" : "indexing",
+            error: "",
+            structure_status: ready ? "ready" : "pending",
+            structure_strategy: ready ? "linear_text" : null,
+            structure_has_verified_toc: false,
+            structure_error: "",
+            structure_updated_at: ready ? createdAt : null,
+            ingestion_job: ready
+              ? null
+              : {
+                  id: `job-${unique}`,
+                  resource_id: null,
+                  source_type: "local_file",
+                  source_uri: null,
+                  adapter: "native",
+                  status: "indexing",
+                  progress: 50,
+                  error: "",
+                  phase_history: ["indexing"],
+                  agent_activity: [],
+                  created_at: createdAt,
+                  updated_at: createdAt,
+                },
+            created_at: createdAt,
+            updated_at: createdAt,
+            metadata: {},
+          },
+        ]),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `Polling package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Polling lesson ${unique}`);
+  await page.getByRole("button", { name: /Expand right (sidebar|column)/ }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+
+  await expect.poll(() => requestTimes.length, { timeout: 6000 }).toBe(3);
+  expect(requestTimes[1] - requestTimes[0]).toBeGreaterThanOrEqual(800);
+  expect(requestTimes[2] - requestTimes[1]).toBeGreaterThanOrEqual(1800);
+  await page.waitForTimeout(1500);
+  expect(requestTimes).toHaveLength(3);
+});
+
+test("does not poll a ready repository that has no document directory row", async ({ page }) => {
+  const unique = Date.now();
+  let sourceRequests = 0;
+  const createdAt = new Date().toISOString();
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ package_id: "package-test", catalogs: [] }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      sourceRequests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: `repository-source-${unique}`,
+            owner_user_id: "guest-test",
+            package_id: "package-test",
+            title: `Ready repository ${unique}`,
+            source_type: "code_repository",
+            source_uri: "https://github.com/example/repository",
+            file_name: "repository.zip",
+            mime_type: "application/zip",
+            size_bytes: 12,
+            status: "ready",
+            error: "",
+            structure_status: "pending",
+            structure_strategy: null,
+            structure_has_verified_toc: false,
+            structure_error: "",
+            structure_updated_at: null,
+            ingestion_job: null,
+            created_at: createdAt,
+            updated_at: createdAt,
+            metadata: {},
+          },
+        ]),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `Repository polling package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Repository polling lesson ${unique}`);
+  await page.getByRole("button", { name: /Expand right (sidebar|column)/ }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await expect.poll(() => sourceRequests).toBe(1);
+  await page.waitForTimeout(2200);
+  expect(sourceRequests).toBe(1);
+});
+
+test("lets file parsing use a supported faster service tier", async ({ page }) => {
+  const unique = Date.now();
+  const solModel = {
+    provider: "openai_codex",
+    model: "gpt-5.6-sol",
+    label: "OpenAI Codex GPT-5.6-Sol",
+    capability: "text",
+    enabled: true,
+    configured: true,
+    default: true,
+    default_reasoning_effort: "low",
+    supported_reasoning_efforts: [{ reasoning_effort: "low", description: "" }],
+    default_service_tier: null,
+    service_tiers: [{ id: "priority", name: "Fast", description: "" }],
+  };
+  await page.unroute("**/api/ai-models");
+  await page.route("**/api/ai-models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: [solModel],
+        realtime: [],
+        defaults: {
+          text: {
+            provider: solModel.provider,
+            model: solModel.model,
+            reasoning_effort: solModel.default_reasoning_effort,
+            service_tier: null,
+          },
+          realtime: { provider: "openai_codex", model: "realtime-unavailable" },
+        },
+      }),
+    });
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `Parsing speed package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Parsing speed lesson ${unique}`);
+  await page.getByRole("button", { name: /Expand right (sidebar|column)/ }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+
+  const catalogModelButton = page.getByTestId("source-catalog-model-settings-button");
+  await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-speed-row").click();
+  await page
+    .getByTestId("source-catalog-model-speed-menu")
+    .getByRole("button", { name: /speed fast/i })
+    .click();
+
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /Catalog Extraction Model Settings, current 5\.6 Sol, reasoning effort Mild, speed fast/i
+  );
 });
 
 test("prefetches saved catalogs once and sends an authoritative chapter range", async ({ page }) => {
@@ -782,6 +1087,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   const initialContentHash = `hash-${unique}`;
   let advertisedContentHash = initialContentHash;
   let reportedStructureStatus = "building";
+  let reportedStructureUpdatedAt = catalogUpdatedAt;
   const sourceRecord = {
     id: sourceId,
     owner_user_id: "guest-test",
@@ -954,7 +1260,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
         chapters: [
           {
             ...verifiedChapter,
-            title: `${rebuildRequests === 1 ? "重建后章节" : "再次重建章节"} ${unique}`,
+            title: `${rebuildRequests === 1 ? "Chapter after reconstruction" : "Rebuild the chapter again"} ${unique}`,
             source_content_hash: advertisedContentHash,
             catalog_version: 3 + rebuildRequests,
           },
@@ -976,6 +1282,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
           {
             ...sourceRecord,
             structure_status: reportedStructureStatus,
+            structure_updated_at: reportedStructureUpdatedAt,
             metadata: { ...sourceRecord.metadata, content_hash: advertisedContentHash },
           },
         ]),
@@ -1010,7 +1317,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await createLessonFromEmptyStudio(page, `目录缓存测试页面 ${unique}`);
   const viewport = page.viewportSize();
   if (!viewport) {
-    throw new Error("无法读取测试视口");
+    throw new Error("Unable to read test viewport");
   }
 
   const chatModelButton = page.getByTestId("codex-model-settings-button");
@@ -1024,42 +1331,44 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   const chatMenuBox = await chatModelMenu.boundingBox();
   const chatSubmenuBox = await chatModelSubmenu.boundingBox();
   if (!chatButtonBox || !chatMenuBox || !chatSubmenuBox) {
-    throw new Error("聊天模型菜单未能完成视口定位");
+    throw new Error("Chat model menu failed to complete viewport positioning");
   }
   expect(chatMenuBox.y + chatMenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
   expect(chatSubmenuBox.y + chatSubmenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
   expect(chatSubmenuBox.x + chatSubmenuBox.width).toBeLessThanOrEqual(viewport.width);
-  await chatModelSubmenu.getByRole("button", { name: "选择模型 5.6 Sol" }).click();
+  await chatModelSubmenu.getByRole("button", { name: "Select model 5.6 Sol" }).click();
   await page.getByTestId("codex-model-reasoning-row").click();
   await page
     .getByTestId("codex-model-reasoning-menu")
-    .getByRole("button", { name: "推理强度 高" })
+    .getByRole("button", { name: /^(?:Reasoning effort high|High reasoning strength|推理强度 高)$/i })
     .click();
   await page.getByTestId("codex-model-speed-row").click();
   await page
     .getByTestId("codex-model-speed-menu")
-    .getByRole("button", { name: "速度 快速" })
+    .getByRole("button", { name: "fast" })
     .click();
   await expect(chatModelButton).toHaveAccessibleName(
-    /模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+    /(?:Model settings, current 5\.6 Sol, reasoning effort high, speed fast|模型设置，当前 5\.6 Sol，推理强度 高，速度 快速)/i
   );
   await chatModelButton.click();
   await expect(chatModelMenu).toBeHidden();
 
-  await page.getByTitle("展开右侧栏").click();
+  await page
+    .getByRole("button", { name: /Expand right sidebar|Expand right column|展开右侧栏/ })
+    .click();
   await page.getByRole("button", { name: "Sources" }).click();
 
   const catalogModelButton = page.getByTestId("source-catalog-model-settings-button");
   const catalogModelMenu = page.getByTestId("source-catalog-model-settings-menu");
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+    /(?:Catalog Extraction Model Settings, current 5\.6 Sol, reasoning effort Mild, speed standard|目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准)/i
   );
   await catalogModelButton.click();
   await expect(catalogModelMenu).toBeVisible();
   const triggerBox = await catalogModelButton.boundingBox();
   const menuBox = await catalogModelMenu.boundingBox();
   if (!triggerBox || !menuBox) {
-    throw new Error("目录模型菜单未能完成视口定位");
+    throw new Error("Catalog model menu failed to complete viewport positioning");
   }
   expect(menuBox.y).toBeGreaterThanOrEqual(triggerBox.y + triggerBox.height);
   expect(menuBox.x).toBeGreaterThanOrEqual(0);
@@ -1071,44 +1380,62 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect(reasoningMenu).toBeVisible();
   const reasoningMenuBox = await reasoningMenu.boundingBox();
   if (!reasoningMenuBox) {
-    throw new Error("目录模型推理强度菜单未能完成视口定位");
+    throw new Error("Catalog model inference strength menu failed to complete viewport positioning");
   }
   expect(reasoningMenuBox.x + reasoningMenuBox.width).toBeLessThanOrEqual(menuBox.x);
   expect(reasoningMenuBox.x).toBeGreaterThanOrEqual(0);
   expect(reasoningMenuBox.y + reasoningMenuBox.height).toBeLessThanOrEqual(viewport.height);
-  await reasoningMenu.getByRole("button", { name: "推理强度 高" }).click();
-  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
+  await reasoningMenu
+    .getByRole("button", { name: /^(?:Reasoning effort high|High reasoning strength|推理强度 高)$/i })
+    .click();
+  await page.getByTestId("source-catalog-model-speed-row").click();
+  await page
+    .getByTestId("source-catalog-model-speed-menu")
+    .getByRole("button", { name: /^(?:Speed fast|速度 快速)$/i })
+    .click();
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 标准/
+    /(?:Catalog Extraction Model Settings, current 5\.6 Sol, reasoning effort high, speed fast|目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速)/i
   );
   await catalogModelButton.click();
   await expect(catalogModelMenu).toBeHidden();
   await expect(catalogModelButton).toHaveAttribute("aria-expanded", "false");
 
   await expect.poll(() => batchCatalogRequests).toBe(1);
-  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await page.getByLabel(new RegExp(`^(?:View data directory|查看资料目录) ${sourceTitle}$`)).click();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
   await page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) }).click();
   await expect(page.getByRole("button", { name: new RegExp(`^1\\.1 ${partialChapterTitle}`) })).toBeVisible();
-  await expect(page.getByRole("button", { name: /引用章节到输入框/ })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /引用章节到输入框|Reference chapter in composer/ })).toHaveCount(1);
   expect(singleCatalogRequests).toBe(0);
 
+  reportedStructureUpdatedAt = new Date(Date.parse(catalogUpdatedAt) + 60_000).toISOString();
+  delaySingleCatalogResponseAt = singleCatalogRequests + 1;
   await page.getByRole("button", { name: "History" }).click();
   await page.getByRole("button", { name: "Sources" }).click();
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 标准/
+    /(?:Catalog Extraction Model Settings, current 5\.6 Sol, reasoning effort high, speed fast|目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速)/i
   );
-  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await expect.poll(() => delayedSingleCatalogRequests).toBe(1);
+  await page.getByLabel(new RegExp(`^(?:View data directory|查看资料目录) ${sourceTitle}$`)).click();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
+  await expect(page.getByText("Reading directory…", { exact: true })).toHaveCount(0);
+  reportedStructureUpdatedAt = catalogUpdatedAt;
+  releaseDelayedSingleCatalog();
+  await expect.poll(() => completedSingleCatalogResponses).toBe(2);
   expect(batchCatalogRequests).toBe(1);
-  expect(singleCatalogRequests).toBe(0);
+  expect(singleCatalogRequests).toBe(2);
 
-  await page.getByRole("button", { name: `引用章节到输入框 1 ${chapterTitle}` }).click();
+  await page
+    .getByRole("button", {
+      name: new RegExp(`^(?:Reference chapter in composer:|引用章节到输入框) 1 ${chapterTitle}$`),
+    })
+    .click();
   await expect(page.getByText(/^(?:资料问答范围|Data question and answer scope)$/)).toBeVisible();
   await expect(page.getByText(/^(?:引用 1 · 资料区段|Quote 1 · Information section)$/)).toHaveCount(0);
-  await page.getByPlaceholder("询问选中资料中的内容").fill("请基于这个章节生成板书");
-  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByPlaceholder("Ask about the content of the selected data").fill("Please generate a blackboard based on this chapter");
+  await page.getByRole("button", { name: "Send message" }).click();
   await expect.poll(() => submittedSourceScope).not.toBeNull();
+  await expect(page.getByText(/^(?:资料问答范围|Data question and answer scope)$/)).toHaveCount(0);
   expect(submittedSourceScope).toMatchObject({
     mode: "chapter",
     refs: [{
@@ -1124,7 +1451,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   advertisedContentHash = replacementContentHash;
   reportedStructureStatus = "ready";
   staleSingleCatalogResponsesRemaining = 2;
-  delaySingleCatalogResponseAt = 2;
+  const replacementRequestBaseline = singleCatalogRequests;
+  delaySingleCatalogResponseAt = replacementRequestBaseline + 2;
   servedCatalog = {
     ...catalog,
     source_content_hash: replacementContentHash,
@@ -1133,29 +1461,39 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
       source_content_hash: replacementContentHash,
     })),
   };
-  await expect.poll(() => singleCatalogRequests, { timeout: 7_000 }).toBe(2);
-  await expect.poll(() => delayedSingleCatalogRequests).toBe(1);
+  await expect.poll(() => singleCatalogRequests, { timeout: 7_000 }).toBe(
+    replacementRequestBaseline + 2
+  );
+  await expect.poll(() => delayedSingleCatalogRequests).toBe(2);
 
-  await page.getByLabel(`重新建立资料目录 ${sourceTitle}`).click();
+  await page
+    .getByLabel(new RegExp(`^(?:Re-create the data directory|重新建立资料目录) ${sourceTitle}$`))
+    .click();
   await expect.poll(() => rebuildRequests).toBe(1);
   expect(rebuildPostData).toContain('name="catalog_model"');
   expect(rebuildPostData).toContain('"provider":"openai_codex"');
   expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
   expect(rebuildPostData).toContain('"reasoning_effort":"high"');
-  expect(rebuildPostData).toContain('"service_tier":null');
+  expect(rebuildPostData).toContain('"service_tier":"priority"');
   releaseDelayedSingleCatalog();
-  await expect.poll(() => completedSingleCatalogResponses).toBe(2);
-  await expect(page.getByRole("button", { name: new RegExp(`^1 重建后章节 ${unique}`) })).toBeVisible();
+  await expect.poll(() => completedSingleCatalogResponses).toBe(
+    replacementRequestBaseline + 2
+  );
+  await expect(
+    page.getByRole("button", {
+      name: new RegExp(`^1 (?:Chapter after reconstruction|重建后章节) ${unique}`),
+    })
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toHaveCount(0);
 
   await catalogModelButton.click();
   await page.getByTestId("source-catalog-model-model-row").click();
   await page
     .getByTestId("source-catalog-model-model-menu")
-    .getByRole("button", { name: "选择模型 5.6 Luna" })
+    .getByRole("button", { name: "Select model 5.6 Luna" })
     .click();
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Luna，推理强度 中，速度 标准/
+    /(?:Catalog Extraction Model Settings, current 5\.6 Luna, reasoning effort (?:medium|middle), speed standard|目录提取模型设置，当前 5\.6 Luna，推理强度 中，速度 标准)/i
   );
   await expect(page.getByTestId("source-catalog-model-reasoning-row")).toHaveCount(0);
   await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
@@ -1176,7 +1514,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByTestId("source-catalog-model-model-row").click();
   await page
     .getByTestId("source-catalog-model-model-menu")
-    .getByRole("button", { name: "选择模型 DeepSeek V4 Pro" })
+    .getByRole("button", { name: "Select modelDeepSeek V4 Pro" })
     .click();
   await page.getByTestId("source-file-input").setInputFiles({
     name: `catalog-provider-${unique}.pdf`,
@@ -1190,7 +1528,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByTestId("source-catalog-model-model-row").click();
   await page
     .getByTestId("source-catalog-model-model-menu")
-    .getByRole("button", { name: "选择模型 Default only test model" })
+    .getByRole("button", { name: "Select modelDefault only test model" })
     .click();
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 Default only test model，推理强度 默认，速度 标准/
@@ -1227,18 +1565,152 @@ test("restores each lesson's attached composer reference after switching tabs", 
   const editor = page.locator(".ProseMirror").first();
   await editor.click();
   await page.keyboard.press("ControlOrMeta+A");
-  await page.getByRole("button", { name: "引用到输入框" }).click();
-  await expect(page.getByLabel("移除引用")).toBeVisible();
+  await page.getByRole("button", { name: "Reference to input box" }).click();
+  await expect(page.getByLabel("Remove reference")).toBeVisible();
   await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
-  await page.getByPlaceholder("基于选中内容继续追问").click();
-  await expect(page.getByLabel("移除引用")).toBeVisible();
+  await page.getByPlaceholder("Continue to ask questions based on the selected content").click();
+  await expect(page.getByLabel("Remove reference")).toBeVisible();
 
   await page.getByRole("button", { name: `${secondTitle} main` }).click();
-  await expect(page.getByLabel("移除引用")).toHaveCount(0);
+  await expect(page.getByLabel("Remove reference")).toHaveCount(0);
 
   await page.getByRole("button", { name: `${firstTitle} main` }).click();
-  await expect(page.getByLabel("移除引用")).toBeVisible();
+  await expect(page.getByLabel("Remove reference")).toBeVisible();
   await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
+});
+
+test("keeps an async chat result and editor draft isolated to the lesson that started the turn", async ({ page }) => {
+  const unique = Date.now();
+  const firstTitle = `异步隔离页面一 ${unique}`;
+  const secondTitle = `异步隔离页面二 ${unique}`;
+  const firstInitialText = `页面一原始内容 ${unique}`;
+  const secondText = `页面二必须保留的内容 ${unique}`;
+  const secondComposerDraft = `页面二尚未发送的问题 ${unique}`;
+  const submittedMessage = `只更新页面一 ${unique}`;
+  const generatedText = `页面一异步生成结果 ${unique}`;
+  const assistantMessage = `页面一独立回复 ${unique}`;
+  let releaseChatResponse!: () => void;
+  let chatResponsePrepared!: () => void;
+  const chatResponseGate = new Promise<void>((resolve) => {
+    releaseChatResponse = resolve;
+  });
+  const chatPrepared = new Promise<void>((resolve) => {
+    chatResponsePrepared = resolve;
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `异步隔离课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, firstTitle);
+  await writeEditorTextAndWaitForSave(page, firstInitialText);
+  await createLessonFromTabBar(page, secondTitle);
+  await writeEditorTextAndWaitForSave(page, secondText);
+  await page.getByRole("button", { name: `${firstTitle} main` }).click();
+
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    const authHeader = route.request().headers().authorization;
+    const currentPackageResponse = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+      headers: authHeader ? { Authorization: authHeader } : undefined,
+    });
+    const responsePackage = await currentPackageResponse.json();
+    const requestLessonId = new URL(route.request().url()).pathname.split("/").at(-3);
+    const requestLesson = responsePackage.lessons.find(
+      (lesson: { id: string }) => lesson.id === requestLessonId
+    );
+    const otherLesson = responsePackage.lessons.find(
+      (lesson: { id: string }) => lesson.id !== requestLessonId
+    );
+    const generatedDocument = {
+      ...requestLesson.board_document,
+      content_json: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: generatedText }] }],
+      },
+      content_html: `<p>${generatedText}</p>`,
+      content_text: generatedText,
+    };
+    requestLesson.board_document = generatedDocument;
+    responsePackage.active_lesson_id = requestLesson.id;
+    otherLesson.board_document = {
+      ...otherLesson.board_document,
+      content_json: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "stale other lesson" }] }],
+      },
+      content_html: "<p>stale other lesson</p>",
+      content_text: "stale other lesson",
+    };
+    const branch = requestLesson.history_graph.branches[requestLesson.history_graph.current_branch];
+    const commitId = `commit_async_lesson_isolation_${unique}`;
+    requestLesson.history_graph.commits.push({
+      id: commitId,
+      label: "Chat flow",
+      message: "Persisted isolated async chat result",
+      branch_name: requestLesson.history_graph.current_branch,
+      created_at: new Date().toISOString(),
+      parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+      operations: [],
+      snapshot: generatedDocument,
+      metadata: {
+        kind: "chat_flow",
+        user_message: submittedMessage,
+        assistant_message: assistantMessage,
+      },
+    });
+    branch.head_commit_id = commitId;
+    chatResponsePrepared();
+    await chatResponseGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `event: final\ndata: ${JSON.stringify({
+        chatbot_message: assistantMessage,
+        agent_activity: [],
+        learning_requirement_sheet: null,
+        active_requirement_sheet: null,
+        learning_clarification: null,
+        requirement_run_id: null,
+        requirement_version_id: null,
+        requirement_phase: null,
+        learning_requirement_operation_status: "none",
+        learning_requirement_operation_failure_reason: null,
+        board_task_sheet: null,
+        active_board_task_sheet: null,
+        board_task_run_id: null,
+        board_task_version_id: null,
+        board_task_phase: null,
+        board_task_questions: [],
+        board_decision: { action: "replace", reason: "isolated test update" },
+        needs_clarification: false,
+        clarification_questions: [],
+        requirement_cleared: false,
+        board_document_operation_status: "succeeded",
+        board_document_operation_failure_reason: null,
+        teaching_progress: null,
+        course_package: responsePackage,
+      })}\n\n`,
+    });
+  });
+
+  await page.getByPlaceholder("Send a message to OpenClass...").fill(submittedMessage);
+  await page.getByRole("button", { name: "Send message" }).click();
+  await chatPrepared;
+
+  await page.getByRole("button", { name: `${secondTitle} main` }).click();
+  await expect(page.locator(".ProseMirror").first()).toContainText(secondText);
+  await page.getByPlaceholder("Send a message to OpenClass...").fill(secondComposerDraft);
+  releaseChatResponse();
+
+  await expect(page.getByPlaceholder("Send a message to OpenClass...")).toHaveValue(secondComposerDraft);
+  await expect(page.locator(".ProseMirror").first()).toContainText(secondText);
+  await expect(page.getByText(assistantMessage)).toHaveCount(0);
+
+  await page.getByRole("button", { name: `${firstTitle} main` }).click();
+  await expect(page.locator(".ProseMirror").first()).toContainText(generatedText);
+  await expect(page.getByRole("complementary").getByText(assistantMessage).first()).toBeVisible();
+
+  await page.getByRole("button", { name: `${secondTitle} main` }).click();
+  await expect(page.locator(".ProseMirror").first()).toContainText(secondText);
+  await expect(page.getByPlaceholder("Send a message to OpenClass...")).toHaveValue(secondComposerDraft);
 });
 
 test("references board content into the geometry workspace and renders a generated scene", async ({ page }) => {
@@ -1296,8 +1768,8 @@ test("references board content into the geometry workspace and renders a generat
       contentType: "application/json",
       body: JSON.stringify({
         version: "1.0",
-        title: "平行边四边形",
-        summary: "用一组代表性坐标呈现题目中的平行关系。",
+        title: "parallel sided quadrilateral",
+        summary: "Use a set of representative coordinates to present the parallel relationships in the question.",
         dimension: "3d",
         show_axes: true,
         show_grid: true,
@@ -1313,7 +1785,7 @@ test("references board content into the geometry workspace and renders a generat
           { id: "CD", kind: "segment", label: "CD", point_ids: ["D", "C"], center_id: "", radius: null, radius_y: null, text: "", color: "#f59e0b", fill: "none", opacity: 1, stroke_width: 3, dashed: false },
           { id: "ABCD", kind: "polygon", label: "ABCD", point_ids: ["A", "B", "C", "D"], center_id: "", radius: null, radius_y: null, text: "", color: "#94a3b8", fill: "rgba(56,189,248,0.12)", opacity: 1, stroke_width: 1.5, dashed: false },
         ],
-        steps: ["AB 与 CD 使用相同方向的线段表示。"],
+        steps: ["AB and CD are represented by line segments in the same direction."],
         source_excerpt: referencedText,
       }),
     });
@@ -1322,15 +1794,15 @@ test("references board content into the geometry workspace and renders a generat
   const editor = page.locator(".ProseMirror").first();
   await editor.click();
   await page.keyboard.press("ControlOrMeta+A");
-  await page.getByRole("button", { name: "引用到图形" }).click();
+  await page.getByRole("button", { name: "Reference to graphics" }).click();
 
   const geometryPanel = page.locator("[data-geometry-generation-panel]");
   await expect(page.getByRole("button", { name: "Geometry" })).toBeVisible();
-  await expect(geometryPanel.getByText("几何图形生成")).toBeVisible();
+  await expect(geometryPanel.getByText("Geometry generation")).toBeVisible();
   await expect(geometryPanel.getByText(referencedText, { exact: true })).toBeVisible();
-  await expect(geometryPanel.getByText("添加照片和文件")).toBeVisible();
-  await geometryPanel.getByRole("button", { name: "添加附件" }).click();
-  await expect(page.getByRole("menuitem", { name: "添加图片" })).toBeVisible();
+  await expect(geometryPanel.getByText("Add photos and files")).toBeVisible();
+  await geometryPanel.getByRole("button", { name: "Add attachment" }).click();
+  await expect(page.getByRole("menuitem", { name: "add picture" })).toBeVisible();
   await page.getByTestId("geometry-image-input").setInputFiles({
     name: fileName,
     mimeType: "image/png",
@@ -1339,11 +1811,11 @@ test("references board content into the geometry workspace and renders a generat
       "base64"
     ),
   });
-  await expect(geometryPanel.getByLabel("已添加附件")).toContainText(fileName);
-  await geometryPanel.getByRole("button", { name: "生成图形" }).click();
+  await expect(geometryPanel.getByLabel("Attachment added")).toContainText(fileName);
+  await geometryPanel.getByRole("button", { name: "Generate graphics" }).click();
 
-  await expect(page.getByRole("img", { name: "平行边四边形交互图形" })).toBeVisible();
-  await expect(page.getByText("3D · 拖动旋转")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Parallel-sided quadrilateral interactive graphics" })).toBeVisible();
+  await expect(page.getByText("3D · Drag to rotate")).toBeVisible();
   const submittedPayload = generationPayload as Record<string, unknown> | null;
   expect((submittedPayload?.["selection"] as { excerpt?: string } | undefined)?.excerpt).toBe(referencedText);
   expect(submittedPayload?.["attachments"]).toEqual([
@@ -1408,10 +1880,10 @@ test("adds images and files from the chat plus menu and includes them in the tur
     });
   });
 
-  await page.getByRole("button", { name: "添加附件" }).click();
-  const attachmentButtonBox = await page.getByRole("button", { name: "添加附件" }).boundingBox();
+  await page.getByRole("button", { name: "Add attachment" }).click();
+  const attachmentButtonBox = await page.getByRole("button", { name: "Add attachment" }).boundingBox();
   const textModelPickerBox = await page.getByTestId("codex-model-settings-button").boundingBox();
-  const attachmentMenuBox = await page.getByRole("menu", { name: "添加内容" }).boundingBox();
+  const attachmentMenuBox = await page.getByRole("menu", { name: "Add content" }).boundingBox();
   expect(attachmentButtonBox).not.toBeNull();
   expect(textModelPickerBox).not.toBeNull();
   expect(attachmentMenuBox).not.toBeNull();
@@ -1421,9 +1893,9 @@ test("adds images and files from the chat plus menu and includes them in the tur
   expect((attachmentMenuBox?.y ?? 0) + (attachmentMenuBox?.height ?? 0)).toBeLessThanOrEqual(
     textModelPickerBox?.y ?? 0
   );
-  await expect(page.getByRole("menuitem", { name: "添加图片" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "添加文件" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "展开手写板" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "add picture" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Add files" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Expand tablet" })).toBeVisible();
   await page.getByTestId("chat-image-input").setInputFiles({
     name: fileName,
     mimeType: "image/png",
@@ -1433,13 +1905,13 @@ test("adds images and files from the chat plus menu and includes them in the tur
     ),
   });
 
-  await expect(page.getByLabel("已添加附件")).toContainText(fileName);
+  await expect(page.getByLabel("Attachment added")).toContainText(fileName);
   await expect(page.getByRole("button", { name: `移除附件 ${fileName}` })).toBeVisible();
-  await page.getByPlaceholder("给 OpenClass 发消息...").fill("请结合这张图回答");
+  await page.getByPlaceholder("Send a message to OpenClass...").fill("Please answer based on this picture");
   const chatRequestPromise = page.waitForRequest(
     (request) => request.url().includes("/chat/stream") && request.method() === "POST"
   );
-  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
   const chatRequest = await chatRequestPromise;
   const payload = chatRequest.postDataJSON() as { attachments?: Array<Record<string, unknown>> };
   expect(payload.attachments).toHaveLength(1);
@@ -1497,13 +1969,13 @@ test("adds a handwriting board image from the chat plus menu", async ({ page }) 
     });
   });
 
-  await page.getByRole("button", { name: "添加附件" }).click();
-  await page.getByRole("menuitem", { name: "展开手写板" }).click();
-  await expect(page.getByRole("dialog", { name: "手写板" })).toBeVisible();
+  await page.getByRole("button", { name: "Add attachment" }).click();
+  await page.getByRole("menuitem", { name: "Expand tablet" }).click();
+  await expect(page.getByRole("dialog", { name: "writing tablet" })).toBeVisible();
 
-  const addButton = page.getByRole("button", { name: "添加到消息" });
+  const addButton = page.getByRole("button", { name: "add to message" });
   await expect(addButton).toBeDisabled();
-  const canvas = page.getByLabel("手写输入画板");
+  const canvas = page.getByLabel("Handwriting input drawing board");
   const canvasBox = await canvas.boundingBox();
   expect(canvasBox).not.toBeNull();
   if (!canvasBox) {
@@ -1516,8 +1988,8 @@ test("adds a handwriting board image from the chat plus menu", async ({ page }) 
   await expect(addButton).toBeEnabled();
   await addButton.click();
 
-  await expect(page.getByRole("dialog", { name: "手写板" })).toBeHidden();
-  await expect(page.getByLabel("已添加附件")).toContainText(fileName);
+  await expect(page.getByRole("dialog", { name: "writing tablet" })).toBeHidden();
+  await expect(page.getByLabel("Attachment added")).toContainText(fileName);
 });
 
 test("places the create control first and orders lesson tabs from newest to oldest", async ({ page }) => {
@@ -1535,7 +2007,7 @@ test("places the create control first and orders lesson tabs from newest to olde
     .getByRole("navigation")
     .filter({ has: page.getByRole("button", { name: `${secondTitle} main` }) });
   const lessonTabs = lessonTabList.locator(":scope > button");
-  await expect(lessonTabs.nth(0)).toHaveAccessibleName("新建页面");
+  await expect(lessonTabs.nth(0)).toHaveAccessibleName("Create new page");
   await expect(lessonTabs.nth(1)).toHaveAccessibleName(`${secondTitle} main`);
   await expect(lessonTabs.nth(2)).toHaveAccessibleName(`${firstTitle} main`);
 });
@@ -1545,10 +2017,10 @@ test("uses the top-right profile avatar as the only account menu in Studio", asy
 
   const accountMenu = page.locator("[data-account-menu-root]");
   await expect(accountMenu).toHaveCount(1);
-  await page.getByRole("button", { name: "开放课堂用户头像" }).click();
+  await page.getByRole("button", { name: "Open Classroom User Avatar" }).click();
   await expect(page.getByRole("menu")).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "登录以保存" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "结束游客访问" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Sign in to save" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "End visitor visit" })).toBeVisible();
 });
 
 test("manages standalone lessons from the profile project list", async ({ page }) => {
@@ -1576,43 +2048,43 @@ test("manages standalone lessons from the profile project list", async ({ page }
 
   const lessonMenu = page.locator(`div[aria-label="管理课程 ${lessonTitle}"]`);
   await expect(lessonMenu).toBeVisible();
-  await expect(lessonMenu.getByRole("button", { name: "课程设为 Private", exact: true })).toHaveCount(0);
-  await expect(lessonMenu.getByRole("button", { name: "课程设为 Public", exact: true })).toHaveCount(0);
-  await lessonMenu.getByRole("button", { name: "课程 上传课程", exact: true }).click();
-  await expect(lessonMenu.getByText("课程没有上传资料，可以公开。")).toBeVisible();
-  await expect(lessonMenu.getByText("当前公开版本保持不变；再次上传后才会更新。")).toBeVisible();
-  await expect(lessonMenu.getByRole("button", { name: "分享", exact: true })).toBeEnabled();
-  await expect(lessonMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
-  await expect(lessonMenu.getByRole("button", { name: "导出课程包", exact: true })).toBeVisible();
+  await expect(lessonMenu.getByRole("button", { name: "Course is set to Private", exact: true })).toHaveCount(0);
+  await expect(lessonMenu.getByRole("button", { name: "Course is set to Public", exact: true })).toHaveCount(0);
+  await lessonMenu.getByRole("button", { name: "Course upload course", exact: true }).click();
+  await expect(lessonMenu.getByText("The course has no uploaded materials and can be made public.")).toBeVisible();
+  await expect(lessonMenu.getByText("The current public version remains unchanged; it will not be updated until it is uploaded again.")).toBeVisible();
+  await expect(lessonMenu.getByRole("button", { name: "share", exact: true })).toBeEnabled();
+  await expect(lessonMenu.getByRole("button", { name: "Rename", exact: true })).toBeVisible();
+  await expect(lessonMenu.getByRole("button", { name: "Export course package", exact: true })).toBeVisible();
 
-  await lessonMenu.getByRole("button", { name: "移动到课程包", exact: true }).click();
+  await lessonMenu.getByRole("button", { name: "Move to course package", exact: true }).click();
   await expect(lessonMenu.getByRole("button", { name: targetPackageTitle, exact: true })).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept(renamedLessonTitle));
-  await lessonMenu.getByRole("button", { name: "重命名", exact: true }).click();
+  await lessonMenu.getByRole("button", { name: "Rename", exact: true }).click();
   await expect(page.getByRole("button", { name: `管理课程 ${renamedLessonTitle}` })).toBeVisible();
 
   const renamedManageLessonButton = page.getByRole("button", { name: `管理课程 ${renamedLessonTitle}` });
   await renamedManageLessonButton.click();
   const renamedLessonMenu = page.locator(`div[aria-label="管理课程 ${renamedLessonTitle}"]`);
   const downloadPromise = page.waitForEvent("download");
-  await renamedLessonMenu.getByRole("button", { name: "导出课程包", exact: true }).click();
+  await renamedLessonMenu.getByRole("button", { name: "Export course package", exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
 
   await renamedManageLessonButton.click();
-  await renamedLessonMenu.getByRole("button", { name: "移动到课程包", exact: true }).click();
+  await renamedLessonMenu.getByRole("button", { name: "Move to course package", exact: true }).click();
   await renamedLessonMenu.getByRole("button", { name: targetPackageTitle, exact: true }).click();
   await expect(renamedManageLessonButton).toBeHidden();
 
   await page.getByRole("button", { name: `管理课程包 ${targetPackageTitle}` }).click();
   const packageMenu = page.locator(`div[aria-label="管理课程包 ${targetPackageTitle}"]`);
   await expect(packageMenu).toBeVisible();
-  await expect(packageMenu.getByRole("button", { name: "课程包设为 Private", exact: true })).toHaveCount(0);
-  await expect(packageMenu.getByRole("button", { name: "课程包设为 Public", exact: true })).toHaveCount(0);
-  await expect(packageMenu.getByRole("button", { name: "课程包 上传课程", exact: true })).toBeVisible();
-  await expect(packageMenu.getByRole("button", { name: "分享", exact: true })).toBeDisabled();
-  await expect(packageMenu.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  await expect(packageMenu.getByRole("button", { name: "Course package set to Private", exact: true })).toHaveCount(0);
+  await expect(packageMenu.getByRole("button", { name: "Course package is set to Public", exact: true })).toHaveCount(0);
+  await expect(packageMenu.getByRole("button", { name: "Course package upload course", exact: true })).toBeVisible();
+  await expect(packageMenu.getByRole("button", { name: "share", exact: true })).toBeDisabled();
+  await expect(packageMenu.getByRole("button", { name: "Rename", exact: true })).toBeVisible();
 });
 
 test("sends a contact message from the home page without opening a mail client", async ({ page }) => {
@@ -1648,23 +2120,23 @@ test("sends a contact message from the home page without opening a mail client",
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ message: "联系消息已发送" }),
+      body: JSON.stringify({ message: "Contact message sent" }),
     });
   });
   await page.goto("/");
 
-  const contactButton = page.getByRole("button", { name: "联系 OpenClass，消息发送至 hello@open-classes.com" });
+  const contactButton = page.getByRole("button", { name: "To contact OpenClass, send a message to hello@open-classes.com" });
   await expect(contactButton).toBeVisible();
   await contactButton.click();
-  await expect(page.getByRole("dialog", { name: "联系开放课堂团队" })).toBeVisible();
-  await page.getByLabel("主题").fill("产品建议");
-  await page.getByLabel("联系内容").fill("希望通过站内表单直接联系开放课堂团队。");
-  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Contact the Open Classroom team" })).toBeVisible();
+  await page.getByLabel("theme").fill("product suggestions");
+  await page.getByLabel("Contact content").fill("Please contact the Open Classroom team directly through the form on the site.");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "消息已发送" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Message sent" })).toBeVisible();
   expect(submitted).toEqual({
-    subject: "产品建议",
-    message: "希望通过站内表单直接联系开放课堂团队。",
+    subject: "product suggestions",
+    message: "Please contact the Open Classroom team directly through the form on the site.",
   });
 });
 
@@ -1673,8 +2145,8 @@ test("collapses course package and standalone lesson lists independently", async
 
   const packageList = page.locator("#learning-home-course-packages");
   const standaloneList = page.locator("#learning-home-standalone-lessons");
-  const collapsePackages = page.getByLabel("收起课程包");
-  const collapseStandaloneLessons = page.getByLabel("收起单独课程");
+  const collapsePackages = page.getByLabel("Collapse course package");
+  const collapseStandaloneLessons = page.getByLabel("Close individual courses");
 
   await expect(packageList).toBeVisible();
   await expect(packageList).toHaveCSS("overflow-y", "auto");
@@ -1682,31 +2154,31 @@ test("collapses course package and standalone lesson lists independently", async
 
   await collapsePackages.click();
   await expect(packageList).toBeHidden();
-  await expect(page.getByLabel("展开课程包")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByLabel("Expand course package")).toHaveAttribute("aria-expanded", "false");
   await expect(standaloneList).toBeVisible();
 
   await collapseStandaloneLessons.click();
   await expect(standaloneList).toBeHidden();
-  await expect(page.getByLabel("展开单独课程")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByLabel("Expand individual courses")).toHaveAttribute("aria-expanded", "false");
 });
 
 test("exports and imports a RIDOC file as a standalone lesson", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `主页课程包入口 ${unique}`;
   await enterAsMemberThroughApi(page);
-  await page.getByLabel("添加单独课程").click();
-  await expect(page.getByRole("menuitem", { name: "导入课程文件" })).toBeVisible();
+  await page.getByLabel("Add individual courses").click();
+  await expect(page.getByRole("menuitem", { name: "Import course files" })).toBeVisible();
   await nameNextGeneratedLessonForTest(page, lessonTitle);
-  await page.getByRole("menuitem", { name: "新建课程" }).click();
+  await page.getByRole("menuitem", { name: "Create new course" }).click();
   await expect(page.getByRole("button", { name: `${lessonTitle} main` })).toBeVisible();
   await expect(page.locator(".ProseMirror")).toBeVisible();
   await writeEditorTextAndWaitForSave(page, `主页导出内容 ${unique}`);
   await page.goto("/home");
 
   const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle });
-  await lessonCard.getByLabel("打开课程操作菜单").click();
+  await lessonCard.getByLabel("Open the course operation menu").click();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出课程包", exact: true }).click();
+  await page.getByRole("button", { name: "Export course package", exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
   const ridocStream = await download.createReadStream();
@@ -1715,12 +2187,12 @@ test("exports and imports a RIDOC file as a standalone lesson", async ({ page })
     ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
 
-  await page.getByLabel("添加单独课程").click();
+  await page.getByLabel("Add individual courses").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("menuitem", { name: "导入课程文件", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import course files", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),
@@ -1738,15 +2210,15 @@ test("renames a standalone lesson from its actions menu", async ({ page }) => {
   const renamedTitle = `已重命名课程 ${unique}`;
 
   await enterAsMemberThroughApi(page);
-  await page.getByLabel("添加单独课程").click();
+  await page.getByLabel("Add individual courses").click();
   await nameNextGeneratedLessonForTest(page, originalTitle);
-  await page.getByRole("menuitem", { name: "新建课程" }).click();
+  await page.getByRole("menuitem", { name: "Create new course" }).click();
   await expect(page.getByRole("button", { name: `${originalTitle} main` })).toBeVisible();
   await page.goto("/home");
 
   const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: originalTitle });
-  await lessonCard.getByLabel("打开课程操作菜单").click();
-  await expect(page.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  await lessonCard.getByLabel("Open the course operation menu").click();
+  await expect(page.getByRole("button", { name: "Rename", exact: true })).toBeVisible();
   page.once("dialog", async (dialog) => {
     expect(dialog.type()).toBe("prompt");
     expect(dialog.defaultValue()).toBe(originalTitle);
@@ -1757,7 +2229,7 @@ test("renames a standalone lesson from its actions menu", async ({ page }) => {
       /\/api\/lessons\/[^/]+\/rename$/.test(new URL(response.url()).pathname) &&
       response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "重命名", exact: true }).click();
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
   await renameResponse;
 
   await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: renamedTitle })).toBeVisible();
@@ -1770,12 +2242,12 @@ test("localizes the empty course package page in English", async ({ page }) => {
   await createPackageFromHome(page, `English empty package ${unique}`);
   await page.goto("/studio");
 
-  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+  await expect(page.getByText("This package is empty")).toBeVisible();
   await setInterfaceLanguage(page, "en");
   await expect(page.getByRole("heading", { name: "This package is empty" })).toBeVisible();
   await expect(page.getByText("Create the page and start chatting with AI.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Create first page" }).click();
-  await expect(page.getByRole("button", { name: "无标题 main" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Untitled main" })).toBeVisible();
   await expect(page.getByLabel("First page name")).toHaveCount(0);
 });
 
@@ -1811,11 +2283,11 @@ test("merges a lesson branch through a persistent editable draft", async ({ page
   await writeEditorTextAndWaitForSave(page, `共同版本 ${unique}`);
   await openHistoryPanel(page);
 
-  await page.getByPlaceholder("新分支名").fill(sourceBranch);
+  await page.getByPlaceholder("new branch name").fill(sourceBranch);
   const branchResponse = page.waitForResponse(
     (response) => response.url().includes("/branches") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "开分支" }).click();
+  await page.getByRole("button", { name: "branch" }).click();
   await branchResponse;
   await writeEditorTextAndWaitForSave(page, `来源分支内容 ${unique}`);
 
@@ -1829,15 +2301,15 @@ test("merges a lesson branch through a persistent editable draft", async ({ page
   const createMergeResponse = page.waitForResponse(
     (response) => response.url().endsWith("/merge-sessions") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "合并到当前分支" }).click();
+  await page.getByRole("button", { name: "Merge into current branch" }).click();
   await createMergeResponse;
   await expect(page.getByText("Studio Merge Mode")).toBeVisible();
-  await expect(page.getByPlaceholder("合并期间对话已暂停，提交或放弃合并后可继续")).toBeVisible();
+  await expect(page.getByPlaceholder("The conversation has been paused during the merge and can be continued after submitting or abandoning the merge.")).toBeVisible();
 
   const resolutionResponse = page.waitForResponse(
     (response) => response.url().includes("/merge-sessions/") && response.request().method() === "PATCH"
   );
-  await page.getByRole("button", { name: "来源", exact: true }).first().click();
+  await page.getByRole("button", { name: "source", exact: true }).first().click();
   await resolutionResponse;
   const editor = page.locator(".ProseMirror").first();
   await expect(editor).toContainText(`来源分支内容 ${unique}`);
@@ -1856,7 +2328,7 @@ test("merges a lesson branch through a persistent editable draft", async ({ page
   const submitResponse = page.waitForResponse(
     (response) => response.url().endsWith("/submit") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "提交合并" }).click();
+  await page.getByRole("button", { name: "Commit merge" }).click();
   await submitResponse;
   await expect(page.getByText("Merge").first()).toBeVisible();
   await expect(page.getByRole("button", { name: sourceBranch, exact: true })).toBeVisible();
@@ -1898,7 +2370,7 @@ test("DOCX import and export entry points complete without breaking the editor",
   });
 
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "导入 DOCX" }).click();
+  await page.getByRole("button", { name: "Import DOCX" }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: "smoke.docx",
@@ -1908,7 +2380,7 @@ test("DOCX import and export entry points complete without breaking the editor",
 
   await expect(page.locator(".ProseMirror").first()).toContainText(`DOCX 导入内容 ${unique}`);
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出 DOCX" }).click();
+  await page.getByRole("button", { name: "Export DOCX" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
 });
@@ -1919,7 +2391,7 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   const secondVersion = `RIDOC 历史版本二 ${unique}`;
   await enterAsMemberThroughApi(page);
   await page.getByLabel(/进入单独课程工作台|添加单独课程/).click();
-  const createLessonMenuItem = page.getByRole("menuitem", { name: "新建课程" });
+  const createLessonMenuItem = page.getByRole("menuitem", { name: "Create new course" });
   if (await createLessonMenuItem.isVisible()) {
     await createLessonMenuItem.click();
   }
@@ -1928,7 +2400,7 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   await writeEditorTextAndWaitForSave(page, secondVersion);
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出课程包", exact: true }).click();
+  await page.getByRole("button", { name: "Export course package", exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
   const ridocStream = await download.createReadStream();
@@ -1938,12 +2410,12 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   }
 
   await page.goto("/home");
-  await page.getByLabel("添加单独课程").click();
+  await page.getByLabel("Add individual courses").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("menuitem", { name: "导入课程文件", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import course files", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),
@@ -1958,22 +2430,22 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   await expect(lessonCards).toHaveCount(2);
   await lessonCards.last().click();
   await expect(page.locator(".ProseMirror").first()).toContainText(secondVersion);
-  await page.getByTitle("展开右侧栏").dispatchEvent("click");
-  await expect(page.getByText("修订记录")).toBeVisible();
-  await expect(page.getByText("RIDOC 课程包")).toBeVisible();
-  await page.getByRole("button", { name: "播放课程" }).click();
-  await page.getByRole("button", { name: "暂停播放" }).click();
-  await expect(page.getByRole("button", { name: "退出并继续学习" })).toBeVisible();
+  await page.getByTitle("Expand right column").dispatchEvent("click");
+  await expect(page.getByText("Revision history")).toBeVisible();
+  await expect(page.getByText("RIDOC course package")).toBeVisible();
+  await page.getByRole("button", { name: "play course" }).click();
+  await page.getByRole("button", { name: "Pause playback" }).click();
+  await expect(page.getByRole("button", { name: "Exit and continue learning" })).toBeVisible();
   await expect(page.getByText(/\/\d+$/)).toBeVisible();
-  await page.getByRole("button", { name: "下一步" }).click();
-  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "Next step" }).click();
+  await page.getByRole("button", { name: "Next step" }).click();
 
   const branchResponse = page.waitForResponse(
     (response) => response.url().includes("/branches") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "从这里分叉" }).click();
+  await page.getByRole("button", { name: "Branch from here" }).click();
   await branchResponse;
-  await expect(page.getByRole("button", { name: "退出并继续学习" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Exit and continue learning" })).toHaveCount(0);
   await expect(page.locator(".ProseMirror").first()).toContainText(firstVersion);
 });
 
@@ -1986,7 +2458,7 @@ test("normalizes raw bold vector notation and math delimiters in the board edito
   await createLessonFromEmptyStudio(page, lessonTitle);
 
   const rawBlockFormula = "\\boldsymbol{x}=(x_1;x_2;\\cdots;x_d)";
-  const rawInlineFormula = "向量 $$\\boldsymbol{x}$$ 的分量";
+  const rawInlineFormula = "Components of vector $$\\boldsymbol{x}$$";
   let injectedPackage: Record<string, unknown> | null = null;
   await page.route("**/api/course-package", async (route) => {
     if (!injectedPackage) {
@@ -2267,7 +2739,7 @@ test("restores future and legacy persisted chat shapes after refresh", async ({ 
 test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {
   const unique = Date.now();
   const userMessage = `继续整理我的学习需求 ${unique}`;
-  const failureReason = "本轮学习需求没有成功更新，请重试刚才的输入。";
+  const failureReason = "This round of learning requirements was not updated successfully, please try again the input just now.";
   let recoveredPackage: Record<string, unknown> | null = null;
 
   await enterAsGuest(page);
@@ -2318,12 +2790,12 @@ test("keeps the learning requirement failure visible when the chat final event i
     await route.fulfill({
       status: 200,
       contentType: "text/event-stream",
-      body: 'event: phase\ndata: {"label":"正在整理学习需求"}\n\n',
+      body: "event: phase data: {\"label\":\"Completing learning needs\"}",
     });
   });
 
-  await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
-  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByPlaceholder("Send a message to OpenClass...").fill(userMessage);
+  await page.getByRole("button", { name: "Send message" }).click();
 
   await expect(page.getByRole("alert").filter({ hasText: failureReason })).toBeVisible();
 });
@@ -2386,8 +2858,8 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   const chatSidebar = page.getByRole("complementary");
   await expect(chatSidebar.getByText(userMessage)).toBeVisible();
   await expect(chatSidebar.getByText(assistantOpening)).toBeVisible();
-  await expect(chatSidebar.getByText("公式后面的说明仍应正常显示。")).toBeVisible();
-  await expect(chatSidebar.getByText("接下来可以")).toBeVisible();
+  await expect(chatSidebar.getByText("The description after the formula should still display normally.")).toBeVisible();
+  await expect(chatSidebar.getByText("OK next")).toBeVisible();
   await expect(chatSidebar.getByRole("button", { name: followUpSuggestions[0] })).toBeVisible();
   await expect(chatSidebar.getByRole("button", { name: followUpSuggestions[1] })).toBeVisible();
   await expect(chatSidebar.locator(".katex-display")).toHaveCount(1);
@@ -2403,11 +2875,11 @@ test("does not show a second board-generation confirmation after learning requir
   const requirementSheet = {
     theme: `聚焦学习主题 ${unique}`,
     learning_goal: `理解聚焦学习主题 ${unique}`,
-    level: "入门",
+    level: "getting Started",
     known_background: "",
     current_questions: [],
     learning_need_checklist: [],
-    target_depth: "建立直觉",
+    target_depth: "Build intuition",
     output_preference: "",
     boundary: "",
     board_scope: [],
@@ -2482,7 +2954,7 @@ test("does not show a second board-generation confirmation after learning requir
       board_task_version_id: null,
       board_task_phase: null,
       board_task_questions: [],
-      board_decision: { action: "no_change", reason: "等待用户开始生成板书" },
+      board_decision: { action: "no_change", reason: "Wait for the user to start generating blackboard writing" },
       needs_clarification: false,
       clarification_questions: [],
       requirement_cleared: false,
@@ -2498,14 +2970,14 @@ test("does not show a second board-generation confirmation after learning requir
     });
   });
 
-  await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
+  await page.getByPlaceholder("Send a message to OpenClass...").fill(userMessage);
   const chatResponsePromise = page.waitForResponse(
     (response) => response.url().includes("/chat/stream") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
   expect((await chatResponsePromise).ok()).toBeTruthy();
 
-  await expect(page.getByText("学习需求已清晰")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "开始生成板书" })).toHaveCount(0);
-  await expect(page.getByText("正在核对本轮资料证据。")).toHaveCount(0);
+  await expect(page.getByText("Learning needs have been clarified")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start generating blackboard writing" })).toHaveCount(0);
+  await expect(page.getByText("The current round of data and evidence is being verified.")).toHaveCount(0);
 });

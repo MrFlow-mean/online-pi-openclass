@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { applyDocumentSaveDeltaToPackage } from "@/lib/workspace-delta";
 import {
   DEFAULT_LESSON_COMPOSER_STATE,
   buildLessonMessagesFromHistory,
@@ -12,12 +13,14 @@ import {
   type LessonComposerStateMap,
   type LessonMessageMap,
 } from "@/components/course-studio/history-utils";
-import type { CoursePackage, Lesson } from "@/types";
+import { mergeCoursePackageForLesson } from "@/hooks/course-studio/chat-turn-ui-state";
+import type { CoursePackage, DocumentSaveDelta, Lesson } from "@/types";
 
 export type CoursePackageApplyOptions = {
   blankLessonIds?: string[];
   activeLessonId?: string | null;
   rebuildMessageLessonIds?: string[];
+  mergeLessonId?: string;
 };
 
 export type AppliedCoursePackage = {
@@ -67,17 +70,19 @@ export function useCourseWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [lessonMessages, setLessonMessages] = useState<LessonMessageMap>({});
   const [lessonComposerStates, setLessonComposerStates] = useState<LessonComposerStateMap>({});
+  const coursePackageRef = useRef<CoursePackage | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
         const payload = await api.getCoursePackage();
+        coursePackageRef.current = payload;
         setCoursePackage(payload);
         setLessonMessages((current) => createMessageMap(payload, current));
         setLessonComposerStates((current) => createComposerStateMap(payload, current));
         setError(null);
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "加载失败");
+        setError(loadError instanceof Error ? loadError.message : "Loading failed");
       } finally {
         setIsLoading(false);
       }
@@ -96,8 +101,8 @@ export function useCourseWorkspace() {
       return null;
     }
     return coursePackage.active_lesson_id
-      ? lessonMap.get(coursePackage.active_lesson_id) ?? coursePackage.lessons[0] ?? null
-      : coursePackage.lessons[0] ?? null;
+      ? lessonMap.get(coursePackage.active_lesson_id) ?? null
+      : null;
   }, [coursePackage, lessonMap]);
 
   const openLessons = useMemo(
@@ -179,27 +184,34 @@ export function useCourseWorkspace() {
 
   const applyCoursePackage = useCallback(
     (nextPackage: CoursePackage, options?: CoursePackageApplyOptions): AppliedCoursePackage => {
+      const packageToApply =
+        options?.mergeLessonId && coursePackageRef.current
+          ? mergeCoursePackageForLesson(coursePackageRef.current, nextPackage, options.mergeLessonId)
+          : nextPackage;
       const requestedActiveLessonId = options?.activeLessonId;
       const effectiveActiveLessonId =
-        requestedActiveLessonId && nextPackage.workspace_tab_order.includes(requestedActiveLessonId)
+        requestedActiveLessonId && packageToApply.workspace_tab_order.includes(requestedActiveLessonId)
           ? requestedActiveLessonId
-          : nextPackage.active_lesson_id;
+          : packageToApply.active_lesson_id;
       const mergedPackage =
-        effectiveActiveLessonId === nextPackage.active_lesson_id
-          ? nextPackage
-          : { ...nextPackage, active_lesson_id: effectiveActiveLessonId };
+        effectiveActiveLessonId === packageToApply.active_lesson_id
+          ? packageToApply
+          : { ...packageToApply, active_lesson_id: effectiveActiveLessonId };
       const nextActiveLesson =
         mergedPackage.lessons.find((lesson) => lesson.id === mergedPackage.active_lesson_id) ??
         mergedPackage.lessons[0] ??
         null;
 
+      coursePackageRef.current = mergedPackage;
       setCoursePackage(mergedPackage);
       syncLessonMessages(mergedPackage, {
         blankLessonIds: options?.blankLessonIds,
         rebuildLessonIds: options?.rebuildMessageLessonIds,
       });
       syncLessonComposerStates(mergedPackage.lessons);
-      setError(null);
+      if (!options?.mergeLessonId || mergedPackage.active_lesson_id === options.mergeLessonId) {
+        setError(null);
+      }
 
       return { coursePackage: mergedPackage, activeLesson: nextActiveLesson };
     },
@@ -208,20 +220,26 @@ export function useCourseWorkspace() {
 
   const applyAutoSavedCoursePackage = useCallback(
     (
-      nextPackage: CoursePackage,
+      delta: DocumentSaveDelta,
       lessonId: string,
       currentActiveLessonId: string | null
     ): AutoSavedPackageResult => {
+      const currentPackage = coursePackageRef.current;
+      if (!currentPackage) {
+        throw new Error("Course workspace is not loaded");
+      }
+      const packageToApply = applyDocumentSaveDeltaToPackage(currentPackage, delta);
       const effectiveActiveLessonId =
-        currentActiveLessonId && nextPackage.workspace_tab_order.includes(currentActiveLessonId)
+        currentActiveLessonId && packageToApply.workspace_tab_order.includes(currentActiveLessonId)
           ? currentActiveLessonId
-          : nextPackage.active_lesson_id;
+          : packageToApply.active_lesson_id;
       const mergedPackage =
-        effectiveActiveLessonId === nextPackage.active_lesson_id
-          ? nextPackage
-          : { ...nextPackage, active_lesson_id: effectiveActiveLessonId };
+        effectiveActiveLessonId === packageToApply.active_lesson_id
+          ? packageToApply
+          : { ...packageToApply, active_lesson_id: effectiveActiveLessonId };
       const savedLesson = mergedPackage.lessons.find((lesson) => lesson.id === lessonId) ?? null;
 
+      coursePackageRef.current = mergedPackage;
       setCoursePackage(mergedPackage);
       syncLessonMessages(mergedPackage);
       syncLessonComposerStates(mergedPackage.lessons);
@@ -233,7 +251,11 @@ export function useCourseWorkspace() {
   );
 
   const selectLocalLesson = useCallback((lessonId: string) => {
-    setCoursePackage((current) => (current ? { ...current, active_lesson_id: lessonId } : current));
+    setCoursePackage((current) => {
+      const nextPackage = current ? { ...current, active_lesson_id: lessonId } : current;
+      coursePackageRef.current = nextPackage;
+      return nextPackage;
+    });
   }, []);
 
   return {

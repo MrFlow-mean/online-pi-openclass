@@ -9,7 +9,7 @@ import {
   documentsEqual,
 } from "@/components/course-studio/history-utils";
 import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
-import type { BoardDocument, CoursePackage, Lesson } from "@/types";
+import type { BoardDocument, CoursePackage, DocumentSaveDelta, Lesson } from "@/types";
 
 export type AutoSaveStatus = "idle" | "pending" | "saving" | "saved" | "error";
 export type AutoSaveReason =
@@ -42,7 +42,7 @@ type UseBoardDraftOptions = {
   setBusyAction: Dispatch<SetStateAction<string | null>>;
   applyCoursePackage: (nextPackage: CoursePackage, options?: CoursePackageApplyOptions) => AppliedCoursePackage;
   applyAutoSavedCoursePackage: (
-    nextPackage: CoursePackage,
+    delta: DocumentSaveDelta,
     lessonId: string,
     currentActiveLessonId: string | null
   ) => AutoSavedPackageResult;
@@ -277,7 +277,10 @@ export function useBoardDraft({
 
   const setStreamingDocumentPreview = useCallback(
     (lessonId: string, document: BoardDocument) => {
-      if (activeLessonRef.current?.id !== lessonId) {
+      if (
+        activeLessonRef.current?.id !== lessonId ||
+        activeLessonRef.current.board_document.id !== document.id
+      ) {
         return false;
       }
       const currentDocument = draftDocumentRef.current;
@@ -312,9 +315,9 @@ export function useBoardDraft({
   );
 
   const applyAutoSavedPackage = useCallback(
-    (nextPackage: CoursePackage, lessonId: string, savedVersion: number) => {
+    (delta: DocumentSaveDelta, lessonId: string, savedVersion: number) => {
       const currentActiveLessonId = activeLessonRef.current?.id ?? null;
-      const { savedLesson } = applyAutoSavedCoursePackage(nextPackage, lessonId, currentActiveLessonId);
+      const { savedLesson } = applyAutoSavedCoursePackage(delta, lessonId, currentActiveLessonId);
 
       if (currentActiveLessonId !== lessonId || !savedLesson) {
         setError(null);
@@ -365,6 +368,14 @@ export function useBoardDraft({
       if (!lesson || !document || !isDocumentDirtyRef.current || isPreviewingRef.current) {
         return true;
       }
+      if (document.id !== lesson.board_document.id) {
+        draftDocumentRef.current = lesson.board_document;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(lesson.board_document);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
+        return true;
+      }
       const structuredGuard = lastStructuredDocumentRef.current;
       const allowStructureRemoval = structureRemovalIntentRef.current;
       if (
@@ -398,12 +409,12 @@ export function useBoardDraft({
 
       const request = (async () => {
         try {
-          const nextPackage = await api.saveDocument(lesson.id, payload);
-          applyAutoSavedPackage(nextPackage, lesson.id, savedVersion);
+          const delta = await api.saveDocument(lesson.id, payload);
+          applyAutoSavedPackage(delta, lesson.id, savedVersion);
           return true;
         } catch (saveError) {
           setAutoSaveStatus("error");
-          setError(saveError instanceof Error ? saveError.message : "自动保存失败");
+          setError(saveError instanceof Error ? saveError.message : "Autosave failed");
           return false;
         } finally {
           if (isManualSave) {
@@ -460,6 +471,14 @@ export function useBoardDraft({
       if (!lesson || !document || !isDocumentDirtyRef.current || isPreviewingRef.current) {
         return;
       }
+      if (document.id !== lesson.board_document.id) {
+        draftDocumentRef.current = lesson.board_document;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(lesson.board_document);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
+        return;
+      }
       const structuredGuard = lastStructuredDocumentRef.current;
       const allowStructureRemoval = structureRemovalIntentRef.current;
       if (
@@ -492,6 +511,9 @@ export function useBoardDraft({
     (nextDocument: BoardDocument) => {
       const lesson = activeLessonRef.current;
       if (isPreviewingRef.current || !lesson) {
+        return;
+      }
+      if (nextDocument.id !== lesson.board_document.id) {
         return;
       }
       const ignoredStreamingPreview = ignoredStreamingPreviewRef.current;
@@ -585,7 +607,7 @@ export function useBoardDraft({
         resetToLesson(result.activeLesson);
         onPackageApplied?.();
       } catch (importError) {
-        setError(importError instanceof Error ? importError.message : "导入 DOCX 失败");
+        setError(importError instanceof Error ? importError.message : "Import DOCX failed");
       } finally {
         setBusyAction(null);
       }
@@ -611,7 +633,7 @@ export function useBoardDraft({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (exportError) {
-      setError(exportError instanceof Error ? exportError.message : "导出 DOCX 失败");
+      setError(exportError instanceof Error ? exportError.message : "Exporting DOCX failed");
     } finally {
       setBusyAction(null);
     }
@@ -635,7 +657,7 @@ export function useBoardDraft({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (exportError) {
-      setError(exportError instanceof Error ? exportError.message : "导出 HTML 失败");
+      setError(exportError instanceof Error ? exportError.message : "Export HTML failed");
     } finally {
       setBusyAction(null);
     }

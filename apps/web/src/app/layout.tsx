@@ -5,10 +5,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "开放课堂",
-    template: "%s | 开放课堂",
+    default: "OpenClass",
+    template: "%s | OpenClass",
   },
-  description: "面向课程主页、资料管理、富文本讲义编辑和版本回溯的课程工作台。",
+  description: "An AI course workspace for source management, rich lesson editing, and version history.",
 };
 
 export default function RootLayout({
@@ -17,7 +17,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" suppressHydrationWarning className="h-full antialiased">
+    <html lang="en" suppressHydrationWarning className="h-full antialiased">
       <body className="min-h-full flex flex-col">
         <InterfaceLanguageProvider>{children}</InterfaceLanguageProvider>
       </body>

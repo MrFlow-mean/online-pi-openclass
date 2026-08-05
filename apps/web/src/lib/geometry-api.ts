@@ -11,7 +11,7 @@ async function geometryErrorMessage(response: Response) {
   } catch {
     // Preserve the response text when the server did not return JSON.
   }
-  return text || `图形生成请求失败（${response.status}）`;
+  return text || `Geometry generation request failed (${response.status})`;
 }
 
 export async function generateGeometryScene(

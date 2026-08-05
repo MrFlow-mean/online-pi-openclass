@@ -5,6 +5,7 @@ import hashlib
 import json
 import posixpath
 import re
+import subprocess
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -23,6 +24,10 @@ from app.services.image_ocr import (
     ordered_ocr_lines,
 )
 from app.services.source_archive import SafeSourceArchive
+from app.services.source_document_toolchain import (
+    SourceDocumentToolchainError,
+    resolve_poppler_root,
+)
 from app.services.source_ooxml_navigation import (
     OoxmlNavigationError,
     ordered_pptx_slide_parts,
@@ -34,6 +39,7 @@ from app.services.source_xml import parse_untrusted_xml
 CATALOG_PIPELINE = "codex_directory_v1"
 PDF_NATIVE_BATCH_PAGES = 12
 PDF_OCR_BATCH_PAGES = 8
+PDF_NATIVE_TEXT_TIMEOUT_SECONDS = 45
 TEXT_BATCH_CHARS = 48_000
 TEXT_BATCH_UNITS = 400
 _MEANINGFUL_TEXT_RE = re.compile(r"[A-Za-z0-9\u3400-\u9fff]")
@@ -50,6 +56,10 @@ class SourceRangeReadResult:
     source_content_hash: str
     source_range: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    # Internal authenticated path used by the scoped visual extractor.  It is
+    # deliberately returned only after the before/after content-hash checks
+    # above have succeeded; transport models never serialize this value.
+    source_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +182,7 @@ def read_verified_source_range(
         source_content_hash=source_hash,
         source_range=authoritative_range,
         warnings=warnings,
+        source_path=path,
     )
 
 
@@ -537,13 +548,21 @@ def _read_pdf_pages(
     if end > page_count:
         raise SourceRangeReadError("章节页码超出了当前 PDF 的实际页数。")
 
+    bounded_native_text = _extract_pdf_native_text(
+        path,
+        page_start=start,
+        page_end=end,
+    )
     native_units: dict[int, _ReadUnit] = {}
     missing_pages: list[int] = []
     for page_no in range(start, end + 1):
-        try:
-            text = str(reader.pages[page_no - 1].extract_text() or "").strip()
-        except Exception:
-            text = ""
+        if bounded_native_text is not None:
+            text = bounded_native_text.get(page_no, "").strip()
+        else:
+            try:
+                text = str(reader.pages[page_no - 1].extract_text() or "").strip()
+            except Exception:
+                text = ""
         if _has_usable_text(text):
             native_units[page_no] = _ReadUnit(
                 text=text,
@@ -629,6 +648,48 @@ def _read_pdf_pages(
             + ", ".join(str(page) for page in unreadable_pages)
         )
     return units, warnings
+
+
+def _extract_pdf_native_text(
+    path: Path,
+    *,
+    page_start: int,
+    page_end: int,
+) -> dict[int, str] | None:
+    """Use one bounded Poppler call before falling back to per-page pypdf parsing."""
+
+    try:
+        executable = resolve_poppler_root() / "bin" / "pdftotext"
+        completed = subprocess.run(
+            [
+                str(executable),
+                "-f",
+                str(page_start),
+                "-l",
+                str(page_end),
+                "-layout",
+                "-enc",
+                "UTF-8",
+                str(path),
+                "-",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=PDF_NATIVE_TEXT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError, SourceDocumentToolchainError):
+        return None
+    if completed.returncode != 0:
+        return None
+    page_texts = completed.stdout.split("\f")
+    expected_page_count = page_end - page_start + 1
+    if len(page_texts) < expected_page_count:
+        return None
+    return {
+        page_start + offset: page_texts[offset]
+        for offset in range(expected_page_count)
+    }
 
 
 def _merge_pdf_native_units(units: Sequence[_ReadUnit]) -> list[_ReadUnit]:

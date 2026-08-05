@@ -18,6 +18,7 @@ const MAX_ARCHIVE_ENTRY_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
 const MAX_TEXT_LINES_PER_CALL = 500;
 const MAX_PDF_PAGE_SPAN = 32;
+const MAX_PDF_SEARCH_MATCHES = 200;
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -30,9 +31,10 @@ const sourcePath = resolve(workspace, requiredEnvironment("OPENCLASS_PI_SOURCE_F
 const scratchPath = resolve(workspace, requiredEnvironment("OPENCLASS_PI_SOURCE_SCRATCH"));
 const toolboxBin = resolve(requiredEnvironment("OPENCLASS_PI_SOURCE_TOOLBOX_BIN"));
 const inspectionScope = requiredEnvironment("OPENCLASS_PI_SOURCE_INSPECTION_SCOPE");
-if (inspectionScope !== "directory_only" && inspectionScope !== "source" && inspectionScope !== "repository") {
+if (inspectionScope !== "directory_only" && inspectionScope !== "source" && inspectionScope !== "catalog_v2" && inspectionScope !== "catalog_v3" && inspectionScope !== "repository") {
   throw new Error("OpenClass source runtime received an unsupported inspection scope");
 }
+const AGENT_CATALOG_SCHEMA_VERSION = inspectionScope === "catalog_v3" ? "agent_catalog_v3" : "agent_catalog_v2";
 const archivePrefix = (process.env.OPENCLASS_PI_SOURCE_ARCHIVE_PREFIX ?? "").trim().replace(/^\/+|\/+$/g, "");
 if (
   inspectionScope === "repository" &&
@@ -44,8 +46,10 @@ const repositoryReadablePathsFile = inspectionScope === "repository"
   ? requiredEnvironment("OPENCLASS_PI_REPOSITORY_READABLE_PATHS")
   : "";
 const catalogPath = join(scratchPath, "catalog.json");
+const catalogReceiptPath = join(scratchPath, "catalog-receipt.json");
 const catalogHeaderPath = join(scratchPath, "catalog-header.json");
 const catalogNodesPath = join(scratchPath, "catalog-nodes.json");
+const pythonBin = requiredEnvironment("OPENCLASS_PI_PYTHON_BIN");
 
 function assertWorkspacePath(path: string, expectedParent: string): void {
   if (dirname(path) !== expectedParent) {
@@ -55,6 +59,7 @@ function assertWorkspacePath(path: string, expectedParent: string): void {
 
 assertWorkspacePath(sourcePath, workspace);
 assertWorkspacePath(catalogPath, scratchPath);
+assertWorkspacePath(catalogReceiptPath, scratchPath);
 assertWorkspacePath(catalogHeaderPath, scratchPath);
 assertWorkspacePath(catalogNodesPath, scratchPath);
 const repositoryReadablePathsPath = repositoryReadablePathsFile
@@ -63,6 +68,69 @@ const repositoryReadablePathsPath = repositoryReadablePathsFile
 if (repositoryReadablePathsPath) assertWorkspacePath(repositoryReadablePathsPath, workspace);
 
 let catalogMutationQueue: Promise<void> = Promise.resolve();
+let catalogPublished = false;
+
+function conflictResolutionKeys(header: Record<string, unknown>): Set<string> {
+  const result = new Set<string>();
+  const work = Array.isArray(header.remaining_work) ? header.remaining_work : [];
+  for (const item of work) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const typed = item as Record<string, unknown>;
+    if (typed.kind !== "conflict_resolution" || !Array.isArray(typed.node_keys)) continue;
+    for (const key of typed.node_keys) if (typeof key === "string") result.add(key);
+  }
+  return result;
+}
+
+function isVerifiedCatalogNode(node: Record<string, unknown>): boolean {
+  return node.mapping_status === "verified" && Boolean(node.source_range);
+}
+
+async function assertCatalogReadAllowed(
+  tool: "pdf_text" | "pdf_page_image" | "source_range_preview",
+  pageStart?: number,
+  pageEnd?: number,
+): Promise<void> {
+  if (inspectionScope !== "catalog_v3") return;
+  if (catalogPublished) throw new Error("The catalog turn is closed after snapshot publication");
+  const state = await checkpointState();
+  const baselineCitableCount = Number.isInteger(state.header.baseline_citable_count)
+    ? Number(state.header.baseline_citable_count)
+    : 0;
+  if (baselineCitableCount === 0 && state.nodes.some(isVerifiedCatalogNode)) {
+    throw new Error("The first citable node is ready; publish the first snapshot before any further source read");
+  }
+  const work = Array.isArray(state.header.remaining_work)
+    ? state.header.remaining_work.filter(
+        (item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+    : [];
+  if (!work.length) return;
+  const kinds = new Set(work.map((item) => String(item.kind ?? "")));
+  if ([...kinds].every((kind) => kind === "range_mapping")) {
+    throw new Error("range_mapping is mechanical; body-page reads are forbidden after exact locators are retained");
+  }
+  if (tool === "source_range_preview" && !kinds.has("conflict_resolution") && !kinds.has("pagination_calibration")) {
+    throw new Error("source_range_preview requires a persisted conflict or pagination-calibration work item");
+  }
+  if (
+    (tool === "pdf_text" || tool === "pdf_page_image") &&
+    kinds.has("directory_page_attribution") &&
+    !kinds.has("directory_discovery") &&
+    !kinds.has("pagination_calibration") &&
+    !kinds.has("conflict_resolution")
+  ) {
+    const allowedRanges = work
+      .filter((item) => item.kind === "directory_page_attribution" && Array.isArray(item.page_ranges))
+      .flatMap((item) => item.page_ranges as Array<Record<string, unknown>>)
+      .filter((range) => Number.isInteger(range.start) && Number.isInteger(range.end));
+    const first = pageStart ?? 0;
+    const last = pageEnd ?? first;
+    if (!allowedRanges.some((range) => first >= Number(range.start) && last <= Number(range.end))) {
+      throw new Error("directory_page_attribution may read only its declared directory-page ranges");
+    }
+  }
+}
 
 async function withCatalogMutation<T>(operation: () => Promise<T>): Promise<T> {
   const result = catalogMutationQueue.then(operation, operation);
@@ -100,6 +168,135 @@ async function verifiedSourcePath(): Promise<string> {
 function toolPath(name: "pdfinfo" | "pdftotext" | "pdftoppm"): string {
   return join(toolboxBin, name);
 }
+
+const PDF_NAVIGATION_SCRIPT = String.raw`
+import json, sys
+from pypdf import PdfReader
+reader = PdfReader(sys.argv[1])
+start = max(0, int(sys.argv[2]))
+limit = max(1, min(500, int(sys.argv[3])))
+result = []
+def visit(items, level=1):
+    for item in items:
+        if isinstance(item, list):
+            visit(item, level + 1)
+            continue
+        title = str(getattr(item, "title", "") or "").strip()
+        if not title:
+            continue
+        try:
+            page = reader.get_destination_page_number(item) + 1
+        except Exception:
+            page = None
+        result.append({"title": title, "level": level, "page": page})
+visit(getattr(reader, "outline", []) or [])
+items = result[start:start + limit]
+end = start + len(items)
+print(json.dumps({
+    "page_count": len(reader.pages),
+    "total": len(result),
+    "start_index": start,
+    "end_index": end,
+    "complete": end >= len(result),
+    "next_start_index": None if end >= len(result) else end,
+    "items": items,
+}, ensure_ascii=False))
+`;
+
+const PDF_TOC_CANDIDATES_SCRIPT = String.raw`
+import json, re, sys
+from pypdf import PdfReader
+
+reader = PdfReader(sys.argv[1])
+marker_re = re.compile(r"(?:table\s+of\s+contents|contents|\u76ee\s*\u5f55|\u76ee\s*\u6b21)", re.I)
+entry_re = re.compile(r"(?:\.{2,}|\s{2,})(?:[ivxlcdm]+|\d{1,5})\s*$", re.I)
+candidates = []
+for index, page in enumerate(reader.pages):
+    text = page.extract_text() or ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    marker_hits = sum(1 for line in lines if marker_re.search(line))
+    entry_hits = sum(1 for line in lines if entry_re.search(line))
+    score = marker_hits * 20 + min(entry_hits, 20)
+    if marker_hits or entry_hits >= 6:
+        candidates.append({"page": index + 1, "score": score, "marker_hits": marker_hits, "entry_line_hits": entry_hits})
+
+ranges = []
+for item in candidates:
+    if ranges and item["page"] == ranges[-1]["end"] + 1:
+        ranges[-1]["end"] = item["page"]
+        ranges[-1]["max_score"] = max(ranges[-1]["max_score"], item["score"])
+        ranges[-1]["marker_hits"] += item["marker_hits"]
+        ranges[-1]["entry_line_hits"] += item["entry_line_hits"]
+    else:
+        ranges.append({"start": item["page"], "end": item["page"], "max_score": item["score"], "marker_hits": item["marker_hits"], "entry_line_hits": item["entry_line_hits"]})
+print(json.dumps({"page_count": len(reader.pages), "candidate_ranges": ranges[:64], "truncated": len(ranges) > 64}, ensure_ascii=False))
+`;
+
+const EPUB_NAVIGATION_SCRIPT = String.raw`
+import json, sys
+from pathlib import Path
+from app.services.source_directory_extractor import _extract_epub
+
+path = Path(sys.argv[1])
+start = max(0, int(sys.argv[2]))
+limit = max(1, min(100, int(sys.argv[3])))
+result = _extract_epub(path)
+items = []
+for candidate in result.candidates[start:start + limit]:
+    items.append({
+        "key": candidate.local_key,
+        "title": candidate.title,
+        "number": candidate.number,
+        "level": candidate.level,
+        "order_index": candidate.order_index,
+        "source_locator": candidate.source_locator,
+        "mapping_status": candidate.mapping_status,
+        "source_range": candidate.source_range.model_dump(mode="json") if candidate.source_range else None,
+        "evidence": [item.model_dump(mode="json") for item in candidate.evidence],
+        "metadata": candidate.metadata,
+    })
+end = start + len(items)
+print(json.dumps({
+    "total": len(result.candidates),
+    "start_index": start,
+    "end_index": end,
+    "complete": end >= len(result.candidates),
+    "next_start_index": None if end >= len(result.candidates) else end,
+    "items": items,
+    "warnings": list(result.warnings),
+    "metadata": result.metadata,
+}, ensure_ascii=False))
+`;
+
+const SOURCE_RANGE_PREVIEW_SCRIPT = String.raw`
+import json, sys
+from pathlib import Path
+from app.services.source_range_reader import (
+    _read_epub_spine,
+    _read_pdf_pages,
+    _validate_range,
+)
+
+path = Path(sys.argv[1])
+source_range = json.loads(sys.argv[2])
+_validate_range(source_range)
+kind = str(source_range.get("kind") or "")
+warnings = []
+if kind == "epub_spine":
+    units = _read_epub_spine(path, source_range)
+elif kind == "pdf_pages":
+    units, warnings = _read_pdf_pages(path, source_range)
+else:
+    raise ValueError("source_range_preview currently supports pdf_pages and epub_spine")
+text = "\n".join(unit.text for unit in units).strip()
+print(json.dumps({
+    "readable": bool(text),
+    "excerpt": text[:12000],
+    "character_count": len(text),
+    "unit_count": len(units),
+    "warnings": warnings,
+}, ensure_ascii=False))
+`;
 
 async function runTool(executable: string, args: string[], maxBuffer = MAX_TEXT_OUTPUT * 4) {
   const result = await execFileAsync(executable, args, {
@@ -217,26 +414,98 @@ async function readJsonFile(path: string): Promise<unknown> {
 
 async function checkpointState(): Promise<{
   started: boolean;
-  pdf: unknown;
+  header: Record<string, unknown>;
   nodes: Array<Record<string, unknown>>;
 }> {
   try {
-    const pdf = await readJsonFile(catalogHeaderPath);
+    const rawHeader = await readJsonFile(catalogHeaderPath);
     const nodes = await readJsonFile(catalogNodesPath);
+    if (!rawHeader || typeof rawHeader !== "object" || Array.isArray(rawHeader)) {
+      throw new Error("The OpenClass catalog header checkpoint is invalid");
+    }
     if (!Array.isArray(nodes) || nodes.some((node) => !node || typeof node !== "object" || Array.isArray(node))) {
       throw new Error("The OpenClass catalog node checkpoint is invalid");
     }
     return {
       started: true,
-      pdf,
+      header: rawHeader as Record<string, unknown>,
       nodes: nodes as Array<Record<string, unknown>>,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { started: false, pdf: null, nodes: [] };
+      return { started: false, header: {}, nodes: [] };
     }
     throw error;
   }
+}
+
+function validateAgentCatalogNodes(nodes: Array<Record<string, unknown>>): void {
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const node of nodes) {
+    const key = node.key;
+    const parentKey = node.parent_key;
+    const level = node.level;
+    if (typeof key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key) || byKey.has(key)) {
+      throw new Error("A catalog node has an invalid or duplicate key");
+    }
+    if (parentKey !== null && typeof parentKey !== "string") {
+      throw new Error("A catalog parent_key must be a string or null");
+    }
+    if (typeof node.number !== "string" || typeof node.title !== "string" || !node.title.trim()) {
+      throw new Error("A catalog node requires string number and non-empty title fields");
+    }
+    if (!Number.isInteger(level) || (level as number) < 1) {
+      throw new Error("A catalog node requires a positive integer level");
+    }
+    const mappingStatus = node.mapping_status ?? "unmapped";
+    if (mappingStatus !== "unmapped" && mappingStatus !== "verified") {
+      throw new Error("A catalog mapping_status must be verified or unmapped");
+    }
+    if (mappingStatus === "verified" && (!node.source_range || typeof node.source_range !== "object" || Array.isArray(node.source_range))) {
+      throw new Error("A node claimed as verified must include a source_range");
+    }
+    if (inspectionScope === "catalog_v3") {
+      const locatorSource = node.locator_source ?? "unmapped";
+      if (!["native_navigation", "printed_directory", "authored_navigation", "legacy_range", "unmapped"].includes(String(locatorSource))) {
+        throw new Error("An agent_catalog_v3 node has an invalid locator_source");
+      }
+    }
+    byKey.set(key, node);
+  }
+  for (const node of nodes) {
+    const parentKey = node.parent_key as string | null;
+    const level = node.level as number;
+    if (parentKey === null) {
+      if (level !== 1) throw new Error("A root catalog node must use level 1");
+      continue;
+    }
+    const parent = byKey.get(parentKey);
+    if (!parent || parent.level !== level - 1) {
+      throw new Error("Catalog parents must exist and use the immediately preceding level");
+    }
+    const seen = new Set<string>();
+    let cursor: Record<string, unknown> | undefined = node;
+    while (cursor) {
+      const cursorKey = cursor.key as string;
+      if (seen.has(cursorKey)) throw new Error("The catalog parent graph contains a cycle");
+      seen.add(cursorKey);
+      const next = cursor.parent_key;
+      cursor = typeof next === "string" ? byKey.get(next) : undefined;
+    }
+  }
+}
+
+async function recordToolActivity(activity: Record<string, unknown>): Promise<void> {
+  if (inspectionScope !== "catalog_v2" && inspectionScope !== "catalog_v3") return;
+  await withCatalogMutation(async () => {
+    const state = await checkpointState();
+    if (!state.started) return;
+    const previous = Array.isArray(state.header.tool_activity) ? state.header.tool_activity : [];
+    await atomicJsonWrite(catalogHeaderPath, {
+      ...state.header,
+      tool_activity: [...previous.slice(-39), activity],
+    });
+  });
 }
 
 function validateCheckpointNodes(existing: Array<Record<string, unknown>>, additions: Array<Record<string, unknown>>): void {
@@ -336,6 +605,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     }),
     async execute(_id, params) {
       await verifiedSourcePath();
+      await assertCatalogReadAllowed("pdf_text", params.first_page, params.last_page);
       if (params.last_page < params.first_page || params.last_page - params.first_page + 1 > MAX_PDF_PAGE_SPAN) {
         throw new Error(`PDF inspection must cover between 1 and ${MAX_PDF_PAGE_SPAN} pages`);
       }
@@ -350,9 +620,201 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         sourcePath,
         "-",
       ]);
+      await recordToolActivity({ tool: "pdf_text", first_page: params.first_page, last_page: params.last_page });
       return textResult(boundedText(stdout), {
         first_page: params.first_page,
         last_page: params.last_page,
+      });
+    },
+  });
+
+  if (inspectionScope === "source") {
+    pi.registerTool({
+      name: "pdf_search",
+      label: "Search PDF text",
+      description: "Search the PDF text layer for an Agent-chosen phrase and return matching physical pages with short snippets.",
+      parameters: Type.Object({
+        query: Type.String({ minLength: 1, maxLength: 240 }),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_PDF_SEARCH_MATCHES })),
+      }),
+      async execute(_id, params) {
+        await verifiedSourcePath();
+        await assertCatalogReadAllowed("source_range_preview");
+        const query = params.query.trim();
+        if (!query) throw new Error("pdf_search requires visible query text");
+        const { stdout } = await runTool(
+          toolPath("pdftotext"),
+          ["-layout", "-enc", "UTF-8", sourcePath, "-"],
+          64 * 1024 * 1024,
+        );
+        const normalizedQuery = query.toLocaleLowerCase();
+        const limit = params.limit ?? 80;
+        const matches: Array<{ page: number; snippet: string }> = [];
+        const pages = stdout.split("\f");
+        for (let pageIndex = 0; pageIndex < pages.length && matches.length < limit; pageIndex += 1) {
+          const lines = pages[pageIndex].split(/\r?\n/);
+          for (const line of lines) {
+            if (!line.toLocaleLowerCase().includes(normalizedQuery)) continue;
+            matches.push({ page: pageIndex + 1, snippet: line.trim().slice(0, 500) });
+            if (matches.length >= limit) break;
+          }
+        }
+        return textResult(JSON.stringify({ query, matches, truncated: matches.length >= limit }), {
+          query,
+          match_count: matches.length,
+        });
+      },
+    });
+  }
+
+  if (inspectionScope === "catalog_v3") {
+    pi.registerTool({
+      name: "epub_navigation",
+      label: "Read native EPUB navigation",
+      description: "Read one bounded page of authored EPUB NCX/nav entries together with mechanically resolved spine and fragment ranges when available.",
+      parameters: Type.Object({
+        start_index: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+      }),
+      async execute(_id, params) {
+        await verifiedSourcePath();
+        const startIndex = params.start_index ?? 0;
+        const limit = params.limit ?? 100;
+        const { stdout } = await runTool(
+          pythonBin,
+          ["-c", EPUB_NAVIGATION_SCRIPT, sourcePath, String(startIndex), String(limit)],
+          16 * 1024 * 1024,
+        );
+        const result = JSON.parse(stdout) as { total?: number; items?: unknown[]; complete?: boolean };
+        await recordToolActivity({
+          tool: "epub_navigation",
+          start_index: startIndex,
+          item_count: Array.isArray(result.items) ? result.items.length : 0,
+          total: result.total ?? null,
+          complete: result.complete ?? false,
+        });
+        return textResult(boundedText(JSON.stringify(result)), {
+          start_index: startIndex,
+          item_count: Array.isArray(result.items) ? result.items.length : 0,
+          total: result.total ?? null,
+          complete: result.complete ?? false,
+        });
+      },
+    });
+
+    pi.registerTool({
+      name: "source_range_preview",
+      label: "Preview a proposed source range",
+      description: "Read a bounded excerpt from an Agent-proposed pdf_pages or epub_spine range so the Agent can judge whether it supports a catalog node.",
+      parameters: Type.Object({
+        source_range_json: Type.String({ minLength: 2, maxLength: 64 * 1024 }),
+      }),
+      async execute(_id, params) {
+        await verifiedSourcePath();
+        const parsed = JSON.parse(params.source_range_json) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("source_range_json must contain one range object");
+        }
+        const compact = JSON.stringify(parsed);
+        const { stdout } = await runTool(
+          pythonBin,
+          ["-c", SOURCE_RANGE_PREVIEW_SCRIPT, sourcePath, compact],
+          16 * 1024 * 1024,
+        );
+        const result = JSON.parse(stdout) as { readable?: boolean; character_count?: number; unit_count?: number };
+        await recordToolActivity({
+          tool: "source_range_preview",
+          range_kind: String((parsed as Record<string, unknown>).kind ?? ""),
+          readable: result.readable ?? false,
+          character_count: result.character_count ?? 0,
+          unit_count: result.unit_count ?? 0,
+        });
+        return textResult(boundedText(JSON.stringify(result)), {
+          readable: result.readable ?? false,
+          character_count: result.character_count ?? 0,
+          unit_count: result.unit_count ?? 0,
+        });
+      },
+    });
+
+    pi.registerTool({
+      name: "pdf_p_calculate",
+      label: "Calculate a PDF pagination offset",
+      description: "Calculate P = PDF file page - printed page + 1 for Agent-selected anchors and report whether they agree. The Agent decides how to use the result.",
+      parameters: Type.Object({
+        anchors: Type.Array(
+          Type.Object({
+            pdf_file_page: Type.Integer({ minimum: 1 }),
+            printed_page: Type.Integer({ minimum: 1 }),
+          }),
+          { minItems: 1, maxItems: 32 },
+        ),
+      }),
+      async execute(_id, params) {
+        const values = params.anchors.map((anchor) => anchor.pdf_file_page - anchor.printed_page + 1);
+        const uniqueValues = [...new Set(values)];
+        const result = {
+          consistent: uniqueValues.length === 1,
+          page_offset_p: uniqueValues.length === 1 ? uniqueValues[0] : null,
+          values,
+          anchors: params.anchors,
+        };
+        await recordToolActivity({
+          tool: "pdf_p_calculate",
+          anchor_count: params.anchors.length,
+          consistent: result.consistent,
+          page_offset_p: result.page_offset_p,
+        });
+        return textResult(JSON.stringify(result), result);
+      },
+    });
+
+    pi.registerTool({
+      name: "pdf_toc_candidates",
+      label: "Locate directory-page candidates",
+      description: "Mechanically score likely printed-directory pages and return only page ranges and signals, never body text.",
+      parameters: Type.Object({}),
+      async execute() {
+        await verifiedSourcePath();
+        const { stdout } = await runTool(pythonBin, ["-c", PDF_TOC_CANDIDATES_SCRIPT, sourcePath], 8 * 1024 * 1024);
+        const result = JSON.parse(stdout) as { candidate_ranges?: unknown[] };
+        const rangeCount = Array.isArray(result.candidate_ranges) ? result.candidate_ranges.length : 0;
+        await recordToolActivity({ tool: "pdf_toc_candidates", candidate_range_count: rangeCount });
+        return textResult(boundedText(JSON.stringify(result)), { candidate_range_count: rangeCount });
+      },
+    });
+  }
+
+  pi.registerTool({
+    name: "pdf_navigation",
+    label: "Read native PDF navigation",
+    description: "Read a bounded source-order page of native PDF outline/bookmark titles, levels, and physical destinations when present.",
+    parameters: Type.Object({
+      start_index: Type.Optional(Type.Integer({ minimum: 0 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+    }),
+    async execute(_id, params) {
+      await verifiedSourcePath();
+      const startIndex = params.start_index ?? 0;
+      const limit = params.limit ?? 500;
+      const { stdout } = await runTool(
+        pythonBin,
+        ["-c", PDF_NAVIGATION_SCRIPT, sourcePath, String(startIndex), String(limit)],
+        8 * 1024 * 1024,
+      );
+      const navigation = JSON.parse(stdout) as { items?: unknown[]; total?: number; next_start_index?: number | null };
+      const itemCount = Array.isArray(navigation.items) ? navigation.items.length : 0;
+      await recordToolActivity({
+        tool: "pdf_navigation",
+        item_count: itemCount,
+        start_index: startIndex,
+        total: navigation.total ?? itemCount,
+      });
+      return textResult(boundedText(JSON.stringify(navigation)), {
+        item_count: itemCount,
+        start_index: startIndex,
+        total: navigation.total ?? itemCount,
+        next_start_index: navigation.next_start_index ?? null,
       });
     },
   });
@@ -364,6 +826,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     parameters: Type.Object({ page: Type.Integer({ minimum: 1 }) }),
     async execute(_id, params) {
       await verifiedSourcePath();
+      await assertCatalogReadAllowed("pdf_page_image", params.page, params.page);
       const prefix = join(scratchPath, `page-${params.page}-${randomUUID()}`);
       const imagePath = `${prefix}.png`;
       try {
@@ -376,6 +839,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         if (!image.length || image.length > 12 * 1024 * 1024) {
           throw new Error("Rendered PDF page is empty or exceeds the OpenClass image limit");
         }
+        await recordToolActivity({ tool: "pdf_page_image", page: params.page });
         return {
           content: [
             {
@@ -556,6 +1020,26 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute() {
       const state = await checkpointState();
+      const nodesByKey = new Map<string, Record<string, unknown>>();
+      for (const node of state.nodes) {
+        if (typeof node.key === "string") nodesByKey.set(node.key, node);
+      }
+      const openAncestorChain: Array<Record<string, unknown>> = [];
+      const seenAncestorKeys = new Set<string>();
+      let ancestorCursor = state.nodes.at(-1);
+      while (ancestorCursor && openAncestorChain.length < 64) {
+        const key = ancestorCursor.key;
+        if (typeof key !== "string" || seenAncestorKeys.has(key)) break;
+        seenAncestorKeys.add(key);
+        openAncestorChain.unshift({
+          key,
+          parent_key: ancestorCursor.parent_key ?? null,
+          title: ancestorCursor.title ?? "",
+          level: ancestorCursor.level ?? null,
+        });
+        const parentKey = ancestorCursor.parent_key;
+        ancestorCursor = typeof parentKey === "string" ? nodesByKey.get(parentKey) : undefined;
+      }
       return textResult(
         JSON.stringify({
           started: state.started,
@@ -567,9 +1051,197 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
             level: node.level,
             source_locator: node.source_locator,
           })),
-          pdf: state.pdf,
+          open_ancestor_chain: openAncestorChain,
+          schema_version: state.header.schema_version ?? null,
+          phase: state.header.phase ?? null,
+          directory_status: state.header.directory_status ?? null,
+          index_status: state.header.index_status ?? null,
+          work_state: state.header.work_state ?? null,
+          summary: state.header.summary ?? "",
+          next_plan: state.header.next_plan ?? "",
+          next_action: state.header.next_action ?? "",
+          stop_reason: state.header.stop_reason ?? "",
+          completion_reason: state.header.completion_reason ?? "",
+          directory_gaps: Array.isArray(state.header.directory_gaps) ? state.header.directory_gaps : [],
+          remaining_work: Array.isArray(state.header.remaining_work) ? state.header.remaining_work : [],
+          snapshot_reason: state.header.snapshot_reason ?? null,
+          no_progress_turns: state.header.no_progress_turns ?? 0,
+          directory_evidence_count: Array.isArray(state.header.directory_evidence) ? state.header.directory_evidence.length : 0,
+          pagination_regime_count: Array.isArray(state.header.pagination_regimes) ? state.header.pagination_regimes.length : 0,
+          attempted_action_fingerprints: Array.isArray(state.header.attempted_action_fingerprints)
+            ? state.header.attempted_action_fingerprints
+            : [],
+          revision: state.header.revision ?? 0,
+          tool_activity: Array.isArray(state.header.tool_activity) ? state.header.tool_activity.slice(-20) : [],
+          pdf: state.header.pdf ?? null,
         }),
       );
+    },
+  });
+
+  pi.registerTool({
+    name: "catalog_apply",
+    label: "Revise catalog workspace",
+    description: "Atomically add, replace, or remove catalog nodes. Invalid operations leave the previous workspace unchanged.",
+    parameters: Type.Object({
+      operations_json: Type.String({ minLength: 2, maxLength: 4 * 1024 * 1024 }),
+    }),
+    async execute(_id, params) {
+      return withCatalogMutation(async () => {
+        if (catalogPublished) throw new Error("The catalog turn is closed after snapshot publication");
+        const state = await checkpointState();
+        if (!state.started || state.header.schema_version !== AGENT_CATALOG_SCHEMA_VERSION) {
+          throw new Error(`catalog_apply requires an ${AGENT_CATALOG_SCHEMA_VERSION} workspace`);
+        }
+        const rawOperations = JSON.parse(params.operations_json) as unknown;
+        if (!Array.isArray(rawOperations) || !rawOperations.length || rawOperations.length > 500) {
+          throw new Error("operations_json must contain 1-500 catalog operations");
+        }
+        const next = new Map<string, Record<string, unknown>>(
+          state.nodes.map((node) => [String(node.key), node]),
+        );
+        const conflictKeys = conflictResolutionKeys(state.header);
+        for (const rawOperation of rawOperations) {
+          if (!rawOperation || typeof rawOperation !== "object" || Array.isArray(rawOperation)) {
+            throw new Error("Every catalog operation must be an object");
+          }
+          const operation = rawOperation as Record<string, unknown>;
+          const op = operation.op;
+          if (op === "add" || op === "replace") {
+            const node = operation.node;
+            if (!node || typeof node !== "object" || Array.isArray(node)) {
+              throw new Error(`${op} requires one node object`);
+            }
+            const typedNode = node as Record<string, unknown>;
+            const key = typedNode.key;
+            if (typeof key !== "string") throw new Error(`${op} requires a node key`);
+            if (op === "add" && next.has(key)) throw new Error(`add cannot overwrite existing key ${key}`);
+            if (op === "replace" && !next.has(key)) throw new Error(`replace cannot find key ${key}`);
+            const previousNode = next.get(key);
+            if (
+              op === "replace" &&
+              previousNode &&
+              isVerifiedCatalogNode(previousNode) &&
+              !conflictKeys.has(key) &&
+              JSON.stringify(previousNode) !== JSON.stringify(typedNode)
+            ) {
+              throw new Error(`verified node ${key} is frozen until a conflict-resolution work item is published`);
+            }
+            next.set(key, typedNode);
+          } else if (op === "remove") {
+            const key = operation.key;
+            const previousNode = typeof key === "string" ? next.get(key) : undefined;
+            if (previousNode && isVerifiedCatalogNode(previousNode) && !conflictKeys.has(String(key))) {
+              throw new Error(`verified node ${String(key)} is frozen until a conflict-resolution work item is published`);
+            }
+            if (typeof key !== "string" || !next.delete(key)) {
+              throw new Error("remove requires an existing key");
+            }
+          } else {
+            throw new Error("A catalog operation op must be add, replace, or remove");
+          }
+        }
+        const nodes = [...next.values()];
+        validateAgentCatalogNodes(nodes);
+        await atomicJsonWrite(catalogNodesPath, nodes);
+        return textResult(JSON.stringify({ applied: rawOperations.length, node_count: nodes.length }));
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "catalog_publish_snapshot",
+    label: "Publish catalog snapshot",
+    description: "Atomically publish the current usable catalog snapshot. Publishing working does not mean the investigation is complete.",
+    parameters: Type.Object({
+      work_state: Type.Union([Type.Literal("working"), Type.Literal("paused"), Type.Literal("satisfied"), Type.Literal("partial")]),
+      summary: Type.String({ maxLength: 4_096 }),
+      next_plan: Type.String({ maxLength: 4_096 }),
+      stop_reason: Type.String({ maxLength: 4_096 }),
+      v3_state_json: Type.Optional(Type.String({ minLength: 2, maxLength: 4 * 1024 * 1024 })),
+    }),
+    async execute(_id, params) {
+      return withCatalogMutation(async () => {
+        if (catalogPublished) throw new Error("Only one catalog snapshot may be published per turn");
+        const state = await checkpointState();
+        if (!state.started || state.header.schema_version !== AGENT_CATALOG_SCHEMA_VERSION) {
+          throw new Error(`catalog_publish_snapshot requires an ${AGENT_CATALOG_SCHEMA_VERSION} workspace`);
+        }
+        validateAgentCatalogNodes(state.nodes);
+        const orderedNodes = parentConsistentPreorder(state.nodes);
+        const revision = Number.isInteger(state.header.revision) ? Number(state.header.revision) + 1 : 1;
+        let v3State: Record<string, unknown> = {};
+        if (inspectionScope === "catalog_v3") {
+          if (!params.v3_state_json) {
+            throw new Error("agent_catalog_v3 publication requires v3_state_json");
+          }
+          const parsed = JSON.parse(params.v3_state_json) as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("v3_state_json must contain one JSON object");
+          }
+          v3State = parsed as Record<string, unknown>;
+          if (v3State.schema_version !== AGENT_CATALOG_SCHEMA_VERSION || v3State.work_state !== params.work_state) {
+            throw new Error("v3_state_json schema_version and work_state must match the publication arguments");
+          }
+          if ("nodes" in v3State) {
+            throw new Error("v3_state_json must not contain nodes; publish the retained workspace nodes");
+          }
+        }
+        const header = {
+          ...state.header,
+          ...v3State,
+          schema_version: AGENT_CATALOG_SCHEMA_VERSION,
+          work_state: params.work_state,
+          summary: params.summary.trim(),
+          next_plan: params.next_plan.trim(),
+          stop_reason: params.stop_reason.trim(),
+          revision,
+        };
+        await atomicJsonWrite(catalogHeaderPath, header);
+        const artifact = inspectionScope === "catalog_v3"
+          ? {
+              schema_version: AGENT_CATALOG_SCHEMA_VERSION,
+              phase: v3State.phase,
+              directory_status: v3State.directory_status,
+              index_status: v3State.index_status,
+              work_state: params.work_state,
+              summary: params.summary.trim(),
+              next_plan: params.next_plan.trim(),
+              next_action: v3State.next_action,
+              stop_reason: params.stop_reason.trim(),
+              completion_reason: v3State.completion_reason,
+              directory_gaps: v3State.directory_gaps,
+              remaining_work: v3State.remaining_work ?? [],
+              snapshot_reason: v3State.snapshot_reason ?? "budget_increment",
+              progress_fingerprint: v3State.progress_fingerprint ?? "",
+              no_progress_turns: v3State.no_progress_turns ?? 0,
+              directory_evidence: v3State.directory_evidence,
+              directory_page_ranges: v3State.directory_page_ranges,
+              pagination_regimes: v3State.pagination_regimes,
+              attempted_action_fingerprints: v3State.attempted_action_fingerprints,
+              nodes: orderedNodes,
+            }
+          : {
+              schema_version: AGENT_CATALOG_SCHEMA_VERSION,
+              work_state: params.work_state,
+              summary: params.summary.trim(),
+              next_plan: params.next_plan.trim(),
+              stop_reason: params.stop_reason.trim(),
+              nodes: orderedNodes,
+            };
+        const bytes = await atomicJsonWrite(catalogPath, artifact);
+        const receipt = {
+          artifact_path: "scratch/catalog.json",
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          byte_count: bytes.length,
+          node_count: orderedNodes.length,
+          revision,
+          work_state: params.work_state,
+        };
+        await atomicJsonWrite(catalogReceiptPath, receipt);
+        catalogPublished = true;
+        return textResult(JSON.stringify(receipt), receipt);
+      });
     },
   });
 
@@ -590,7 +1262,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         if (pdf !== null && (!pdf || typeof pdf !== "object" || Array.isArray(pdf))) {
           throw new Error("pdf_json must contain one PDF task object or null");
         }
-        await atomicJsonWrite(catalogHeaderPath, pdf);
+        await atomicJsonWrite(catalogHeaderPath, { pdf });
         await atomicJsonWrite(catalogNodesPath, []);
         return textResult(JSON.stringify({ started: true, node_count: 0 }));
       });
@@ -639,7 +1311,7 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
           throw new Error("A non-empty catalog checkpoint is required before final submission");
         }
         const orderedNodes = parentConsistentPreorder(state.nodes);
-        const artifact = inspectionScope === "directory_only" ? { complete: true, pdf: state.pdf, nodes: orderedNodes } : { complete: true, nodes: orderedNodes };
+        const artifact = inspectionScope === "directory_only" ? { complete: true, pdf: state.header.pdf ?? null, nodes: orderedNodes } : { complete: true, nodes: orderedNodes };
         const bytes = await atomicJsonWrite(catalogPath, artifact);
         const receipt = {
           artifact_path: "scratch/catalog.json",

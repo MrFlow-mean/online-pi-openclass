@@ -23,6 +23,14 @@ export type ExecutedNeedSnapshot =
       commit: CommitRecord;
     };
 
+export type GenerationFailureSnapshot = {
+  commit: CommitRecord;
+  reason: string;
+};
+
+const DEFAULT_GENERATION_FAILURE_REASON =
+  "Board generation did not finish. The confirmed learning requirements were retained and can be retried.";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -93,8 +101,8 @@ function executedRequirementClarity(
 ): LearningClarificationStatus {
   return {
     progress: 100,
-    label: "已被执行",
-    reason: clarity?.reason || "这份学习需求清单已经被用于生成板书。",
+    label: "has been executed",
+    reason: clarity?.reason || "This list of learning needs has been used to generate board content.",
     missing_items: [],
     can_start: true,
     forced_start: clarity?.forced_start === true,
@@ -143,6 +151,42 @@ export function latestExecutedNeedSnapshot(
       clarityStatus: executedRequirementClarity(requirementSheet, clarity),
       commit,
     };
+  }
+
+  return null;
+}
+
+export function latestGenerationFailureSnapshot(
+  lesson: Lesson,
+  targetCommitId: string | null
+): GenerationFailureSnapshot | null {
+  const targetCommit = getLessonCommit(lesson, targetCommitId) ?? lesson.history_graph.commits.at(-1) ?? null;
+  const commits = lineageCommitsNewestFirst(lesson, targetCommit?.id ?? null);
+
+  for (const commit of commits) {
+    const metadata = commit.metadata ?? {};
+    if (metadata.kind === "board_document_generation" && metadata.requirement_cleared === true) {
+      return null;
+    }
+    if (metadata.kind === "learning_requirement_generation_failed") {
+      const reason = metadata.generation_failure_reason;
+      return {
+        commit,
+        reason:
+          typeof reason === "string" && reason.trim()
+            ? reason.trim()
+            : DEFAULT_GENERATION_FAILURE_REASON,
+      };
+    }
+    if (
+      metadata.kind === "learning_requirement_completed" ||
+      metadata.kind === "learning_requirement_forced_ready" ||
+      metadata.kind === "learning_requirement_frozen" ||
+      metadata.kind === "learning_requirement_forced_frozen" ||
+      (metadata.kind === "learning_requirement_refinement" && metadata.requirement_changed === true)
+    ) {
+      return null;
+    }
   }
 
   return null;

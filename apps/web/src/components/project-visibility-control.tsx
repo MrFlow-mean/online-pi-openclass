@@ -29,12 +29,12 @@ export function ProjectVisibilityControl({
   onChange,
   disabled = false,
   compact = false,
-  label = "可见权限",
+  label = "Visible permissions",
   ariaLabelPrefix,
   review,
   reviewing = false,
 }: ProjectVisibilityControlProps) {
-  const buttonLabel = reviewing ? "AI 审查中" : compact ? "上传" : "上传课程";
+  const buttonLabel = reviewing ? "AI under review" : compact ? "upload" : "Upload course";
   const uploadButton = (
     <button
       type="button"
@@ -65,13 +65,13 @@ export function ProjectVisibilityControl({
     <div className="px-2 py-1.5">
       <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-stone-500">
         <UploadCloud className="h-3.5 w-3.5" />
-        {label === "可见权限" || label === "Visibility" ? "课程发布" : label}
+        {label === "可见权限" || label === "Visibility" ? "Course release" : label}
       </div>
       {uploadButton}
       <p className="mt-2 text-[10px] leading-4 text-stone-500">
         {visibility === "public"
-          ? "当前公开版本保持不变；再次上传后才会更新。"
-          : "上传当前版本；后续编辑不会自动更新公开课程。"}
+          ? "The current public version remains unchanged; it will not be updated until it is uploaded again."
+          : "Upload the current version; subsequent edits will not automatically update the public course."}
       </p>
       <PublicationReviewNotice review={review} reviewing={reviewing} />
     </div>
@@ -89,7 +89,8 @@ export function PublicationReviewNotice({
     return (
       <div className="mt-2 flex items-start gap-2 rounded-xl bg-blue-50 px-2.5 py-2 text-[11px] leading-4 text-blue-700">
         <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-        AI 正在核对课程实际引用资料的非正文范围。审查通过后才会生成新的公开版本。
+
+        AI is checking the non-text range of material actually cited in the course. A new public version will be generated after passing the review.
       </div>
     );
   }
@@ -100,7 +101,7 @@ export function PublicationReviewNotice({
     return (
       <div className="mt-2 flex items-start gap-2 rounded-xl bg-emerald-50 px-2.5 py-2 text-[11px] leading-4 text-emerald-700">
         <CircleCheckBig className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        {review.message || "资料发布审查已通过。"}
+        {review.message || "The data release review has been passed."}
       </div>
     );
   }
@@ -109,7 +110,7 @@ export function PublicationReviewNotice({
     <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-2 text-[11px] leading-4 text-rose-700">
       <div className="flex items-start gap-2 font-semibold">
         <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        <span>{review.message || "资料发布审查未通过，课程保持 Private。"}</span>
+        <span>{review.message || "The source review did not pass, so the course remains private."}</span>
       </div>
       {finding ? (
         <div className="mt-1.5 border-l-2 border-rose-200 pl-2 font-normal">

@@ -11,11 +11,20 @@ from time import perf_counter
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from app.models import AgentActivityEvent, ChatRequest, ChatResponse, UserView, new_id, now_iso
+from app.models import (
+    AgentActivityEvent,
+    ChatCancellationRequest,
+    ChatRequest,
+    ChatResponse,
+    UserView,
+    new_id,
+    now_iso,
+)
 from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.chat_service import process_chat_on_lesson
+from app.services.chat_stream_cancellation import chat_stream_cancellation_registry
 from app.services.codex_app_server import CodexTurnCancelledError
 
 router = APIRouter()
@@ -100,7 +109,15 @@ def _document_delta_chunks(document_text: str) -> Iterator[str]:
 
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
     events: queue.Queue[tuple[str, object] | None] = queue.Queue()
-    cancel_event = threading.Event()
+    consumer_connected = threading.Event()
+    consumer_connected.set()
+    cancellation_handle = chat_stream_cancellation_registry.register(
+        user_id=user_id,
+        lesson_id=lesson_id,
+        session_id=request.session_id,
+        input_event_id=request.input_event_id,
+    )
+    cancel_event = cancellation_handle.event
     state = ChatStreamState(
         trace_id=new_id("chat"),
         lesson_id=lesson_id,
@@ -112,7 +129,8 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
     emitted_activity_payloads: dict[str, str] = {}
 
     def emit(event: str, data: object) -> None:
-        events.put((event, data))
+        if consumer_connected.is_set():
+            events.put((event, data))
 
     def log_first_delta_once(
         *,
@@ -141,7 +159,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
 
     def emit_codex_delta(delta: str) -> None:
         nonlocal chat_delta_emitted
-        if not delta:
+        if not delta or not consumer_connected.is_set():
             return
         state.last_phase = "codex"
         log_first_delta_once(metric="chat", role="codex", field="agent_message")
@@ -165,8 +183,21 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         emitted_activity_payloads[event.id] = serialized
         emit("agent_activity", payload)
 
+    def emit_document_commit(document_text: str, commit_id: str) -> None:
+        nonlocal document_delta_emitted
+        state.produced_commit_id = commit_id
+        if document_delta_emitted or not document_text or not consumer_connected.is_set():
+            return
+        state.last_phase = "board_committed"
+        log_first_delta_once(metric="document", role="codex", field="board.md")
+        for delta in _document_delta_chunks(document_text):
+            emit("document_delta", {"delta": delta})
+        document_delta_emitted = True
+
     def emit_missing_visible_deltas(response: ChatResponse) -> None:
         nonlocal chat_delta_emitted, document_delta_emitted
+        if not consumer_connected.is_set():
+            return
         if not chat_delta_emitted and response.chatbot_message:
             log_first_delta_once(metric="chat", role="codex", field="agent_message")
             emit("chat_delta", {"delta": response.chatbot_message})
@@ -203,6 +234,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                     on_delta=emit_codex_delta,
                     on_requirement_update=emit_requirement_update,
                     on_agent_activity=emit_agent_activity_event,
+                    on_document_commit=emit_document_commit,
                     is_cancelled=cancel_event.is_set,
                 )
                 state.process_returned_ms = _elapsed_ms_since(state.started_at)
@@ -218,7 +250,9 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 emit("final", response.model_dump(mode="json"))
                 _log_stream_lifecycle(
                     state,
-                    "stream_final_sent",
+                    "stream_final_sent"
+                    if consumer_connected.is_set()
+                    else "background_process_completed",
                     elapsed_ms=_elapsed_ms_since(state.started_at),
                 )
             except CodexTurnCancelledError:
@@ -237,6 +271,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                     error_message=str(exc),
                 )
             finally:
+                chat_stream_cancellation_registry.release(cancellation_handle)
                 events.put(None)
 
     worker = threading.Thread(target=run, daemon=True)
@@ -257,11 +292,11 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             if event == "document_delta" and CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS > 0:
                 time.sleep(CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS)
     finally:
+        consumer_connected.clear()
         if not state.final_yielded and not state.error_enqueued:
-            cancel_event.set()
             _log_stream_lifecycle(
                 state,
-                "stream_disconnected_or_no_final",
+                "stream_disconnected_background_continues",
                 elapsed_ms=_elapsed_ms_since(state.started_at),
             )
 
@@ -312,3 +347,49 @@ def stream_chat_on_lesson(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/api/lessons/{lesson_id}/chat/cancel")
+def cancel_stream_chat_on_lesson(
+    lesson_id: str,
+    request: ChatCancellationRequest,
+    user: UserView = Depends(current_user),
+) -> dict[str, object]:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.find_lesson_package(workspace, lesson_id)
+    active = chat_stream_cancellation_registry.cancel(
+        user_id=user.id,
+        lesson_id=lesson_id,
+        session_id=request.session_id,
+        input_event_id=request.input_event_id,
+    )
+    ai_usage_logger.log_event(
+        "chat_stream_explicit_cancel_requested",
+        lesson_id=lesson_id,
+        user_id=user.id,
+        session_id=request.session_id,
+        input_event_id=request.input_event_id,
+        active=active,
+    )
+    return {"status": "cancel_requested", "active": active}
+
+
+@router.get("/api/lessons/{lesson_id}/chat/status")
+def stream_chat_status_on_lesson(
+    lesson_id: str,
+    session_id: str = Query(min_length=1, max_length=160),
+    input_event_id: str = Query(min_length=1, max_length=200),
+    user: UserView = Depends(current_user),
+) -> dict[str, object]:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.find_lesson_package(workspace, lesson_id)
+    return {
+        "status": "running"
+        if chat_stream_cancellation_registry.is_active(
+            user_id=user.id,
+            lesson_id=lesson_id,
+            session_id=session_id,
+            input_event_id=input_event_id,
+        )
+        else "finished",
+    }

@@ -22,9 +22,9 @@ import {
 type TrendWindow = "today" | "week" | "month";
 
 const trendWindows: Array<{ id: TrendWindow; label: string; days: number }> = [
-  { id: "today", label: "今日", days: 1 },
-  { id: "week", label: "本周", days: 7 },
-  { id: "month", label: "本月", days: 31 },
+  { id: "today", label: "today", days: 1 },
+  { id: "week", label: "this week", days: 7 },
+  { id: "month", label: "this month", days: 31 },
 ];
 
 function isWithinDays(value: string | null | undefined, days: number) {
@@ -64,7 +64,7 @@ export function TrendingCourses() {
       .then(setCourses)
       .catch((loadError: unknown) => {
         if (!controller.signal.aborted) {
-          setError(loadError instanceof Error ? loadError.message : "暂时无法载入热门课程。");
+          setError(loadError instanceof Error ? loadError.message : "Popular courses cannot be loaded at the moment.");
         }
       })
       .finally(() => {
@@ -81,7 +81,7 @@ export function TrendingCourses() {
       course.tags.forEach((tag) => counts.set(tag, (counts.get(tag) ?? 0) + 1));
     });
     return Array.from(counts, ([tag, count]) => ({ tag, count }))
-      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag, "zh-CN"))
+      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag, "en-US"))
       .slice(0, 12);
   }, [courses]);
   const selectedWindow = trendWindows.find((item) => item.id === trendWindow) ?? trendWindows[2];
@@ -106,14 +106,16 @@ export function TrendingCourses() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            返回开放课堂
+
+            Return to OpenClass
           </Link>
           <Link
             href="/profile?tab=stars"
             className="inline-flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700"
           >
             <Star className="h-4 w-4" />
-            我的 Stars
+
+            My Stars
           </Link>
         </div>
       </header>
@@ -122,7 +124,8 @@ export function TrendingCourses() {
         <aside className="h-fit rounded-xl border border-stone-200 bg-white p-4 lg:sticky lg:top-24">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Flame className="h-4 w-4 text-orange-600" />
-            热门范围
+
+            Popular range
           </div>
           <div className="mt-4 grid grid-cols-3 gap-1 rounded-lg bg-stone-100 p-1">
             {trendWindows.map((item) => (
@@ -149,7 +152,7 @@ export function TrendingCourses() {
                 selectedTag === "all" ? "bg-stone-950 text-white" : "text-stone-600 hover:bg-stone-50",
               )}
             >
-              <span>全部主题</span>
+              <span>All topics</span>
               <span>{courses.length}</span>
             </button>
             <div className="mt-1 space-y-1">
@@ -177,17 +180,19 @@ export function TrendingCourses() {
               <div>
                 <p className="flex items-center gap-2 text-sm font-semibold text-orange-600">
                   <Flame className="h-4 w-4" />
-                  真实公开课程
+
+                  Real public courses
                 </p>
-                <h1 className="mt-2 text-3xl font-semibold tracking-tight">热门项目</h1>
+                <h1 className="mt-2 text-3xl font-semibold tracking-tight">Popular items</h1>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-600">
-                  按真实 Stars 收藏数量与最近更新排序。详情进入公开项目页，下载会建立私有可编辑副本。
+
+                  Sort by number of real Stars collections and recent updates. Go to the public project page for details, and a private editable copy will be created when downloading.
                 </p>
               </div>
               <div className="grid grid-cols-3 gap-2">
-                <Metric label="项目" value={visibleCourses.length} Icon={BookOpen} />
+                <Metric label="project" value={visibleCourses.length} Icon={BookOpen} />
                 <Metric label="Stars" value={totalStars} Icon={Star} />
-                <Metric label="作者" value={authorCount} Icon={UsersRound} />
+                <Metric label="author" value={authorCount} Icon={UsersRound} />
               </div>
             </div>
             <div className="relative mt-6">
@@ -195,7 +200,7 @@ export function TrendingCourses() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索课程、作者或主题"
+                placeholder="Search for courses, authors or topics"
                 className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-4 text-sm outline-none focus:border-stone-950"
               />
             </div>
@@ -204,7 +209,8 @@ export function TrendingCourses() {
           {isLoading ? (
             <div className="mt-5 flex items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white py-16 text-sm text-stone-500">
               <LoaderCircle className="h-5 w-5 animate-spin" />
-              正在载入真实热门课程…
+
+              Loading real popular courses...
             </div>
           ) : error ? (
             <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
@@ -223,7 +229,8 @@ export function TrendingCourses() {
             </div>
           ) : (
             <div className="mt-5 rounded-xl border border-dashed border-stone-300 bg-white/70 px-5 py-12 text-center text-sm text-stone-500">
-              当前范围内没有匹配的公开课程。
+
+              There are no matching public courses in the current scope.
             </div>
           )}
         </section>

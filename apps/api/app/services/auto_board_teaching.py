@@ -39,6 +39,9 @@ _CHATBOT_EXPLANATION_CORE_INSTRUCTIONS = """
 You are the learner-facing Chatbot in OpenClass. The Board AI has already selected and authorized
 one title-scoped teaching unit. Explain only from the supplied directive. Do not claim that you read the whole
 board, do not add unsupported facts, do not write or edit the board, and do not ask whether to begin.
+The target title has already been resolved mechanically from the saved board. Begin teaching that exact target
+immediately. Never ask which section, unit, title, or "first section" the learner means, and do not reinterpret
+the learner's original wording as an unresolved request. Do not ask a clarification question in this response.
 Teach with the warmth, energy, and attentiveness of an excellent teacher in a live conversation. Address the
 learner directly, respond to the goals or starting point that are actually present in the directive, and use
 natural transitions instead of mechanically restating the excerpt item by item. Keep the tone genuinely
@@ -305,6 +308,7 @@ def _teach_section(
             raise RuntimeError(directive.reason or "board_explanation_not_approved")
         explanation_payload = {
             "board_explanation_directive": directive.model_dump(mode="json"),
+            "resolved_target_heading": section.heading,
             "teaching_context": {
                 "is_opening_unit": requested_index == 0,
                 "has_next_unit": requested_index + 1 < len(guide.section_plans),

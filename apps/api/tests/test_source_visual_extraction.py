@@ -103,6 +103,78 @@ def test_pdf_extractor_rejects_full_page_scan_layer_but_keeps_real_figure(
     assert image_visuals[0].metadata["embedded_component_count"] == 1
 
 
+def test_pdf_extractor_reads_only_the_requested_inclusive_page_window(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "three-pages.pdf"
+    figure = ImageReader(io.BytesIO(_png(180, 100, label="scoped figure")))
+    pdf = canvas.Canvas(str(path), pagesize=(600, 800))
+    for page_no in range(1, 4):
+        pdf.drawImage(figure, 180, 420, width=180, height=100)
+        pdf.drawString(180, 400, f"Figure {page_no}: teaching visual")
+        pdf.showPage()
+    pdf.save()
+
+    progress: list[tuple[int, int]] = []
+    result = extract_pdf_visuals(
+        path,
+        page_start=2,
+        page_end=2,
+        progress_callback=lambda current, total: progress.append((current, total)),
+    )
+
+    assert result.visuals
+    assert {visual.page_no for visual in result.visuals} == {2}
+    assert progress == [(0, 1), (1, 1)]
+
+
+def test_verified_csv_scope_slices_rows_and_marks_exact_chapter_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    path = tmp_path / "metrics.csv"
+    path.write_text("name,value\nalpha,1\nbeta,2\ngamma,3\n", encoding="utf-8")
+    record = _record(path, mime_type="text/csv")
+    structure = SourceStructure(
+        id="structure_scoped_csv",
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        status="ready",
+    )
+    chapter = SourceChapter(
+        id="chapter_scoped_csv",
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        title="Selected rows",
+        mapping_status="verified",
+    )
+
+    result = SourceVisualExtractor().extract_verified_scope(
+        record=record,
+        path=path,
+        structure=structure,
+        chapter=chapter,
+        source_range={
+            "kind": "sheet_rows",
+            "start": 2,
+            "end": 3,
+            "container": "",
+            "end_inclusive": True,
+        },
+        scope_cache_key="scope-key",
+    )
+
+    assert result.status == "ready"
+    assert len(result.visuals) == 1
+    assert result.visuals[0].table_data == [["alpha", "1"], ["beta", "2"]]
+    assert result.visuals[0].chapter_id == chapter.id
+    assert result.visuals[0].anchor_status == "verified"
+    assert result.visuals[0].metadata["scope_cache_key"] == "scope-key"
+
+
 def test_pdf_extractor_crops_caption_anchored_visual_baked_into_page_scan(
     tmp_path: Path,
 ) -> None:
@@ -827,6 +899,83 @@ def test_visual_scope_uses_exclusive_page_end(tmp_path: Path) -> None:
 
     assert [item.visual_id for item in selected] == ["visual_page_4"]
     assert [item.order_index for item in selected] == [4]
+
+
+def test_scoped_visual_upsert_preserves_catalog_and_reads_by_cache_key(
+    tmp_path: Path,
+) -> None:
+    store = SourceStructureStore(tmp_path / "scoped-cache.sqlite3")
+    structure = SourceStructure(
+        id="structure_scoped_cache",
+        owner_user_id="owner_scoped_cache",
+        package_id="package_scoped_cache",
+        source_ingestion_id="source_scoped_cache",
+        status="ready",
+    )
+    chapter = SourceChapter(
+        id="chapter_scoped_cache",
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_ingestion_id=structure.source_ingestion_id,
+        title="Chapter",
+        order_index=1,
+        mapping_status="verified",
+    )
+    store.save_structure_bundle(
+        structure=structure,
+        chapters=[chapter],
+        chunks=[],
+        visuals=[],
+    )
+    visual = SourceVisualAsset(
+        id="visual_scoped_cache",
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_ingestion_id=structure.source_ingestion_id,
+        structure_id=structure.id,
+        structure_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+        chapter_id=chapter.id,
+        kind="table",
+        anchor_status="verified",
+        table_data=[["metric", "value"]],
+        content_hash="table-hash",
+        position_hash="position-hash",
+        metadata={"scope_cache_key": "cache-a", "source_range_verified": True},
+    )
+
+    store.upsert_scoped_visuals([visual])
+    store.mark_scoped_visual_cache_complete(
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_ingestion_id=structure.source_ingestion_id,
+        scope_cache_key="cache-a",
+    )
+
+    cached = store.scoped_visual_evidence(
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_ingestion_id=structure.source_ingestion_id,
+        chapter_id=chapter.id,
+        scope_cache_key="cache-a",
+    )
+    assert [item.visual_id for item in cached] == [visual.id]
+    assert store.scoped_visual_cache_complete(
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_ingestion_id=structure.source_ingestion_id,
+        scope_cache_key="cache-a",
+    )
+    assert store.get_structure(
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_id=structure.source_ingestion_id,
+    ).visual_count == 1
+    assert store.get_catalog_chapter(
+        owner_user_id=structure.owner_user_id,
+        package_id=structure.package_id,
+        source_id=structure.source_ingestion_id,
+        chapter_id=chapter.id,
+    ) is not None
 
 
 def test_visual_cleanup_does_not_delete_an_inflight_staged_blob(

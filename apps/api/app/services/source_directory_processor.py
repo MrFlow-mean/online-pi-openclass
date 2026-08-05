@@ -20,11 +20,21 @@ from app.models import (
     SourceRange,
     SourceStructure,
     SourceStructureQuality,
+    new_id,
     now_iso,
 )
 from app.services.codex_app_server import CodexAppServerTextClient
+from app.services.ai_logging import ai_usage_logger
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_catalog import (
+    AgentCatalogDirectoryEvidence,
+    AgentCatalogV3,
+    AgentCatalogV3Node,
+    CodexDirectCatalogEvidence,
+    CodexDirectSourceRange,
+    _generate_complete_native_pdf_catalog,
+    coerce_agent_catalog_v3_checkpoint,
+    generate_agent_catalog_turn,
     generate_codex_direct_catalog,
 )
 from app.services.source_directory_extractor import (
@@ -39,6 +49,10 @@ from app.services.source_structure_store import (
 )
 
 CATALOG_SCHEMA_VERSION = "codex_directory_v1"
+PREVIOUS_CATALOG_SCHEMA_VERSION = "agent_catalog_v3"
+LEGACY_CATALOG_SCHEMA_VERSION = "agent_catalog_v2"
+NATIVE_EPUB_CATALOG_SCHEMA_VERSION = "native_epub_navigation_v1"
+AUTONOMOUS_CATALOG_BUDGET_SECONDS = 15 * 60
 MAX_CODEX_BATCH_NODES = 120
 MAX_CODEX_BATCH_CHARS = 48_000
 NORMALIZATION_PROGRESS_START = 64
@@ -190,6 +204,7 @@ class SourceDirectoryProcessor:
         catalog_model: AIModelSelection,
         progress_callback: CatalogProgressCallback | None = None,
         activity_callback: Callable[[AgentActivityEvent], None] | None = None,
+        resume_catalog: bool = False,
     ) -> SourceStructure:
         started = time.perf_counter()
         metadata_hash = str(record.metadata.get("content_hash") or "").strip()
@@ -207,6 +222,9 @@ class SourceDirectoryProcessor:
                 "catalog_schema_version": CATALOG_SCHEMA_VERSION,
                 "catalog_model_selection": catalog_model.model_dump(mode="json"),
                 "source_content_hash": content_hash,
+                "active_catalog_run_id": str(
+                    record.metadata.get("active_catalog_run_id") or ""
+                ),
                 "no_full_text_index": True,
             },
         )
@@ -225,56 +243,47 @@ class SourceDirectoryProcessor:
             has_authoritative_ranges = False
 
             if self.normalizer_factory is None:
-                # The production catalog path has exactly one semantic owner:
-                # Pi owns directory and bounded range investigation. The host
-                # mechanically validates and persists its exact typed artifact.
-                _report(progress_callback, "source_codex_investigation", 30)
-                direct_catalog = generate_codex_direct_catalog(
+                native_epub_extraction = self._complete_native_epub_extraction(
+                    record=record,
+                    path=path,
+                    progress_callback=progress_callback,
+                )
+                if native_epub_extraction is not None:
+                    return self._publish_native_epub_catalog(
+                        record=record,
+                        path=path,
+                        content_hash=content_hash,
+                        extraction=native_epub_extraction,
+                        run=run,
+                        started=started,
+                        progress_callback=progress_callback,
+                    )
+                if _generate_complete_native_pdf_catalog(
                     record=record,
                     source_path=path,
                     source_content_hash=content_hash,
-                    selection=catalog_model,
                     on_activity=activity_callback,
-                )
-                chapters = list(direct_catalog.chapters)
-                execution_metadata = dict(direct_catalog.audit_metadata)
-                stage_history = [*run.stage_history, "source_codex_investigation"]
-                has_authoritative_ranges = any(
-                    chapter.mapping_status == "verified"
-                    and chapter.range is not None
-                    and chapter.catalog_evidence
-                    for chapter in chapters
-                )
-                stage_history.append("directory_and_ranges_verified")
-                run = self.store.save_catalog_run(
-                    run.model_copy(
-                        update={
-                            "stage_history": stage_history,
-                            "metadata": {**run.metadata, **execution_metadata},
-                        }
+                ) is not None:
+                    return self._process_july24_catalog(
+                        record=record,
+                        path=path,
+                        content_hash=content_hash,
+                        catalog_model=catalog_model,
+                        run=run,
+                        started=started,
+                        progress_callback=progress_callback,
+                        activity_callback=activity_callback,
                     )
-                )
-                turn_count = direct_catalog.turn_count
-                warnings = []
-                if not chapters:
-                    warnings.append("The source agent returned an empty directory list.")
-                catalog_complete = True
-                structure_execution_metadata = {
-                    key: value
-                    for key, value in execution_metadata.items()
-                    if key
-                    not in {
-                        "codex_directory_payload",
-                        "codex_raw_output",
-                    }
-                }
-                run = self.store.save_catalog_run(
-                    run.model_copy(
-                        update={
-                            "stage_history": stage_history,
-                            "metadata": {**run.metadata, **execution_metadata},
-                        }
-                    )
+                return self._process_agent_catalog(
+                    record=record,
+                    path=path,
+                    content_hash=content_hash,
+                    catalog_model=catalog_model,
+                    run=run,
+                    started=started,
+                    progress_callback=progress_callback,
+                    activity_callback=activity_callback,
+                    resume_catalog=resume_catalog,
                 )
             else:
                 # Compatibility seam for legacy unit tests that explicitly
@@ -437,6 +446,884 @@ class SourceDirectoryProcessor:
             if isinstance(exc, SourceDirectoryProcessingError):
                 raise
             raise SourceDirectoryProcessingError(str(exc)) from exc
+
+    @staticmethod
+    def _complete_native_epub_extraction(
+        *,
+        record: SourceIngestionRecord,
+        path: Path,
+        progress_callback: CatalogProgressCallback | None,
+    ) -> DirectoryExtraction | None:
+        suffix = Path(record.file_name or path.name).suffix.lower()
+        if suffix != ".epub" and record.mime_type.lower() != "application/epub+zip":
+            return None
+        extraction = extract_directory(
+            record,
+            path,
+            progress_callback=progress_callback,
+        )
+        native_count = int(extraction.metadata.get("native_navigation_count") or 0)
+        if (
+            extraction.metadata.get("format") != "epub"
+            or native_count <= 0
+            or int(extraction.metadata.get("spine_count") or 0) <= 0
+            or extraction.metadata.get("navigation_truncated")
+            or len(extraction.candidates) != native_count
+            or any(
+                candidate.mapping_status != "verified"
+                or candidate.source_range is None
+                or candidate.source_range.kind != "epub_spine"
+                for candidate in extraction.candidates
+            )
+        ):
+            return None
+        return extraction
+
+    def _publish_native_epub_catalog(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        path: Path,
+        content_hash: str,
+        extraction: DirectoryExtraction,
+        run: SourceCatalogRun,
+        started: float,
+        progress_callback: CatalogProgressCallback | None,
+    ) -> SourceStructure:
+        candidates = tuple(
+            replace(
+                candidate,
+                metadata={
+                    **candidate.metadata,
+                    "catalog_authority": "native_epub_navigation",
+                    "locator_source": "native_navigation",
+                },
+            )
+            for candidate in extraction.candidates
+        )
+        chapters = _materialize_chapters(
+            record=record,
+            candidates=candidates,
+            content_hash=content_hash,
+        )
+        _validate_chapters(chapters)
+        verified_count = sum(chapter.mapping_status == "verified" for chapter in chapters)
+        index_status = "complete" if verified_count == len(chapters) else "partial"
+        quality = _catalog_quality(chapters, catalog_complete=True)
+        native_count = int(extraction.metadata.get("native_navigation_count") or len(chapters))
+        completion_reason = (
+            "Imported every authored EPUB NCX/nav entry and resolved its OPF spine and XHTML "
+            "anchor without extracting document body text."
+        )
+        execution_metadata = {
+            "catalog_authority": "native_epub_navigation",
+            "catalog_task_contract": NATIVE_EPUB_CATALOG_SCHEMA_VERSION,
+            "host_directory_transform": "mechanical_materialization_only",
+            "native_navigation_count": native_count,
+            "published_navigation_count": len(chapters),
+            "spine_count": int(extraction.metadata.get("spine_count") or 0),
+            "anchor_validation": extraction.metadata.get("anchor_validation"),
+            "anchor_document_count": int(
+                extraction.metadata.get("anchor_document_count") or 0
+            ),
+            "directory_evidence": [
+                AgentCatalogDirectoryEvidence(
+                    kind="native_navigation_exhausted",
+                    detail=f"Imported all {native_count} authored EPUB navigation entries.",
+                ).model_dump(mode="json")
+            ],
+            "work_state": "satisfied",
+            "phase": "terminal",
+            "directory_status": "complete",
+            "index_status": index_status,
+            "summary": f"Imported {len(chapters)} authored EPUB navigation entries directly.",
+            "next_plan": "",
+            "next_action": "",
+            "stop_reason": "",
+            "completion_reason": completion_reason,
+            "directory_gaps": [],
+        }
+        structure = SourceStructure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="ready",
+            strategy="epub_navigation",
+            has_verified_toc=bool(chapters),
+            quality=quality,
+            chapter_count=len(chapters),
+            chunk_count=0,
+            visual_count=0,
+            visual_index_status="unsupported",
+            visual_index_version=0,
+            confidence=quality.confidence,
+            source_content_hash=content_hash,
+            catalog_schema_version=CATALOG_SCHEMA_VERSION,
+            catalog_model="",
+            warnings=list(extraction.warnings),
+            metadata={
+                "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                "content_hash": content_hash,
+                **execution_metadata,
+                "unresolved_node_count": len(chapters) - verified_count,
+                "can_refine": False,
+                "auto_continuing": False,
+                "body_text_extracted": False,
+                "source_chunks_created": False,
+                "vector_index_created": False,
+                "visual_index_created": False,
+            },
+        )
+        duration_ms = max(0, round((time.perf_counter() - started) * 1000))
+        succeeded_run = run.model_copy(
+            update={
+                "status": "succeeded",
+                "model": "",
+                "turn_count": 0,
+                "chapter_count": len(chapters),
+                "verified_chapter_count": verified_count,
+                "verification_rate": verified_count / len(chapters) if chapters else 0.0,
+                "duration_ms": duration_ms,
+                "stage_history": [
+                    *run.stage_history,
+                    "native_epub_navigation",
+                    "publishing_catalog",
+                    "succeeded",
+                ],
+                "completed_at": now_iso(),
+                "metadata": {**run.metadata, **execution_metadata},
+            }
+        )
+        _report(progress_callback, "publishing_catalog", 97)
+        if _file_hash(path) != content_hash:
+            raise SourceDirectoryProcessingError(
+                "The source file changed while its native EPUB catalog was being built."
+            )
+        published = self.store.publish_catalog(
+            structure=structure,
+            chapters=chapters,
+            run=succeeded_run,
+        )
+        try:
+            _report(progress_callback, "catalog_ready", 99)
+        except Exception:
+            pass
+        return published
+
+    def _process_july24_catalog(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        path: Path,
+        content_hash: str,
+        catalog_model: AIModelSelection,
+        run: SourceCatalogRun,
+        started: float,
+        progress_callback: CatalogProgressCallback | None,
+        activity_callback: Callable[[AgentActivityEvent], None] | None,
+    ) -> SourceStructure:
+        """Run the bounded July 24 source catalog contract as one atomic task."""
+
+        _report(progress_callback, "reading_directory_metadata", 30)
+        direct_catalog = _generate_complete_native_pdf_catalog(
+            record=record,
+            source_path=path,
+            source_content_hash=content_hash,
+            on_activity=activity_callback,
+        )
+        native_pdf_catalog = direct_catalog is not None
+        if direct_catalog is None:
+            _report(progress_callback, "source_codex_investigation", 30)
+            direct_catalog = generate_codex_direct_catalog(
+                record=record,
+                source_path=path,
+                source_content_hash=content_hash,
+                selection=catalog_model,
+                on_activity=activity_callback,
+            )
+        else:
+            _report(progress_callback, "native_pdf_navigation", 72)
+        chapters = list(direct_catalog.chapters)
+        execution_metadata = dict(direct_catalog.audit_metadata)
+        catalog_stage = (
+            "native_pdf_navigation"
+            if native_pdf_catalog
+            else "source_codex_investigation"
+        )
+        stage_history = [*run.stage_history, catalog_stage]
+        has_authoritative_ranges = any(
+            chapter.mapping_status == "verified"
+            and chapter.range is not None
+            and chapter.catalog_evidence
+            for chapter in chapters
+        )
+        stage_history.append("directory_and_ranges_verified")
+        run = self.store.save_catalog_run(
+            run.model_copy(
+                update={
+                    "stage_history": stage_history,
+                    "metadata": {**run.metadata, **execution_metadata},
+                }
+            )
+        )
+        warnings = [] if chapters else ["The source agent returned an empty directory list."]
+        witness_count = _positive_catalog_count(
+            execution_metadata.get("catalog_completeness_witness_node_count")
+        )
+        catalog_completeness_proven = path.suffix.lower() != ".pdf" or witness_count >= 2
+        if chapters and not catalog_completeness_proven:
+            warnings.append(
+                "The saved PDF nodes have verified ranges, but no independent whole-directory "
+                "witness was available; the catalog remains partially trusted."
+            )
+        structure_execution_metadata = {
+            key: value
+            for key, value in execution_metadata.items()
+            if key not in {"codex_directory_payload", "codex_raw_output"}
+        }
+        validation_stage = (
+            "validating_directory_ranges"
+            if has_authoritative_ranges
+            else "validating_directory"
+        )
+        _report(progress_callback, validation_stage, 92)
+        _validate_chapters(chapters)
+        verified_count = sum(chapter.mapping_status == "verified" for chapter in chapters)
+        quality = _catalog_quality(
+            chapters,
+            catalog_complete=catalog_completeness_proven,
+            directory_only_complete=(
+                execution_metadata.get("catalog_task_contract")
+                == "directory_pages_offset_tree_v1"
+            ),
+        )
+        index_status = (
+            "complete"
+            if chapters and verified_count == len(chapters)
+            else "partial"
+        )
+        structure = SourceStructure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="ready" if chapters else "linear_only",
+            strategy="codex_directory_v1",
+            has_verified_toc=bool(chapters),
+            quality=quality,
+            chapter_count=len(chapters),
+            chunk_count=0,
+            visual_count=0,
+            visual_index_status="unsupported",
+            visual_index_version=0,
+            confidence=quality.confidence,
+            source_content_hash=content_hash,
+            catalog_schema_version=CATALOG_SCHEMA_VERSION,
+            catalog_model="" if native_pdf_catalog else catalog_model.model,
+            warnings=warnings,
+            metadata={
+                "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                "content_hash": content_hash,
+                **(
+                    {}
+                    if native_pdf_catalog
+                    else {"catalog_model_selection": catalog_model.model_dump(mode="json")}
+                ),
+                **structure_execution_metadata,
+                "work_state": "satisfied",
+                "phase": "terminal",
+                "directory_status": (
+                    "complete" if catalog_completeness_proven else "uncertain"
+                ),
+                "index_status": index_status,
+                "unresolved_node_count": len(chapters) - verified_count,
+                "can_refine": False,
+                "auto_continuing": False,
+                "background_refine_active": False,
+                "body_text_extracted": False,
+                "source_chunks_created": False,
+                "vector_index_created": False,
+                "visual_index_created": False,
+                "open_notebook_called": False,
+            },
+        )
+        duration_ms = max(0, round((time.perf_counter() - started) * 1000))
+        succeeded_run = run.model_copy(
+            update={
+                "status": "succeeded",
+                "model": "" if native_pdf_catalog else catalog_model.model,
+                "turn_count": direct_catalog.turn_count,
+                "chapter_count": len(chapters),
+                "verified_chapter_count": verified_count,
+                "verification_rate": verified_count / len(chapters) if chapters else 0.0,
+                "duration_ms": duration_ms,
+                "stage_history": [
+                    *run.stage_history,
+                    validation_stage,
+                    "publishing_catalog",
+                    "succeeded",
+                ],
+                "completed_at": now_iso(),
+                "metadata": {
+                    **run.metadata,
+                    **execution_metadata,
+                    "warning_count": len(warnings),
+                },
+            }
+        )
+        _report(progress_callback, "publishing_catalog", 97)
+        if _file_hash(path) != content_hash:
+            raise SourceDirectoryProcessingError(
+                "The source file changed while its directory catalog was being built."
+            )
+        published = self.store.publish_catalog(
+            structure=structure,
+            chapters=chapters,
+            run=succeeded_run,
+        )
+        try:
+            _report(progress_callback, "catalog_ready", 99)
+        except Exception:
+            pass
+        return published
+
+    def _process_agent_catalog(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        path: Path,
+        content_hash: str,
+        catalog_model: AIModelSelection,
+        run: SourceCatalogRun,
+        started: float,
+        progress_callback: CatalogProgressCallback | None,
+        activity_callback: Callable[[AgentActivityEvent], None] | None,
+        resume_catalog: bool,
+    ) -> SourceStructure:
+        checkpoint = self._agent_catalog_checkpoint(record, path=path) if resume_catalog else None
+        _report(progress_callback, "source_agent_working", 30)
+        latest_result = generate_agent_catalog_turn(
+            record=record,
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=catalog_model,
+            initial_catalog=checkpoint,
+            advisory_observations=_agent_catalog_observations(checkpoint),
+            timeout_seconds=AUTONOMOUS_CATALOG_BUDGET_SECONDS,
+            on_activity=activity_callback,
+        )
+        total_turn_count = latest_result.turn_count
+        while (
+            latest_result.catalog_payload is not None
+            and latest_result.catalog_payload.get("directory_status") != "complete"
+            and latest_result.work_state == "working"
+        ):
+            checkpoint = latest_result.catalog_payload
+            run = self.store.save_catalog_run(
+                run.model_copy(
+                    update={
+                        "turn_count": total_turn_count,
+                        "stage_history": [*run.stage_history, "directory_discovery_checkpoint"],
+                        "metadata": {**run.metadata, "agent_catalog_payload": checkpoint},
+                    }
+                )
+            )
+            latest_result = generate_agent_catalog_turn(
+                record=record,
+                source_path=path,
+                source_content_hash=content_hash,
+                selection=catalog_model,
+                initial_catalog=checkpoint,
+                advisory_observations=_agent_catalog_observations(checkpoint),
+                timeout_seconds=AUTONOMOUS_CATALOG_BUDGET_SECONDS,
+                on_activity=activity_callback,
+            )
+            total_turn_count += latest_result.turn_count
+        chapters = list(latest_result.chapters)
+        _validate_chapters(chapters)
+        verified_count = sum(chapter.mapping_status == "verified" for chapter in chapters)
+        checkpoint = latest_result.catalog_payload or _legacy_agent_catalog_payload(
+            chapters,
+            summary=latest_result.summary,
+            next_plan=latest_result.next_plan,
+            stop_reason=latest_result.stop_reason,
+        )
+        work_state = str(checkpoint["work_state"])
+        directory_status = str(checkpoint["directory_status"])
+        index_status = str(checkpoint["index_status"])
+        if directory_status != "complete":
+            self.store.save_catalog_run(
+                run.model_copy(
+                    update={
+                        "turn_count": total_turn_count,
+                        "metadata": {**run.metadata, "agent_catalog_payload": checkpoint},
+                    }
+                )
+            )
+            raise SourceDirectoryProcessingError(
+                "The source Agent stopped before the complete authored directory was verified."
+            )
+        _publish_agent_catalog_stage_activity(
+            callback=activity_callback,
+            directory_status=directory_status,
+            index_status=index_status,
+            work_state=work_state,
+            chapter_count=len(chapters),
+            verified_count=verified_count,
+            payload=checkpoint,
+        )
+        quality = _catalog_quality(
+            chapters,
+            catalog_complete=directory_status == "complete",
+            directory_only_complete=False,
+        )
+        execution_metadata = dict(latest_result.audit_metadata)
+        execution_metadata.update(
+            {
+                "agent_catalog_payload": checkpoint,
+                "work_state": work_state,
+                "phase": checkpoint["phase"],
+                "directory_status": directory_status,
+                "index_status": index_status,
+                "summary": checkpoint["summary"],
+                "next_plan": checkpoint["next_plan"],
+                "next_action": checkpoint["next_action"],
+                "stop_reason": checkpoint["stop_reason"],
+                "completion_reason": checkpoint["completion_reason"],
+                "directory_gaps": checkpoint["directory_gaps"],
+                "remaining_work": checkpoint.get("remaining_work", []),
+                "remaining_work_count": len(checkpoint.get("remaining_work", [])),
+                "snapshot_reason": checkpoint.get("snapshot_reason", "budget_increment"),
+                "progress_fingerprint": checkpoint.get("progress_fingerprint", ""),
+                "no_progress_turns": checkpoint.get("no_progress_turns", 0),
+                "attempted_action_fingerprints": checkpoint["attempted_action_fingerprints"],
+            }
+        )
+        warnings = [] if chapters else ["The current agent snapshot has no directory nodes yet."]
+        unresolved_count = len(chapters) - verified_count
+        structure = SourceStructure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="ready" if chapters else "linear_only",
+            strategy="codex_directory_v1",
+            has_verified_toc=bool(chapters) and directory_status == "complete",
+            quality=quality,
+            chapter_count=len(chapters),
+            chunk_count=0,
+            visual_count=0,
+            visual_index_status="unsupported",
+            visual_index_version=0,
+            confidence=quality.confidence,
+            source_content_hash=content_hash,
+            catalog_schema_version=CATALOG_SCHEMA_VERSION,
+            catalog_model=catalog_model.model,
+            warnings=warnings,
+            metadata={
+                "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                "content_hash": content_hash,
+                "catalog_model_selection": catalog_model.model_dump(mode="json"),
+                **execution_metadata,
+                "work_state": work_state,
+                "summary": checkpoint["summary"],
+                "next_plan": checkpoint["next_plan"],
+                "next_action": checkpoint["next_action"],
+                "stop_reason": checkpoint["stop_reason"],
+                "completion_reason": checkpoint["completion_reason"],
+                "phase": checkpoint["phase"],
+                "directory_status": directory_status,
+                "index_status": index_status,
+                "unresolved_node_count": unresolved_count,
+                "can_refine": work_state in {"paused", "partial"},
+                "auto_continuing": work_state == "working",
+                "background_refine_active": work_state == "working",
+                "body_text_extracted": False,
+                "source_chunks_created": False,
+                "vector_index_created": False,
+                "visual_index_created": False,
+            },
+        )
+        duration_ms = max(0, round((time.perf_counter() - started) * 1000))
+        run_status = "running" if work_state == "working" else "succeeded"
+        run = self.store.save_catalog_run(
+            run.model_copy(
+                update={
+                    "status": run_status,
+                    "turn_count": total_turn_count,
+                    "chapter_count": len(chapters),
+                    "verified_chapter_count": verified_count,
+                    "verification_rate": verified_count / len(chapters) if chapters else 0.0,
+                    "duration_ms": duration_ms,
+                    "stage_history": [*run.stage_history, "agent_snapshot_published"],
+                    "completed_at": now_iso() if run_status == "succeeded" else None,
+                    "metadata": {**run.metadata, **execution_metadata},
+                }
+            )
+        )
+        if _file_hash(path) != content_hash:
+            raise SourceDirectoryProcessingError(
+                "The source file changed while its directory catalog was being built."
+            )
+        published = self.store.publish_catalog(structure=structure, chapters=chapters, run=run)
+        ai_usage_logger.log_event(
+            "source_catalog_snapshot_published",
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            catalog_version=published.catalog_version,
+            chapter_count=len(chapters),
+            verified_chapter_count=verified_count,
+            directory_status=directory_status,
+            index_status=index_status,
+            first_catalog_available_ms=(
+                max(0, round((time.perf_counter() - started) * 1000))
+                if published.catalog_version == 1
+                else None
+            ),
+        )
+        if activity_callback is not None and published.has_verified_toc:
+            background_active = work_state == "working"
+            label = (
+                f"目录版本 {published.catalog_version} 已可用，正文定位继续中"
+                if background_active
+                else f"目录版本 {published.catalog_version} 已完成"
+            )
+            activity_callback(
+                AgentActivityEvent(
+                    turn_id=new_id("catalogpublished"),
+                    stage="execute_role",
+                    label=label,
+                    status="running" if background_active else "completed",
+                    role="OpenClass",
+                    metadata={
+                        "kind": "sourceCatalogPublished",
+                        "detail": f"正文范围 {verified_count}/{len(chapters)}",
+                        "source_progress": {
+                            "phase": "background_catalog_refine" if background_active else "terminal",
+                            "label": label,
+                            "detail": f"正文范围 {verified_count}/{len(chapters)}",
+                            "determinate": bool(chapters),
+                            "completed": verified_count,
+                            "total": len(chapters),
+                            "unit": "ranges",
+                            "catalog_version": published.catalog_version,
+                            "heartbeat_at": now_iso(),
+                        },
+                    },
+                )
+            )
+        _report(progress_callback, "catalog_snapshot_available", 45)
+        if self.store.catalog_pause_requested(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        ):
+            return self._publish_host_pause(
+                structure=published,
+                chapters=chapters,
+                run=run,
+                reason="Paused at the user's request; automatic continuation can resume from this snapshot.",
+            )
+        return published
+
+    def _agent_catalog_checkpoint(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        path: Path,
+    ) -> dict[str, object] | None:
+        view = self.store.get_structure_view(source=record, chunk_limit=0)
+        payload = view.structure.metadata.get("agent_catalog_payload") if view.structure else None
+        if isinstance(payload, dict):
+            try:
+                return coerce_agent_catalog_v3_checkpoint(payload, source_path=path)
+            except (TypeError, ValueError):
+                pass
+        for prior_run in self.store.list_catalog_runs(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        ):
+            payload = prior_run.metadata.get("agent_catalog_payload")
+            if not isinstance(payload, dict):
+                continue
+            try:
+                return coerce_agent_catalog_v3_checkpoint(payload, source_path=path)
+            except (TypeError, ValueError):
+                continue
+        if not view.chapters:
+            return None
+        keys_by_id: dict[str, str] = {}
+        nodes: list[dict[str, object]] = []
+        for index, chapter in enumerate(view.chapters):
+            key = str(
+                chapter.metadata.get("agent_catalog_key")
+                or chapter.metadata.get("codex_node_key")
+                or f"legacy.{index + 1}"
+            )
+            keys_by_id[chapter.id] = key
+            nodes.append(
+                AgentCatalogV3Node(
+                    key=key,
+                    parent_key=keys_by_id.get(chapter.parent_id or ""),
+                    number=chapter.number,
+                    title=chapter.title,
+                    level=chapter.level,
+                    source_locator=chapter.source_locator,
+                    mapping_status=("verified" if chapter.mapping_status == "verified" and chapter.range else "unmapped"),
+                    mapping_reason=str(chapter.metadata.get("mapping_reason") or "Imported from the previous catalog snapshot."),
+                    source_range=(chapter.range.model_dump(mode="json") if chapter.range else None),
+                    evidence=[item.model_dump(mode="json") for item in chapter.catalog_evidence],
+                    locator_source=("legacy_range" if chapter.range else "unmapped"),
+                ).model_dump(mode="json")
+            )
+        return AgentCatalogV3(
+            schema_version="agent_catalog_v3",
+            phase="directory_discovery",
+            directory_status="uncertain",
+            index_status=("in_progress" if any(node.get("source_range") for node in nodes) else "pending"),
+            work_state="working",
+            summary="Imported the previous catalog as a revisable checkpoint.",
+            next_plan="Prove directory completeness without scanning body content.",
+            next_action="inspect authored navigation and bounded directory candidates",
+            stop_reason="",
+            completion_reason="",
+            directory_gaps=["Legacy catalog has no structured directory-completeness evidence."],
+            nodes=nodes,
+        ).model_dump(mode="json")
+
+    def _publish_host_pause(
+        self,
+        *,
+        structure: SourceStructure,
+        chapters: list[SourceChapter],
+        run: SourceCatalogRun,
+        reason: str,
+    ) -> SourceStructure:
+        payload = dict(structure.metadata.get("agent_catalog_payload") or {})
+        payload.update(
+            {
+                "phase": "terminal",
+                "work_state": "paused",
+                "stop_reason": reason,
+                "completion_reason": "Catalog processing was interrupted outside the normal stop rules.",
+            }
+        )
+        paused = structure.model_copy(
+            update={
+                "metadata": {
+                    **structure.metadata,
+                    "agent_catalog_payload": payload,
+                    "work_state": "paused",
+                    "stop_reason": reason,
+                    "can_refine": True,
+                    "pause_requested": False,
+                }
+            }
+        )
+        paused_run = run.model_copy(
+            update={
+                "status": "succeeded",
+                "completed_at": now_iso(),
+                "stage_history": [*run.stage_history, "paused"],
+            }
+        )
+        return self.store.publish_catalog(structure=paused, chapters=chapters, run=paused_run)
+
+
+def _publish_agent_catalog_stage_activity(
+    *,
+    callback: Callable[[AgentActivityEvent], None] | None,
+    directory_status: str,
+    index_status: str,
+    work_state: str,
+    chapter_count: int,
+    verified_count: int,
+    payload: dict[str, object],
+) -> None:
+    if callback is None:
+        return
+    regimes = payload.get("pagination_regimes")
+    regime_count = len(regimes) if isinstance(regimes, list) else 0
+    native_count = sum(
+        1
+        for node in payload.get("nodes", [])
+        if isinstance(node, dict) and node.get("locator_source") == "native_navigation"
+    )
+    stages = (
+        (
+            "directory_discovery",
+            "确认目录边界",
+            f"目录状态 {directory_status} · {chapter_count} 个节点",
+        ),
+        (
+            "page_calibration",
+            "标定 P",
+            "原生书签物理目标页"
+            if native_count == chapter_count and chapter_count
+            else f"{regime_count} 个精确 P 区段",
+        ),
+        (
+            "range_mapping",
+            "生成正文范围",
+            f"已映射 {verified_count}/{chapter_count} 个节点",
+        ),
+        (
+            "validation",
+            "验证索引",
+            f"索引状态 {index_status} · 最终工作状态 {work_state}",
+        ),
+    )
+    turn_id = new_id("catalogstage")
+    for sequence, (phase, label, detail) in enumerate(stages, start=1):
+        callback(
+            AgentActivityEvent(
+                id=f"{turn_id}:{sequence}",
+                turn_id=turn_id,
+                stage="execute_role",
+                label=label,
+                status="completed",
+                role="pi",
+                metadata={
+                    "kind": "sourceCatalogStage",
+                    "detail": detail,
+                    "source_progress": {
+                        "phase": phase,
+                        "label": label,
+                        "detail": detail,
+                        "determinate": True,
+                    },
+                },
+            )
+        )
+
+
+def _legacy_agent_catalog_payload(
+    chapters: Sequence[SourceChapter],
+    *,
+    summary: str,
+    next_plan: str,
+    stop_reason: str,
+) -> dict[str, object]:
+    """Keep audited v1 results readable while production defaults to v3."""
+    keys_by_id: dict[str, str] = {}
+    nodes: list[AgentCatalogV3Node] = []
+    for index, chapter in enumerate(chapters):
+        key = str(
+            chapter.metadata.get("agent_catalog_key")
+            or chapter.metadata.get("codex_node_key")
+            or f"legacy.{index + 1}"
+        )
+        keys_by_id[chapter.id] = key
+        nodes.append(
+            AgentCatalogV3Node(
+                key=key,
+                parent_key=keys_by_id.get(chapter.parent_id or ""),
+                number=chapter.number,
+                title=chapter.title,
+                level=chapter.level,
+                source_locator=chapter.source_locator,
+                mapping_status=("verified" if chapter.range else "unmapped"),
+                mapping_reason=str(
+                    chapter.metadata.get("mapping_reason")
+                    or "Imported from a previously audited catalog result."
+                ),
+                source_range=(
+                    CodexDirectSourceRange(
+                        kind=chapter.range.kind,
+                        start=chapter.range.start,
+                        end=chapter.range.end,
+                        container=chapter.range.container,
+                        start_anchor=chapter.range.start_anchor,
+                        end_anchor=chapter.range.end_anchor,
+                        display_label=chapter.range.display_label,
+                    )
+                    if chapter.range
+                    else None
+                ),
+                evidence=[
+                    CodexDirectCatalogEvidence(
+                        method=item.method,
+                        source_locator=item.source_locator,
+                        page_start=item.page_start,
+                        page_end=item.page_end,
+                        excerpt=item.excerpt,
+                        confidence=item.confidence,
+                    )
+                    for item in chapter.catalog_evidence
+                ],
+                locator_source=("legacy_range" if chapter.range else "unmapped"),
+            )
+        )
+    all_mapped = bool(nodes) and all(node.source_range is not None for node in nodes)
+    return AgentCatalogV3(
+        schema_version="agent_catalog_v3",
+        phase="terminal",
+        directory_status="complete",
+        index_status="complete" if all_mapped else "partial",
+        work_state="satisfied" if all_mapped else "partial",
+        summary=summary or "Imported a previously audited catalog result.",
+        next_plan=next_plan,
+        next_action="",
+        stop_reason=(stop_reason or ("" if all_mapped else "Some legacy nodes have no trusted range.")),
+        completion_reason="Converted trusted stable nodes and ranges without a database migration.",
+        directory_evidence=[
+            AgentCatalogDirectoryEvidence(
+                kind="authored_navigation_exhausted",
+                detail="The previous catalog was already published as a complete authored directory.",
+            )
+        ],
+        nodes=nodes,
+    ).model_dump(mode="json")
+
+
+def _agent_catalog_observations(checkpoint: dict[str, object] | None) -> dict[str, object]:
+    if not checkpoint:
+        return {
+            "node_count": 0,
+            "max_depth": 0,
+            "unmapped_node_count": 0,
+            "note": "No prior snapshot exists; these observations do not prescribe a starting method.",
+        }
+    raw_nodes = checkpoint.get("nodes")
+    nodes = raw_nodes if isinstance(raw_nodes, list) else []
+    mapped_spans: list[tuple[str, int]] = []
+    for raw_node in nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        source_range = raw_node.get("source_range")
+        if not isinstance(source_range, dict):
+            continue
+        start = source_range.get("start")
+        end = source_range.get("end")
+        if isinstance(start, int) and isinstance(end, int) and end >= start:
+            mapped_spans.append((str(raw_node.get("key") or ""), end - start + 1))
+    mapped_spans.sort(key=lambda item: item[1], reverse=True)
+    return {
+        "node_count": len(nodes),
+        "max_depth": max(
+            (int(node.get("level") or 0) for node in nodes if isinstance(node, dict)),
+            default=0,
+        ),
+        "unmapped_node_count": sum(
+            1
+            for node in nodes
+            if isinstance(node, dict) and node.get("mapping_status", "unmapped") != "verified"
+        ),
+        "largest_mapped_spans": [
+            {"key": key, "span": span} for key, span in mapped_spans[:8]
+        ],
+        "previous_summary": str(checkpoint.get("summary") or ""),
+        "previous_next_plan": str(checkpoint.get("next_plan") or ""),
+        "phase": str(checkpoint.get("phase") or "directory_discovery"),
+        "directory_status": str(checkpoint.get("directory_status") or "uncertain"),
+        "index_status": str(checkpoint.get("index_status") or "pending"),
+        "directory_gaps": checkpoint.get("directory_gaps") or [],
+        "remaining_work": checkpoint.get("remaining_work") or [],
+        "snapshot_reason": checkpoint.get("snapshot_reason") or "budget_increment",
+        "no_progress_turns": checkpoint.get("no_progress_turns") or 0,
+        "attempted_action_fingerprints": checkpoint.get("attempted_action_fingerprints") or [],
+        "note": "Resume only the typed remaining work; verified nodes are frozen unless conflict resolution is already persisted.",
+    }
 
 
 def _bounded_candidate_batches(
@@ -935,7 +1822,7 @@ def _catalog_quality(
         diagnostics = ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
     if not catalog_complete:
         diagnostics.append(
-            "目录超过结构节点上限，当前只发布部分导航；已验证节点仍可单独引用。"
+            "目录完整性尚未证明，当前只发布部分导航；宿主按有限动作规则停止自动续轮，已验证节点仍可单独引用。"
         )
     parent_ids = {chapter.parent_id for chapter in chapters if chapter.parent_id}
     leaf_chapters = [chapter for chapter in chapters if chapter.id not in parent_ids]
@@ -964,6 +1851,14 @@ def _catalog_quality(
         meaningful_characters_per_page=0.0,
         diagnostics=diagnostics,
     )
+
+
+def _positive_catalog_count(value: object) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
 
 
 def _directory_system_prompt() -> str:

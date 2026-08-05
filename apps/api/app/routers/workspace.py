@@ -20,6 +20,8 @@ from app.models import (
     CreatePackageRequest,
     GenerateLessonRequest,
     MoveLessonRequest,
+    LessonView,
+    LessonWorkspaceDelta,
     PublicCoursePackageView,
     PublicCourseSearchResult,
     PublicCourseStarState,
@@ -71,6 +73,25 @@ from app.services.workspace_state import (
 )
 
 router = APIRouter()
+
+
+def _lesson_workspace_delta(operation: Literal["create", "close", "delete"], result) -> LessonWorkspaceDelta:
+    return LessonWorkspaceDelta(
+        operation=operation,
+        workspace_revision=result.workspace_revision,
+        package_id=result.package_id,
+        active_package_id=result.active_package_id,
+        active_lesson_id=result.active_lesson_id,
+        open_lesson_ids=result.open_lesson_ids,
+        workspace_tab_order=result.workspace_tab_order,
+        created_lesson=(
+            LessonView.model_validate(result.created_lesson.model_dump(mode="json"))
+            if result.created_lesson is not None
+            else None
+        ),
+        deleted_lesson_id=result.deleted_lesson_id,
+        graph_edge=result.graph_edge,
+    )
 
 
 def _require_registered_project_publisher(
@@ -559,20 +580,22 @@ def move_lesson(
     return workspace_view(workspace)
 
 
-@router.post("/api/lessons/{lesson_id}/delete", response_model=WorkspaceStateView)
-def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> WorkspaceStateView:
-    workspace, revision = load_workspace_for_user_with_revision(user.id)
-    package, _ = find_lesson_package(workspace, lesson_id)
-
-    package.lessons = [current for current in package.lessons if current.id != lesson_id]
-    package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
-    package.workspace_tab_order = [current for current in package.workspace_tab_order if current != lesson_id]
-    if package.active_lesson_id == lesson_id:
-        package.active_lesson_id = None
-
-    normalize_package_state(package)
-    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
-    return workspace_view(workspace)
+@router.post(
+    "/api/lessons/{lesson_id}/delete",
+    response_model=WorkspaceStateView | LessonWorkspaceDelta,
+)
+def delete_lesson(
+    lesson_id: str,
+    response_mode: Literal["full", "delta"] = Query("full"),
+    user: UserView = Depends(current_user),
+) -> WorkspaceStateView | LessonWorkspaceDelta:
+    try:
+        result = get_course_store().delete_lesson_for_user(user.id, lesson_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    if response_mode == "delta":
+        return _lesson_workspace_delta("delete", result)
+    return workspace_view(load_workspace_for_user(user.id))
 
 
 @router.post("/api/lessons/batch", response_model=WorkspaceStateView)
@@ -592,45 +615,37 @@ def get_course_package(user: UserView = Depends(current_user)) -> CoursePackageV
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
-@router.post("/api/lessons/generate", response_model=CoursePackageView)
+@router.post(
+    "/api/lessons/generate",
+    response_model=CoursePackageView | LessonWorkspaceDelta,
+)
 def generate_lesson(
     request: GenerateLessonRequest,
+    response_mode: Literal["full", "delta"] = Query("full"),
     user: UserView = Depends(current_user),
-) -> CoursePackageView:
-    workspace, revision = load_workspace_for_user_with_revision(user.id)
-    source_package = None
-    if request.branch_from_lesson_id:
-        source_package, _ = find_lesson_package(workspace, request.branch_from_lesson_id)
-    if request.target_package_id:
-        package = get_package(workspace, request.target_package_id)
-    elif source_package is not None:
-        package = source_package
-    else:
-        package = get_standalone_package(workspace)
-    if source_package is not None and source_package.id != package.id:
-        raise HTTPException(status_code=400, detail="Branch source lesson must be in the target package")
-
+) -> CoursePackageView | LessonWorkspaceDelta:
     requested_title = (request.topic or "").strip()
     lesson = (
         create_empty_lesson(requested_title)
         if requested_title
         else create_untitled_lesson(timezone_name=request.timezone)
     )
-    package.lessons.append(lesson)
-    package.open_lesson_ids.append(lesson.id)
-    package.workspace_tab_order.append(lesson.id)
-    package.active_lesson_id = lesson.id
-    workspace.active_package_id = package.id
-    if request.branch_from_lesson_id:
-        package.course_graph.append(
-            CourseGraphEdge(
-                source_lesson_id=request.branch_from_lesson_id,
-                target_lesson_id=lesson.id,
-                relationship="deep_dive",
-            )
+    try:
+        result = get_course_store().create_lesson_for_user(
+            user.id,
+            lesson,
+            target_package_id=request.target_package_id,
+            branch_from_lesson_id=request.branch_from_lesson_id,
         )
-    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
-    return package_view_for_lesson(workspace, package, package.active_lesson_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if response_mode == "delta":
+        return _lesson_workspace_delta("create", result)
+    workspace = load_workspace_for_user(user.id)
+    package = get_package(workspace, result.package_id)
+    return package_view_for_lesson(workspace, package, result.active_lesson_id)
 
 
 @router.post("/api/workspace/reorder", response_model=CoursePackageView)
@@ -662,16 +677,24 @@ def open_lesson_tab(lesson_id: str, user: UserView = Depends(current_user)) -> C
     return package_view_for_lesson(workspace, package, lesson_id)
 
 
-@router.post("/api/lessons/{lesson_id}/close", response_model=CoursePackageView)
-def close_lesson_tab(lesson_id: str, user: UserView = Depends(current_user)) -> CoursePackageView:
-    workspace, revision = load_workspace_for_user_with_revision(user.id)
-    package, _ = find_lesson_package(workspace, lesson_id)
-    package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
-    package.workspace_tab_order = [current for current in package.workspace_tab_order if current != lesson_id]
-    if package.active_lesson_id == lesson_id:
-        package.active_lesson_id = package.workspace_tab_order[0] if package.workspace_tab_order else None
-    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
-    return package_view_for_lesson(workspace, package, package.active_lesson_id)
+@router.post(
+    "/api/lessons/{lesson_id}/close",
+    response_model=CoursePackageView | LessonWorkspaceDelta,
+)
+def close_lesson_tab(
+    lesson_id: str,
+    response_mode: Literal["full", "delta"] = Query("full"),
+    user: UserView = Depends(current_user),
+) -> CoursePackageView | LessonWorkspaceDelta:
+    try:
+        result = get_course_store().close_lesson_for_user(user.id, lesson_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    if response_mode == "delta":
+        return _lesson_workspace_delta("close", result)
+    workspace = load_workspace_for_user(user.id)
+    package = get_package(workspace, result.package_id)
+    return package_view_for_lesson(workspace, package, result.active_lesson_id)
 
 
 @router.get("/api/lessons/{lesson_id}/head")

@@ -50,8 +50,8 @@ export function GeometryGenerationPanel({
             <Box className="h-4 w-4" />
           </span>
           <div>
-            <h3 className="text-sm font-semibold">几何图形生成</h3>
-            <p className="mt-0.5 text-[11px] text-slate-300">引用板书内容，生成可旋转、可缩放的场景</p>
+            <h3 className="text-sm font-semibold">Geometry generation</h3>
+            <p className="mt-0.5 text-[11px] text-slate-300">Reference the board content to generate a rotatable and scalable scene</p>
           </div>
         </div>
       </div>
@@ -59,8 +59,8 @@ export function GeometryGenerationPanel({
       {selection ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">已引用板书</p>
-            <button type="button" onClick={onClear} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" aria-label="清除图形引用">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Quoted from the board</p>
+            <button type="button" onClick={onClear} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" aria-label="Clear drawing references">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -68,7 +68,8 @@ export function GeometryGenerationPanel({
             {selection.excerpt}
           </p>
           <label className="mt-4 block text-[11px] font-semibold text-slate-600" htmlFor="geometry-guidance">
-            补充要求（可选）
+
+            Additional requirements (optional)
           </label>
           <textarea
             id="geometry-guidance"
@@ -76,7 +77,7 @@ export function GeometryGenerationPanel({
             onChange={(event) => onInstructionsChange(event.target.value)}
             rows={3}
             maxLength={2000}
-            placeholder="例如：突出平行关系，或使用立体视角"
+            placeholder="For example: highlight parallel relationships, or use a stereoscopic perspective"
             className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] leading-5 text-slate-800 outline-none transition placeholder:text-slate-300 focus:border-slate-400"
           />
           <div ref={attachmentBoundaryRef} className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 py-1.5">
@@ -95,10 +96,10 @@ export function GeometryGenerationPanel({
                 attachments={attachments}
                 disabled={isGenerating}
                 menuAboveRef={attachmentBoundaryRef}
-                limitLabel="每次生成"
+                limitLabel="Generate each time"
                 testIdPrefix="geometry"
-                triggerText="添加照片和文件"
-                triggerHint="从电脑上传"
+                triggerText="Add photos and files"
+                triggerHint="Upload from computer"
                 onChange={onAttachmentsChange}
                 onError={onAttachmentError}
               />
@@ -111,18 +112,19 @@ export function GeometryGenerationPanel({
             className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
           >
             {isGenerating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {isGenerating ? "正在构建图形…" : scene ? "重新生成" : "生成图形"}
+            {isGenerating ? "Building graph..." : scene ? "Regenerate" : "Generate graphics"}
           </button>
           {!attachmentsReady ? (
-            <p className="mt-2 text-[10px] leading-4 text-amber-700">文件正在解析，完成后即可生成图形。</p>
+            <p className="mt-2 text-[10px] leading-4 text-amber-700">The file is being parsed and the graph will be generated once complete.</p>
           ) : null}
         </section>
       ) : (
         <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-8 text-center">
           <Box className="mx-auto h-7 w-7 text-slate-300" />
-          <h3 className="mt-3 text-sm font-semibold text-slate-800">先从板书引用内容</h3>
+          <h3 className="mt-3 text-sm font-semibold text-slate-800">First quote the content from the board</h3>
           <p className="mt-2 text-[12px] leading-6 text-slate-500">
-            选中一道题或一段描述，或点击公式后选择“引用到图形”。引用会自动带到这里。
+
+            Select text, or click a formula and choose “Reference in graphic.” References will appear here automatically.
           </p>
         </section>
       )}

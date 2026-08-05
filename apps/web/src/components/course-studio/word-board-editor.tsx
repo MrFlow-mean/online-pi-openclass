@@ -87,6 +87,7 @@ import {
   WordPageZoomControls,
 } from "@/components/course-studio/word-editor-toolbar";
 import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-block-extension";
+import { editorUpdateBelongsToDocument } from "@/hooks/course-studio/chat-turn-ui-state";
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { RichCodeBlock } from "@/lib/rich-code-block-extension";
@@ -649,7 +650,7 @@ function insertionAnchorExcerpt(beforeText: string, afterText: string) {
   if (before && after) {
     return `${before}｜${after}`;
   }
-  return before || after || "当前光标位置";
+  return before || after || "Current cursor position";
 }
 
 function popoverPositionFromEditorCaret(editor: TiptapEditor, position: number) {
@@ -762,6 +763,7 @@ export function WordBoardEditor({
     document.content_json && Object.keys(document.content_json).length ? document.content_json : null;
   const editorContent = documentJson ?? (document.content_html.trim() || "<p></p>");
   const latestDocumentRef = useRef(document);
+  const editorDocumentIdRef = useRef<string | null>(document.id);
   const latestReadOnlyRef = useRef(readOnly);
   const latestOnDocumentChangeRef = useRef(onDocumentChange);
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
@@ -806,9 +808,13 @@ export function WordBoardEditor({
     if (latestReadOnlyRef.current) {
       return;
     }
+    const targetDocument = latestDocumentRef.current;
+    if (!editorUpdateBelongsToDocument(editorDocumentIdRef.current, targetDocument.id)) {
+      return;
+    }
     setIsTableActive(currentEditor.isActive("table"));
     latestOnDocumentChangeRef.current({
-      ...latestDocumentRef.current,
+      ...targetDocument,
       content_json: currentEditor.getJSON() as Record<string, unknown>,
       content_html: currentEditor.getHTML(),
       content_text: currentEditor.getText({ textSerializers: MATH_TEXT_SERIALIZERS }),
@@ -816,6 +822,9 @@ export function WordBoardEditor({
   }, []);
 
   const handleEditorSelectionUpdate = useCallback(({ editor: currentEditor }: { editor: TiptapEditor }) => {
+    if (!editorUpdateBelongsToDocument(editorDocumentIdRef.current, latestDocumentRef.current.id)) {
+      return;
+    }
     if (latestReadOnlyRef.current) {
       setIsTableActive(false);
       setActiveFormulaSelection(null);
@@ -899,35 +908,38 @@ export function WordBoardEditor({
       : incomingHtml
         ? editor.getHTML() === incomingHtml
         : false;
-    if (!matchesIncomingDocument) {
-      const content = editorContent;
-      const docId = document.id;
-      let cancelled = false;
-      queueMicrotask(() => {
-        if (cancelled || editor.isDestroyed || latestDocumentRef.current.id !== docId) {
-          return;
-        }
-        editor.commands.setContent(content, { emitUpdate: false });
-        normalizeEditorMath(editor);
-        const focus = latestTeachingFocusRef.current;
-        const focusKey = teachingFocusKey(focus);
-        const shouldScrollIntoView =
-          Boolean(focusKey) && lastAutoScrolledTeachingFocusKeyRef.current !== focusKey;
-        const didApplyFocus = applyTeachingFocus(
-          editor,
-          docId,
-          focus,
-          pageScrollRef.current,
-          shouldScrollIntoView
-        );
-        if (didApplyFocus && shouldScrollIntoView) {
-          lastAutoScrolledTeachingFocusKeyRef.current = focusKey;
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
+    if (matchesIncomingDocument) {
+      editorDocumentIdRef.current = document.id;
+      return;
     }
+    const content = editorContent;
+    const docId = document.id;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled || editor.isDestroyed || latestDocumentRef.current.id !== docId) {
+        return;
+      }
+      editorDocumentIdRef.current = docId;
+      editor.commands.setContent(content, { emitUpdate: false });
+      normalizeEditorMath(editor);
+      const focus = latestTeachingFocusRef.current;
+      const focusKey = teachingFocusKey(focus);
+      const shouldScrollIntoView =
+        Boolean(focusKey) && lastAutoScrolledTeachingFocusKeyRef.current !== focusKey;
+      const didApplyFocus = applyTeachingFocus(
+        editor,
+        docId,
+        focus,
+        pageScrollRef.current,
+        shouldScrollIntoView
+      );
+      if (didApplyFocus && shouldScrollIntoView) {
+        lastAutoScrolledTeachingFocusKeyRef.current = focusKey;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [document.id, document.content_html, document.content_text, documentJson, editor, editorContent, readOnly]);
 
   const currentTeachingFocusKey = teachingFocusKey(teachingFocus);
@@ -957,7 +969,7 @@ export function WordBoardEditor({
   const currentFontSize =
     ((editor?.getAttributes("textStyle").fontSize as string | null) ?? "14px").replace("px", "");
   const currentFontFamily = (editor?.getAttributes("textStyle").fontFamily as string | null) ?? FONT_FAMILY_OPTIONS[0].value;
-  const currentPageNumberLabel = pageSettings.show_page_number ? "第 1 页" : "";
+  const currentPageNumberLabel = pageSettings.show_page_number ? "Page 1" : "";
 
   const updatePageSettings = useCallback(
     (patch: Partial<DocumentPageSettings>) => {
@@ -1055,7 +1067,7 @@ export function WordBoardEditor({
     if (!editor || readOnly) {
       return;
     }
-    const coverTitle = document.title.trim() || "未命名讲义";
+    const coverTitle = document.title.trim() || "Unnamed lesson document";
     editor
       .chain()
       .focus("start")
@@ -1069,12 +1081,12 @@ export function WordBoardEditor({
         {
           type: "paragraph",
           attrs: { textAlign: "center" },
-          content: [{ type: "text", text: "课程讲义 / Lesson Notes" }],
+          content: [{ type: "text", text: "Lesson Notes" }],
         },
         {
           type: "paragraph",
           attrs: { textAlign: "center" },
-          content: [{ type: "text", text: "在这里补充授课对象、目标和使用场景" }],
+          content: [{ type: "text", text: "Supplement the teaching objects, goals and usage scenarios here" }],
         },
         { type: "paragraph" },
         { type: "pageBreak" },
@@ -1104,11 +1116,11 @@ export function WordBoardEditor({
         {
           type: "heading",
           attrs: { level: 2 },
-          content: [{ type: "text", text: "目录" }],
+          content: [{ type: "text", text: "Table of contents" }],
         },
         {
           type: "orderedList",
-          content: (headings.length ? headings : ["正文里出现标题后，可再次插入目录页自动整理结构"]).map(
+          content: (headings.length ? headings : ["After the title appears in the text, the table of contents page can be inserted again to automatically organize the structure."]).map(
             (heading) => ({
               type: "listItem",
               content: [
@@ -1137,7 +1149,7 @@ export function WordBoardEditor({
         content: [
           {
             type: "paragraph",
-            content: [{ type: "text", text: "重点说明：在这里补充定义、提醒或课堂旁注。" }],
+            content: [{ type: "text", text: "Important note: Add definitions, reminders, or class notes here." }],
           },
         ],
       })
@@ -1163,7 +1175,7 @@ export function WordBoardEditor({
     const selectedText = editor.state.doc
       .textBetween(editor.state.selection.from, editor.state.selection.to, " ")
       .trim();
-    const hrefInput = window.prompt("请输入超链接地址", "https://");
+    const hrefInput = window.prompt("Please enter the hyperlink address", "https://");
     const href = hrefInput?.trim() ?? "";
     if (!href) {
       return;
@@ -1172,7 +1184,7 @@ export function WordBoardEditor({
       editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
       return;
     }
-    const labelInput = window.prompt("请输入显示文本", "查看资料");
+    const labelInput = window.prompt("Please enter display text", "View profile");
     const label = labelInput?.trim() ?? "";
     if (!label) {
       return;
@@ -1192,11 +1204,11 @@ export function WordBoardEditor({
     if (readOnly) {
       return;
     }
-    const nextHeader = window.prompt("请输入页眉文字，留空则清除", pageSettings.header_text);
+    const nextHeader = window.prompt("Please enter header text, leave blank to clear", pageSettings.header_text);
     if (nextHeader === null) {
       return;
     }
-    const nextFooter = window.prompt("请输入页脚文字，留空则清除", pageSettings.footer_text);
+    const nextFooter = window.prompt("Please enter footer text, leave blank to clear", pageSettings.footer_text);
     if (nextFooter === null) {
       return;
     }
@@ -1210,7 +1222,7 @@ export function WordBoardEditor({
     if (readOnly) {
       return;
     }
-    const nextWatermark = window.prompt("请输入水印文字，留空则清除", pageSettings.watermark_text || "内部讲义");
+    const nextWatermark = window.prompt("Please enter the watermark text, leave it blank to clear it", pageSettings.watermark_text || "internal lesson documents");
     if (nextWatermark === null) {
       return;
     }
@@ -1235,7 +1247,7 @@ export function WordBoardEditor({
     [editor, readOnly]
   );
 
-  const tableInsertHint = `${tableRows} x ${tableCols}${tableHasHeaderRow ? " · 表头" : ""}`;
+  const tableInsertHint = `${tableRows} x ${tableCols}${tableHasHeaderRow ? "· Header" : ""}`;
   const tableInsertDisabled = !editor || readOnly;
   const tableEditDisabled = tableInsertDisabled || !isTableActive;
 
@@ -1252,7 +1264,7 @@ export function WordBoardEditor({
         min={TABLE_DIMENSION_MIN}
         max={TABLE_DIMENSION_MAX}
         value={tableRows}
-        aria-label="表格行数"
+        aria-label="Number of table rows"
         disabled={tableInsertDisabled}
         onChange={(event) => setTableRows(normalizeTableDimension(Number(event.target.value)))}
         className="w-9 border-0 bg-transparent text-center text-[12px] font-semibold outline-none disabled:cursor-not-allowed"
@@ -1264,13 +1276,13 @@ export function WordBoardEditor({
         min={TABLE_DIMENSION_MIN}
         max={TABLE_DIMENSION_MAX}
         value={tableCols}
-        aria-label="表格列数"
+        aria-label="Number of table columns"
         disabled={tableInsertDisabled}
         onChange={(event) => setTableCols(normalizeTableDimension(Number(event.target.value)))}
         className="w-9 border-0 bg-transparent text-center text-[12px] font-semibold outline-none disabled:cursor-not-allowed"
       />
       <label
-        title="首行设为表头"
+        title="Set the first row as header"
         className={clsx(
           "ml-1 flex items-center gap-1 border-l border-gray-100 pl-2 text-[11px] font-medium",
           tableInsertDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
@@ -1283,7 +1295,8 @@ export function WordBoardEditor({
           onChange={(event) => setTableHasHeaderRow(event.target.checked)}
           className="h-3.5 w-3.5 accent-black"
         />
-        表头
+
+        Header
       </label>
     </div>
   );
@@ -1293,49 +1306,49 @@ export function WordBoardEditor({
       return (
         <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
           <ToolbarButton
-            title="上方插入行"
+            title="Insert row above"
             disabled={tableEditDisabled}
             onClick={() => editor?.chain().focus().addRowBefore().run()}
           >
             <ChevronUp className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
-            title="下方插入行"
+            title="Insert row below"
             disabled={tableEditDisabled}
             onClick={() => editor?.chain().focus().addRowAfter().run()}
           >
             <ChevronDown className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
-            title="左侧插入列"
+            title="Insert column left"
             disabled={tableEditDisabled}
             onClick={() => editor?.chain().focus().addColumnBefore().run()}
           >
             <ArrowLeft className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
-            title="右侧插入列"
+            title="Insert column on the right"
             disabled={tableEditDisabled}
             onClick={() => editor?.chain().focus().addColumnAfter().run()}
           >
             <ArrowRight className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
-            title="合并单元格"
+            title="Merge cells"
             disabled={tableEditDisabled}
             onClick={() => editor?.chain().focus().mergeCells().run()}
           >
             <TableCellsMerge className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
-            title="拆分单元格"
+            title="Split cells"
             disabled={tableEditDisabled}
             onClick={() => editor?.chain().focus().splitCell().run()}
           >
             <TableCellsSplit className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
-            title="删除表格"
+            title="Delete table"
             disabled={tableEditDisabled}
             onClick={() => {
               onStructureRemovalIntent();
@@ -1351,65 +1364,65 @@ export function WordBoardEditor({
     return (
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="下方插入一行"
-          label="加行"
-          hint="当前表格"
+          title="Insert a line below"
+          label="Add line"
+          hint="Current form"
           icon={<Rows3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().addRowAfter().run()}
         />
         <RibbonActionButton
-          title="右侧插入一列"
-          label="加列"
-          hint="当前表格"
+          title="Insert a column on the right"
+          label="Gallie"
+          hint="Current form"
           icon={<Columns3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().addColumnAfter().run()}
         />
         <RibbonActionButton
-          title="删除当前行"
-          label="删行"
-          hint="当前表格"
+          title="Delete current row"
+          label="Delete line"
+          hint="Current form"
           icon={<Rows3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().deleteRow().run()}
         />
         <RibbonActionButton
-          title="删除当前列"
-          label="删列"
-          hint="当前表格"
+          title="Delete current column"
+          label="Delete column"
+          hint="Current form"
           icon={<Columns3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().deleteColumn().run()}
         />
         <RibbonActionButton
-          title="合并单元格"
-          label="合并"
-          hint="选中单元格"
+          title="Merge cells"
+          label="merge"
+          hint="Select cells"
           icon={<TableCellsMerge className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().mergeCells().run()}
         />
         <RibbonActionButton
-          title="拆分单元格"
-          label="拆分"
-          hint="当前单元格"
+          title="Split cells"
+          label="Split"
+          hint="current cell"
           icon={<TableCellsSplit className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().splitCell().run()}
         />
         <RibbonActionButton
-          title="切换表头行"
-          label="表头行"
-          hint="当前表格"
+          title="Switch header row"
+          label="header row"
+          hint="Current form"
           icon={<PanelTop className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => editor?.chain().focus().toggleHeaderRow().run()}
         />
         <RibbonActionButton
-          title="删除表格"
-          label="删表"
-          hint="当前表格"
+          title="Delete table"
+          label="Delete table"
+          hint="Current form"
           icon={<Trash2 className="h-4 w-4" />}
           disabled={tableEditDisabled}
           onClick={() => {
@@ -1452,7 +1465,7 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
         <ToolbarButton
-          title="加粗"
+          title="Bold"
           active={editor?.isActive("bold")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleBold().run()}
@@ -1460,7 +1473,7 @@ export function WordBoardEditor({
           <Bold className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="斜体"
+          title="italics"
           active={editor?.isActive("italic")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleItalic().run()}
@@ -1468,7 +1481,7 @@ export function WordBoardEditor({
           <Italic className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="下划线"
+          title="Underline"
           active={editor?.isActive("underline")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleUnderline().run()}
@@ -1476,7 +1489,7 @@ export function WordBoardEditor({
           <Underline className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="高亮"
+          title="Highlight"
           active={editor?.isActive("highlight")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fef08a" }).run()}
@@ -1484,7 +1497,7 @@ export function WordBoardEditor({
           <Highlighter className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="文字颜色"
+          title="text color"
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().setColor("#c2410c").run()}
         >
@@ -1494,7 +1507,7 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
         <ToolbarButton
-          title="左对齐"
+          title="left aligned"
           active={editor?.isActive({ textAlign: "left" })}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().setTextAlign("left").run()}
@@ -1502,7 +1515,7 @@ export function WordBoardEditor({
           <AlignLeft className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="居中"
+          title="center"
           active={editor?.isActive({ textAlign: "center" })}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().setTextAlign("center").run()}
@@ -1510,7 +1523,7 @@ export function WordBoardEditor({
           <AlignCenter className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="右对齐"
+          title="Align right"
           active={editor?.isActive({ textAlign: "right" })}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().setTextAlign("right").run()}
@@ -1518,7 +1531,7 @@ export function WordBoardEditor({
           <AlignRight className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="引用"
+          title="Quote"
           active={editor?.isActive("blockquote")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleBlockquote().run()}
@@ -1529,7 +1542,7 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
         <ToolbarButton
-          title="项目符号"
+          title="Bullets"
           active={editor?.isActive("bulletList")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleBulletList().run()}
@@ -1537,7 +1550,7 @@ export function WordBoardEditor({
           <List className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="编号列表"
+          title="numbered list"
           active={editor?.isActive("orderedList")}
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().toggleOrderedList().run()}
@@ -1549,7 +1562,7 @@ export function WordBoardEditor({
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         {renderTableDimensionFields()}
         <ToolbarButton
-          title={`插入 ${tableInsertHint} 表格`}
+          title={`Insert ${tableInsertHint} table`}
           disabled={tableInsertDisabled}
           onClick={handleInsertTable}
         >
@@ -1561,14 +1574,14 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
         <ToolbarButton
-          title="撤销"
+          title="Cancel"
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().undo().run()}
         >
           <Undo2 className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
-          title="重做"
+          title="Redo"
           disabled={!editor || readOnly}
           onClick={() => editor?.chain().focus().redo().run()}
         >
@@ -1582,25 +1595,25 @@ export function WordBoardEditor({
     <>
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="插入空白页"
-          label="空白页"
-          hint="分页占位"
+          title="insert blank page"
+          label="blank page"
+          hint="Pagination placeholder"
           icon={<FilePlus className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertBlankPage}
         />
         <RibbonActionButton
-          title="插入封面"
-          label="封面"
-          hint="置顶模板"
+          title="insert cover"
+          label="cover"
+          hint="Pinned template"
           icon={<LayoutTemplate className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertCoverPage}
         />
         <RibbonActionButton
-          title="插入目录页"
-          label="目录页"
-          hint="按标题生成"
+          title="Insert table of contents page"
+          label="Contents page"
+          hint="Generate by title"
           icon={<ClipboardList className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertTableOfContents}
@@ -1609,18 +1622,18 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="切换页码"
-          label="页码"
-          hint={pageSettings.show_page_number ? "已显示" : "点击显示"}
+          title="Switch page number"
+          label="page number"
+          hint={pageSettings.show_page_number ? "Shown" : "Click to show"}
           icon={<Hash className="h-4 w-4" />}
           active={pageSettings.show_page_number}
           disabled={readOnly}
           onClick={() => updatePageSettings({ show_page_number: !pageSettings.show_page_number })}
         />
         <RibbonActionButton
-          title="设置页眉页脚"
-          label="页眉页脚"
-          hint="编辑文案"
+          title="Set header and footer"
+          label="header footer"
+          hint="Edit copy"
           icon={<PanelTop className="h-4 w-4" />}
           active={Boolean(pageSettings.header_text || pageSettings.footer_text)}
           disabled={readOnly}
@@ -1643,26 +1656,26 @@ export function WordBoardEditor({
           }}
         />
         <RibbonActionButton
-          title="插入图片"
-          label="图片"
-          hint="上传到讲义"
+          title="Insert picture"
+          label="picture"
+          hint="Upload to lesson documents"
           icon={<ImagePlus className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={() => imageUploadRef.current?.click()}
         />
         {renderTableDimensionFields(false)}
         <RibbonActionButton
-          title={`插入 ${tableInsertHint} 表格`}
-          label="表格"
+          title={`Insert ${tableInsertHint} table`}
+          label="sheet"
           hint={tableInsertHint}
           icon={<Table2 className="h-4 w-4" />}
           disabled={tableInsertDisabled}
           onClick={handleInsertTable}
         />
         <RibbonActionButton
-          title="插入文本框"
-          label="文本框"
-          hint="重点旁注"
+          title="Insert text box"
+          label="text box"
+          hint="Important side note"
           icon={<TextCursorInput className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertTextBox}
@@ -1673,17 +1686,17 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="插入超链接"
-          label="超链接"
-          hint="外部资料"
+          title="Insert hyperlink"
+          label="hyperlink"
+          hint="external information"
           icon={<LinkIcon className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertLink}
         />
         <RibbonActionButton
-          title="插入水印"
-          label="水印"
-          hint="页面标识"
+          title="Insert watermark"
+          label="watermark"
+          hint="Page ID"
           icon={<Stamp className="h-4 w-4" />}
           active={Boolean(pageSettings.watermark_text)}
           disabled={readOnly}
@@ -1699,9 +1712,9 @@ export function WordBoardEditor({
         {PAGE_MARGIN_OPTIONS.map((option) => (
           <RibbonActionButton
             key={option.value}
-            title={`页边距：${option.label}`}
+            title={`Page margins: ${option.label}`}
             label={option.label}
-            hint="页边距"
+            hint="page margins"
             icon={<AlignHorizontalSpaceAround className="h-4 w-4" />}
             active={pageSettings.margin_preset === option.value}
             disabled={readOnly}
@@ -1712,18 +1725,18 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="纵向排版"
-          label="纵向"
-          hint="纸张方向"
+          title="vertical layout"
+          label="portrait"
+          hint="paper orientation"
           icon={<RectangleVertical className="h-4 w-4" />}
           active={pageSettings.orientation === "portrait"}
           disabled={readOnly}
           onClick={() => updatePageSettings({ orientation: "portrait" })}
         />
         <RibbonActionButton
-          title="横向排版"
-          label="横向"
-          hint="纸张方向"
+          title="Horizontal layout"
+          label="Horizontal"
+          hint="paper orientation"
           icon={<RectangleHorizontal className="h-4 w-4" />}
           active={pageSettings.orientation === "landscape"}
           disabled={readOnly}
@@ -1735,9 +1748,9 @@ export function WordBoardEditor({
         {PAGE_SIZE_OPTIONS.map((option) => (
           <RibbonActionButton
             key={option.value}
-            title={`纸张大小：${option.label}`}
+            title={`Paper size: ${option.label}`}
             label={option.label}
-            hint="纸张大小"
+            hint="paper size"
             icon={<Files className="h-4 w-4" />}
             active={pageSettings.page_size === option.value}
             disabled={readOnly}
@@ -1748,18 +1761,18 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="单栏排版"
-          label="单栏"
-          hint="分栏"
+          title="single column layout"
+          label="single column"
+          hint="Column"
           icon={<FileText className="h-4 w-4" />}
           active={pageSettings.columns === 1}
           disabled={readOnly}
           onClick={() => updatePageSettings({ columns: 1 })}
         />
         <RibbonActionButton
-          title="双栏排版"
-          label="双栏"
-          hint="分栏"
+          title="Double column layout"
+          label="double column"
+          hint="Column"
           icon={<Columns2 className="h-4 w-4" />}
           active={pageSettings.columns === 2}
           disabled={readOnly}
@@ -1769,18 +1782,18 @@ export function WordBoardEditor({
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
-          title="页面边框"
-          label="页面边框"
-          hint={pageSettings.page_border ? "已开启" : "已关闭"}
+          title="page border"
+          label="page border"
+          hint={pageSettings.page_border ? "Already turned on" : "Closed"}
           icon={<Frame className="h-4 w-4" />}
           active={pageSettings.page_border}
           disabled={readOnly}
           onClick={() => updatePageSettings({ page_border: !pageSettings.page_border })}
         />
         <RibbonActionButton
-          title="行号"
-          label="行号"
-          hint={pageSettings.line_numbers ? "已显示" : "点击显示"}
+          title="Line number"
+          label="Line number"
+          hint={pageSettings.line_numbers ? "Shown" : "Click to show"}
           icon={<ListOrdered className="h-4 w-4" />}
           active={pageSettings.line_numbers}
           disabled={readOnly}
@@ -1792,9 +1805,9 @@ export function WordBoardEditor({
         {PAGE_BACKGROUND_OPTIONS.map((option) => (
           <RibbonActionButton
             key={option.value}
-            title={`页面背景：${option.label}`}
+            title={`Page background: ${option.label}`}
             label={option.label}
-            hint="背景"
+            hint="background"
             icon={<PaintBucket className="h-4 w-4" />}
             active={pageSettings.background_style === option.value}
             disabled={readOnly}
@@ -1818,15 +1831,18 @@ export function WordBoardEditor({
           <div className="flex h-10 items-center border-b border-gray-100 px-6">
             <RibbonTabButton active={activeRibbonTab === "home"} onClick={() => setActiveRibbonTab("home")}>
               <PencilLine className="h-3.5 w-3.5" />
-              开始 (HOME)
+
+              HOME
             </RibbonTabButton>
             <RibbonTabButton active={activeRibbonTab === "insert"} onClick={() => setActiveRibbonTab("insert")}>
               <FilePlus className="h-3.5 w-3.5" />
-              插入 (INSERT)
+
+              INSERT
             </RibbonTabButton>
             <RibbonTabButton active={activeRibbonTab === "page"} onClick={() => setActiveRibbonTab("page")}>
               <Files className="h-3.5 w-3.5" />
-              页面 (PAGE)
+
+              Page(PAGE)
             </RibbonTabButton>
           </div>
           <div className="custom-scrollbar flex items-center gap-3 overflow-x-auto px-5 py-3 whitespace-nowrap">
@@ -1859,7 +1875,8 @@ export function WordBoardEditor({
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
               >
                 <Upload className="h-4 w-4" />
-                导入 DOCX
+
+                Import DOCX
               </button>
               <button
                 type="button"
@@ -1867,7 +1884,8 @@ export function WordBoardEditor({
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
               >
                 <Download className="h-4 w-4" />
-                导出 DOCX
+
+                Export DOCX
               </button>
               <button
                 type="button"
@@ -1875,7 +1893,8 @@ export function WordBoardEditor({
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
               >
                 <FileText className="h-4 w-4" />
-                导出 HTML
+
+                Export HTML
               </button>
               <input
                 ref={ridocImportRef}
@@ -1896,7 +1915,8 @@ export function WordBoardEditor({
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
               >
                 <Download className="h-4 w-4" />
-                导出课程包
+
+                Export course package
               </button>
             </div>
           </div>
@@ -1934,7 +1954,7 @@ export function WordBoardEditor({
                 disabled={readOnly}
                 onChange={(event) => onDocumentChange({ ...document, title: event.target.value })}
                 className="w-full border-0 bg-transparent text-[34px] font-semibold tracking-tight text-[#1a1a1a] outline-none placeholder:text-gray-300"
-                placeholder="未命名讲义"
+                placeholder="Unnamed lesson document"
               />
             </div>
             <div className="flex-1" style={contentStyle}>

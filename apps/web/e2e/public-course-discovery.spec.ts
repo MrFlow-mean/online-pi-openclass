@@ -4,11 +4,11 @@ const publicCourses = [
   {
     id: "lesson_discovery",
     kind: "lesson",
-    owner_display_name: "真实课程作者",
+    owner_display_name: "real course author",
     owner_avatar_url: null,
-    title: "公开课程动态项目",
-    summary: "来自真实公开课程发现接口，可查看详情并下载到个人项目。",
-    tags: ["公开", "协作"],
+    title: "Open course dynamic projects",
+    summary: "From the real public course discovery interface, you can view details and download to personal projects.",
+    tags: ["public", "cooperation"],
     lesson_count: 1,
     updated_at: new Date().toISOString(),
     visibility: "public",
@@ -18,11 +18,11 @@ const publicCourses = [
   {
     id: "package_discovery",
     kind: "package",
-    owner_display_name: "课程包作者",
+    owner_display_name: "Course Pack Author",
     owner_avatar_url: null,
-    title: "可下载课程包",
-    summary: "下载后保留为私有课程包。",
-    tags: ["课程包"],
+    title: "Downloadable course packs",
+    summary: "After downloading, keep it as a private course package.",
+    tags: ["course package"],
     lesson_count: 3,
     updated_at: new Date(Date.now() - 3_600_000).toISOString(),
     visibility: "public",
@@ -60,7 +60,7 @@ test.beforeEach(async ({ context, page }) => {
         id: "discovery-viewer",
         email: "discovery-viewer@example.com",
         role: "user",
-        display_name: "课程发现用户",
+        display_name: "course discovery user",
         avatar_url: null,
         created_at: "2026-07-30T00:00:00+00:00",
         last_login_at: null,
@@ -81,7 +81,7 @@ test("popular cards expose details and download actions from real public data", 
       contentType: "application/json",
       body: JSON.stringify({
         id: "package_standalone",
-        title: "单独课程",
+        title: "individual courses",
         summary: "",
         visibility: "private",
         publication_review: {
@@ -105,14 +105,14 @@ test("popular cards expose details and download actions from real public data", 
   });
 
   await page.goto("/trending");
-  await expect(page.getByRole("heading", { name: "热门项目" })).toBeVisible();
-  await expect(page.getByText("真实公开课程", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "详情 公开课程动态项目" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载 公开课程动态项目" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "详情 可下载课程包" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载 可下载课程包" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Popular items" })).toBeVisible();
+  await expect(page.getByText("Real public courses", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Details Open course dynamic projects" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Open course dynamic projects" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Details Downloadable course packs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Downloadable course packs" })).toBeVisible();
 
-  await page.getByRole("button", { name: "下载 公开课程动态项目" }).click();
+  await page.getByRole("button", { name: "Download Open course dynamic projects" }).click();
   await expect.poll(() => downloadedLessonId).toBe("lesson_discovery");
 });
 
@@ -127,7 +127,7 @@ test("activity cards expose details and download actions from real public data",
       contentType: "application/json",
       body: JSON.stringify({
         id: "package_personal_copy",
-        title: "可下载课程包",
+        title: "Downloadable course packs",
         summary: "",
         visibility: "private",
         publication_review: {
@@ -151,12 +151,12 @@ test("activity cards expose details and download actions from real public data",
   });
 
   await page.goto("/following");
-  await expect(page.getByRole("heading", { name: "课程动态" })).toBeVisible();
-  await expect(page.getByText("2 个真实项目")).toBeVisible();
-  await expect(page.getByRole("link", { name: "详情 公开课程动态项目" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载 公开课程动态项目" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "详情 可下载课程包" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载 可下载课程包" })).toBeVisible();
-  await page.getByRole("button", { name: "下载 可下载课程包" }).click();
+  await expect(page.getByRole("heading", { name: "Course dynamics" })).toBeVisible();
+  await expect(page.getByText("2 real projects")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Details Open course dynamic projects" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Open course dynamic projects" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Details Downloadable course packs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Downloadable course packs" })).toBeVisible();
+  await page.getByRole("button", { name: "Download Downloadable course packs" }).click();
   await expect.poll(() => downloadedPackageId).toBe("package_discovery");
 });

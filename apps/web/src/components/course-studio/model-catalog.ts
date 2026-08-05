@@ -84,21 +84,21 @@ export const MODEL_ACCESS_METHODS: ReadonlyArray<{
 }> = [
   {
     id: "chatgpt_subscription",
-    label: "ChatGPT 订阅额度",
-    shortLabel: "ChatGPT 订阅",
-    description: "通过已连接的 ChatGPT 账号调用 Codex 订阅模型。",
+    label: "ChatGPT subscription quota",
+    shortLabel: "ChatGPT Subscription",
+    description: "Call the Codex subscription model through the connected ChatGPT account.",
   },
   {
     id: "personal_api",
-    label: "自有模型 API",
-    shortLabel: "自有 API",
-    description: "使用你的 API Key，由模型服务商直接计费。",
+    label: "Own model API",
+    shortLabel: "Own API",
+    description: "Use your API Key and be billed directly by the model service provider.",
   },
   {
     id: "platform_credits",
-    label: "OpenClass 平台 API",
-    shortLabel: "平台 API",
-    description: "使用 OpenClass 配置的模型服务。",
+    label: "OpenClass Platform API",
+    shortLabel: "Platform API",
+    description: "Model service configured using OpenClass.",
   },
 ];
 
@@ -135,8 +135,8 @@ export const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
   deepseek: "DeepSeek",
   kimi: "Kimi",
   minimax: "MiniMax",
-  openai_compatible: "OpenAI 兼容",
-  anthropic_compatible: "Anthropic 兼容",
+  openai_compatible: "OpenAI compatible",
+  anthropic_compatible: "Anthropic compatible",
 };
 
 export const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
@@ -186,7 +186,7 @@ export function modelButtonLabel(option: AIModelOption | null, fallback: AIModel
     return option.label;
   }
   if (!fallback) {
-    return "未选择";
+    return "Not selected";
   }
   return `${PROVIDER_LABELS[fallback.provider]} ${fallback.model}`;
 }
@@ -294,18 +294,18 @@ export function googleRealtimeErrorMessage(error: GoogleRealtimeAudioMessage["er
   const lowerStatus = status.toLowerCase();
 
   if (error?.code === 401 || lowerStatus.includes("unauthenticated")) {
-    return "Google Gemini Live 认证失败。请检查统一模型 API Key 是否正确。";
+    return "Google Gemini Live authentication failed. Please check whether the unified model API Key is correct.";
   }
   if (error?.code === 403 || lowerStatus.includes("permission") || lowerMessage.includes("permission denied")) {
-    return "Google Gemini Live 权限被拒绝。请检查 Google API Key 是否启用了 Gemini API，并确认该 key 可使用 Live API。";
+    return "Google Gemini Live permission denied. Please check whether the Gemini API is enabled on the Google API Key and confirm that the key can use the Live API.";
   }
   if (error?.code === 429 || lowerStatus.includes("quota") || lowerMessage.includes("quota")) {
-    return "Google Gemini Live 配额不足或请求过于频繁，请稍后重试或检查 Google API 配额。";
+    return "The Google Gemini Live quota is insufficient or the requests are too frequent. Please try again later or check the Google API quota.";
   }
   if (rawMessage) {
-    return `Google Gemini Live 连接失败：${rawMessage}`;
+    return `Google Gemini Live connection failed: ${rawMessage}`;
   }
-  return "Google Gemini Live 连接失败。";
+  return "Google Gemini Live connection failed.";
 }
 
 export function realtimeConnectionErrorMessage(error: unknown, selection: AIModelSelection): string {
@@ -319,18 +319,18 @@ export function realtimeConnectionErrorMessage(error: unknown, selection: AIMode
     lowerMessage === "permission denied" ||
     lowerMessage.includes("permission dismissed")
   ) {
-    return "麦克风权限被拒绝。请在浏览器地址栏允许本网站使用麦克风；如果通过本地启动页打开，请重新打开启动页或点“直接打开前端”；如果不是 localhost，请通过 HTTPS 打开页面。";
+    return "Microphone permission denied. Please allow this website to use the microphone in the browser address bar; if it is opened through the local startup page, please reopen the startup page or click \"Open the front end directly\"; if it is not localhost, please open the page through HTTPS.";
   }
   if (errorName === "NotFoundError" || lowerMessage.includes("requested device not found")) {
-    return "没有找到可用麦克风。请连接或启用麦克风后重试。";
+    return "No available microphone found. Please connect or enable the microphone and try again.";
   }
   if (errorName === "NotReadableError" || lowerMessage.includes("could not start audio source")) {
-    return "麦克风暂时不可用，可能正被其他应用占用。请关闭占用麦克风的应用后重试。";
+    return "The microphone is temporarily unavailable and may be occupied by another application. Please close the application using the microphone and try again.";
   }
   if (rawMessage) {
     return rawMessage;
   }
-  return `连接 ${PROVIDER_LABELS[selection.provider]} 实时语音失败`;
+  return `Could not connect to ${PROVIDER_LABELS[selection.provider]} realtime voice`;
 }
 
 export function persistModelSelection(key: string, selection: AIModelSelection) {

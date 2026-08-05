@@ -11,7 +11,7 @@ def test_public_activity_uses_openclass_brand_for_reasoning() -> None:
         }
     )
 
-    assert recorder.events[0].label == "OpenClass 正在思考"
+    assert recorder.events[0].label == "OpenClass is thinking"
     assert recorder.events[0].role == "OpenClass"
 
     recorder.complete_item(
@@ -25,7 +25,7 @@ def test_public_activity_uses_openclass_brand_for_reasoning() -> None:
         }
     )
 
-    assert recorder.events[0].label == "OpenClass 已完成思考"
+    assert recorder.events[0].label == "OpenClass finished thinking"
     assert recorder.events[0].role == "OpenClass"
 
 
@@ -54,7 +54,7 @@ def test_public_activity_uses_openclass_brand_for_commentary_and_tools() -> None
         }
     )
 
-    assert recorder.events[0].label == "OpenClass 工作进展"
+    assert recorder.events[0].label == "OpenClass progress"
     assert recorder.events[0].role == "OpenClass"
-    assert recorder.events[1].label == "运行命令"
+    assert recorder.events[1].label == "Running command"
     assert recorder.events[1].role == "OpenClass tool"

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
+from typing import Callable
 
 from app.models import (
+    AgentActivityEvent,
     EvidenceBundle,
     LearningClarificationStatus,
     LearningRequirementAuxiliaryFactor,
@@ -15,6 +18,8 @@ from app.models import (
     Lesson,
     RetrievalEvidence,
     SelectionRef,
+    SourceQueryScope,
+    new_id,
     now_iso,
 )
 from app.services import workspace_state
@@ -26,6 +31,11 @@ from app.services.source_range_reader import (
     is_codex_directory_catalog,
     read_verified_source_range,
 )
+from app.services.source_ingestion_service import source_local_path
+from app.services.source_page_visual_analysis import (
+    SourcePageVisualAnalysisError,
+    analyze_pdf_visual_scope,
+)
 from app.services.source_structure_indexer import (
     source_structure_needs_upgrade,
 )
@@ -35,7 +45,9 @@ from app.services.source_scope_ocr import (
     recover_pdf_scope_evidence,
 )
 from app.services.source_structure_store import source_structure_store
-from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
+from app.services.source_visual_extraction import (
+    CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+)
 
 
 SOURCE_BOARD_TOKEN_BUDGET = 48_000
@@ -54,12 +66,372 @@ class SourceGroundedBoardPlan:
     teaching_plan: str
 
 
+def selection_from_source_query_scope(
+    *,
+    owner_user_id: str,
+    lesson: Lesson,
+    scope: SourceQueryScope,
+) -> SelectionRef | None:
+    """Recover one authenticated board source selection from a transport QA scope."""
+
+    if scope.mode not in {"chapter", "source"} or len(scope.refs) != 1:
+        return None
+    ref = scope.refs[0]
+    workspace = workspace_state.load_workspace_for_user(owner_user_id)
+    package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
+    source = source_evidence_store.get_source(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        source_id=ref.source_ingestion_id,
+    )
+    if source is None or source.status != "ready":
+        raise SourceGroundedBoardError("这份资料尚未准备好，暂时不能据此生成板书。")
+    actual_hash = str(source.metadata.get("content_hash") or "").strip().lower()
+    submitted_hash = ref.source_content_hash.strip().lower()
+    if not actual_hash or actual_hash != submitted_hash:
+        raise SourceGroundedBoardError("这份资料已发生变化，请重新选择章节。")
+    if scope.mode == "source":
+        structure = source_structure_store.get_structure(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            source_id=source.id,
+        )
+        if (
+            structure is not None
+            and is_codex_directory_catalog(structure)
+            and structure.metadata.get("directory_status") != "complete"
+        ):
+            raise SourceGroundedBoardError("这份资料的目录仍在完善，请先引用已验证章节。")
+        return SelectionRef(
+            kind="source",
+            excerpt=f"《{source.title}》",
+            source_ingestion_id=source.id,
+            source_title=source.title,
+            source_uri=source.source_uri,
+            source_content_hash=submitted_hash,
+            source_scope_kind="source",
+        )
+    if not ref.source_chapter_id:
+        return None
+    pair = source_structure_store.get_catalog_chapter(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        source_id=source.id,
+        chapter_id=ref.source_chapter_id,
+    )
+    if pair is None:
+        raise SourceGroundedBoardError("找不到这份引用对应的已验证章节，请重新选择。")
+    structure, chapter = pair
+    if chapter.anchor_status != "verified" and chapter.mapping_status != "verified":
+        raise SourceGroundedBoardError("这份资料的章节范围尚未验证。")
+    return SelectionRef(
+        kind="source",
+        excerpt=" · ".join(part for part in (source.title, chapter.title) if part),
+        heading_path=chapter.path,
+        source_ingestion_id=source.id,
+        source_title=source.title,
+        source_uri=source.source_uri,
+        source_chapter_id=chapter.id,
+        source_chapter_number=chapter.number,
+        source_chapter_title=chapter.title,
+        source_page_start=ref.page_start,
+        source_page_end=ref.page_end,
+        source_range=chapter.range,
+        catalog_version=chapter.catalog_version or structure.catalog_version,
+        source_content_hash=submitted_hash,
+        source_scope_kind="chapter",
+    )
+
+
+def resolve_source_query_grounded_board_plan(
+    *,
+    owner_user_id: str,
+    lesson: Lesson,
+    scope: SourceQueryScope,
+    query: str,
+    retrieval_bundle: EvidenceBundle | None = None,
+    visual_adapter=None,
+    visual_model_supports_images: bool = False,
+    visual_model_identity: str = "",
+    is_cancelled: Callable[[], bool] | None = None,
+    on_activity=None,
+) -> SourceGroundedBoardPlan:
+    """Freeze one or many authenticated query scopes into one board plan."""
+
+    if scope.mode == "all_ready_sources":
+        if retrieval_bundle is None:
+            raise SourceGroundedBoardError("没有检索到可用于本轮学习的已验证资料正文。")
+        return _plan_from_retrieval_bundle(
+            owner_user_id=owner_user_id,
+            lesson=lesson,
+            query=query,
+            retrieval_bundle=retrieval_bundle,
+        )
+    component_plans: list[SourceGroundedBoardPlan] = []
+    for ref in scope.refs:
+        single_scope = SourceQueryScope(
+            mode="source" if scope.mode == "sources" else scope.mode,
+            refs=[ref],
+        )
+        selection = selection_from_source_query_scope(
+            owner_user_id=owner_user_id,
+            lesson=lesson,
+            scope=single_scope,
+        )
+        if selection is None and scope.mode == "page_range":
+            selection = _page_range_selection(
+                owner_user_id=owner_user_id,
+                lesson=lesson,
+                ref=ref,
+            )
+        if selection is None:
+            raise SourceGroundedBoardError("这份资料引用缺少可验证范围，请重新选择。")
+        plan = resolve_source_grounded_board_plan(
+            owner_user_id=owner_user_id,
+            lesson=lesson,
+            selection=selection,
+            query=query,
+            visual_adapter=visual_adapter,
+            visual_model_supports_images=visual_model_supports_images,
+            visual_model_identity=visual_model_identity,
+            is_cancelled=is_cancelled,
+            on_activity=on_activity,
+        )
+        if plan is None:
+            raise SourceGroundedBoardError("这份资料引用无法形成可验证板书范围。")
+        component_plans.append(plan)
+    if len(component_plans) == 1:
+        return component_plans[0]
+    return _aggregate_source_plans(
+        owner_user_id=owner_user_id,
+        lesson=lesson,
+        query=query,
+        plans=component_plans,
+    )
+
+
+def _page_range_selection(*, owner_user_id: str, lesson: Lesson, ref) -> SelectionRef:
+    workspace = workspace_state.load_workspace_for_user(owner_user_id)
+    package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
+    source = source_evidence_store.get_source(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        source_id=ref.source_ingestion_id,
+    )
+    if source is None or source.status != "ready":
+        raise SourceGroundedBoardError("这份资料尚未准备好，暂时不能据此生成板书。")
+    actual_hash = str(source.metadata.get("content_hash") or "").strip().lower()
+    if not actual_hash or actual_hash != ref.source_content_hash.strip().lower():
+        raise SourceGroundedBoardError("这份资料已发生变化，请重新选择页段。")
+    return SelectionRef(
+        kind="source",
+        excerpt=f"《{source.title}》 · {ref.page_start}-{ref.page_end}",
+        source_ingestion_id=source.id,
+        source_title=source.title,
+        source_uri=source.source_uri,
+        source_page_start=ref.page_start,
+        source_page_end=ref.page_end,
+        source_content_hash=actual_hash,
+        source_scope_kind="page_range",
+        source_range={"kind": "pdf_pages", "start": ref.page_start, "end": ref.page_end},
+    )
+
+
+def _aggregate_source_plans(
+    *, owner_user_id: str, lesson: Lesson, query: str, plans: list[SourceGroundedBoardPlan]
+) -> SourceGroundedBoardPlan:
+    workspace = workspace_state.load_workspace_for_user(owner_user_id)
+    package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
+    evidence = _dedupe_evidence(
+        item for plan in plans for item in plan.requirement.source_grounding.frozen_evidence
+    )
+    visuals = list({item.visual_id: item for plan in plans for item in plan.requirement.source_grounding.frozen_visual_evidence}.values())
+    if not evidence:
+        raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")
+    bundle = EvidenceBundle(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        lesson_id=lesson.id,
+        purpose="board_generation",
+        status="confirmed",
+        query=query,
+        evidence_items=evidence,
+        visual_items=visuals,
+        context_text=_evidence_context_text(evidence),
+        token_count=sum(item.token_count for item in evidence),
+        confirmed_by_user=True,
+        confirmed_at=now_iso(),
+        metadata={
+            "origin": "aggregated_source_query_scope",
+            "component_bundle_ids": [
+                plan.requirement.source_grounding.confirmed_bundle_id for plan in plans
+            ],
+        },
+    )
+    source_evidence_store.save_bundle(bundle)
+    references = [
+        reference.model_copy(update={"evidence_bundle_id": bundle.id})
+        for plan in plans
+        for reference in plan.requirement.source_grounding.confirmed_references
+    ]
+    return _aggregated_plan(
+        query=query,
+        bundle=bundle,
+        references=references,
+        evidence=evidence,
+        visuals=visuals,
+    )
+
+
+def _plan_from_retrieval_bundle(
+    *, owner_user_id: str, lesson: Lesson, query: str, retrieval_bundle: EvidenceBundle
+) -> SourceGroundedBoardPlan:
+    evidence = _dedupe_evidence(retrieval_bundle.evidence_items)
+    if not evidence or not any(has_usable_source_text(item.expanded_text) for item in evidence):
+        raise SourceGroundedBoardError("没有检索到可用于本轮学习的已验证资料正文。")
+    workspace = workspace_state.load_workspace_for_user(owner_user_id)
+    package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
+    bundle = retrieval_bundle.model_copy(
+        update={
+            "id": new_id("bundle"),
+            "owner_user_id": owner_user_id,
+            "package_id": package.id,
+            "lesson_id": lesson.id,
+            "purpose": "board_generation",
+            "status": "confirmed",
+            "query": query,
+            "evidence_items": evidence,
+            "context_text": _evidence_context_text(evidence),
+            "token_count": sum(item.token_count for item in evidence),
+            "confirmed_by_user": True,
+            "confirmed_at": now_iso(),
+            "metadata": {**retrieval_bundle.metadata, "origin": "all_ready_source_learning"},
+        }
+    )
+    source_evidence_store.save_bundle(bundle)
+    grouped: dict[tuple[str, str, str], list[RetrievalEvidence]] = {}
+    for item in evidence:
+        grouped.setdefault(
+            (item.source_ingestion_id, item.chapter_id, item.page_range), []
+        ).append(item)
+    references = [
+        LearningSourceReference(
+            evidence_bundle_id=bundle.id,
+            source_ingestion_id=items[0].source_ingestion_id,
+            source_title=items[0].source_title,
+            source_chapter_id=items[0].chapter_id,
+            chapter_title=(items[0].section_path[-1] if items[0].section_path else ""),
+            scope_kind="retrieved_range",
+            section_path=items[0].section_path,
+            page_range=items[0].page_range,
+            chunk_ids=_dedupe_chunk_ids(items),
+            content_hash=str(items[0].metadata.get("source_content_hash") or _evidence_hash(items)),
+        )
+        for items in grouped.values()
+    ]
+    return _aggregated_plan(
+        query=query,
+        bundle=bundle,
+        references=references,
+        evidence=evidence,
+        visuals=bundle.visual_items,
+    )
+
+
+def _aggregated_plan(
+    *, query: str, bundle: EvidenceBundle, references: list[LearningSourceReference],
+    evidence: list[RetrievalEvidence], visuals: list
+) -> SourceGroundedBoardPlan:
+    labels = list(dict.fromkeys(
+        " / ".join(part for part in [ref.source_title, ref.chapter_title, ref.page_range] if part)
+        for ref in references
+    ))
+    source_label = "；".join(label for label in labels if label)
+    grounding = LearningSourceGrounding(
+        requested_by_user=True,
+        confirmation_status="confirmed",
+        confirmed_bundle_id=bundle.id,
+        confirmed_at=bundle.confirmed_at,
+        confirmed_references=references,
+        frozen_evidence=evidence,
+        frozen_visual_evidence=visuals,
+    )
+    requirement = LearningRequirementSheet(
+        teaching_type="knowledge_point",
+        learning_content=query.strip() or source_label,
+        current_level="",
+        target_scenario="",
+        theme=query.strip() or source_label,
+        learning_goal="基于本轮已验证资料范围建立一份可学习的聚合板书。",
+        level="",
+        known_background="",
+        current_questions=[],
+        learning_need_checklist=["已确认全部资料范围及来源身份"],
+        target_depth="按各资料与章节分别组织，并呈现它们的关系。",
+        output_preference="结构化 Markdown 板书",
+        boundary=source_label,
+        board_scope=labels,
+        success_criteria="覆盖相关核心概念；冲突信息须并列标明来源，不得合并成无来源结论。",
+        board_workflow="generate_from_scratch",
+        work_mode="knowledge_board",
+        granularity="source_range",
+        source_grounding=grounding,
+    )
+    clarification = LearningClarificationStatus(
+        progress=100,
+        label="多资料范围已确认",
+        reason="本轮资料证据已验证并冻结，可直接生成聚合板书。",
+        missing_items=[],
+        can_start=True,
+        summary=source_label,
+        work_mode="knowledge_board",
+        granularity="source_range",
+        ready_for_board=True,
+    )
+    return SourceGroundedBoardPlan(
+        requirement=requirement,
+        clarification=clarification,
+        teaching_plan=(
+            "仅使用冻结证据生成一份聚合板书；按资料和章节保留来源边界，"
+            "重复证据只使用一次，冲突内容并列说明各自来源。"
+        ),
+    )
+
+
+def _dedupe_evidence(items) -> list[RetrievalEvidence]:
+    return list({item.id: item for item in items}.values())
+
+
+def _scoped_visual_cache_key(
+    *,
+    source_content_hash: str,
+    catalog_version: int,
+    source_range: dict,
+) -> str:
+    payload = {
+        "source_content_hash": source_content_hash,
+        "catalog_version": catalog_version,
+        "source_range": source_range,
+        "extractor_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 def resolve_source_grounded_board_plan(
     *,
     owner_user_id: str,
     lesson: Lesson,
     selection: SelectionRef | None,
     query: str = "",
+    visual_adapter=None,
+    visual_model_supports_images: bool = False,
+    visual_model_identity: str = "",
+    is_cancelled: Callable[[], bool] | None = None,
+    on_activity=None,
 ) -> SourceGroundedBoardPlan | None:
     """Turn one verified source selection into a frozen-ready blank-board input.
 
@@ -95,7 +467,7 @@ def resolve_source_grounded_board_plan(
             selection.source_page_start is None
             or selection.source_page_end is None
             or selection.source_page_start < 1
-            or selection.source_page_end <= selection.source_page_start
+            or selection.source_page_end < selection.source_page_start
         ):
             raise SourceGroundedBoardError("这份资料引用缺少有效的页段边界。")
     elif not is_whole_source and not selection.source_chapter_id:
@@ -110,6 +482,10 @@ def resolve_source_grounded_board_plan(
     )
     if source is None or source.status != "ready":
         raise SourceGroundedBoardError("这份资料尚未准备好，暂时不能据此生成板书。")
+    submitted_hash = (selection.source_content_hash or "").strip().lower()
+    actual_hash = str(source.metadata.get("content_hash") or "").strip().lower()
+    if submitted_hash and (not actual_hash or submitted_hash != actual_hash):
+        raise SourceGroundedBoardError("这份资料已发生变化，请重新选择引用范围。")
     source_catalog_pipeline = str(
         source.metadata.get("catalog_pipeline")
         or source.metadata.get("structure_pipeline")
@@ -293,10 +669,81 @@ def resolve_source_grounded_board_plan(
     ):
         raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")
 
-    visual_evidence = (
-        []
-        if uses_on_demand_range
-        else source_structure_store.visual_evidence_for_scope(
+    scoped_visual_status = "legacy_index"
+    scoped_visual_warnings: list[str] = []
+    scoped_visual_excluded: list[dict[str, object]] = []
+    scoped_visual_cache_key = ""
+    if uses_on_demand_range:
+        assert chapter is not None and range_read is not None
+        visual_evidence = []
+        scoped_visual_cache_key = _scoped_visual_cache_key(
+            source_content_hash=range_read.source_content_hash,
+            catalog_version=range_read.catalog_version,
+            source_range=range_read.source_range,
+        )
+        if range_read.source_range.get("kind") != "pdf_pages":
+            scoped_visual_status = "not_applicable"
+        elif not visual_model_supports_images:
+            scoped_visual_status = "unsupported"
+            if on_activity is not None:
+                on_activity(
+                    AgentActivityEvent(
+                        turn_id=new_id("visualscope"),
+                        stage="build_context",
+                        label="当前运行时不支持教材视觉工具，将继续生成文字板书",
+                        status="skipped",
+                        role="BoardWriter",
+                        metadata={"kind": "board_visual_tools_unsupported"},
+                    )
+                )
+        elif visual_adapter is None:
+            scoped_visual_status = "unsupported"
+            scoped_visual_warnings.append(
+                "Board Agent visual tools are unavailable in this runtime."
+            )
+        else:
+            page_start = _pdf_range_endpoint(range_read.source_range, "start")
+            page_end = _pdf_range_endpoint(range_read.source_range, "end")
+            source_path = source_local_path(source)
+            if source_path is None or page_start is None or page_end is None:
+                scoped_visual_status = "warning"
+                scoped_visual_warnings.append(
+                    "The source PDF file or its authorized page range is unavailable for visual inspection."
+                )
+            else:
+                try:
+                    scoped_result = analyze_pdf_visual_scope(
+                        source=source,
+                        structure=view.structure,
+                        chapter=chapter,
+                        source_path=source_path,
+                        page_start=page_start,
+                        page_end=page_end,
+                        scope_cache_key=scoped_visual_cache_key,
+                        model_identity=visual_model_identity,
+                        adapter=visual_adapter,
+                        is_cancelled=is_cancelled,
+                        on_activity=on_activity,
+                    )
+                except SourcePageVisualAnalysisError as exc:
+                    scoped_visual_status = "warning"
+                    scoped_visual_warnings.append(str(exc))
+                else:
+                    source_structure_store.upsert_scoped_visuals(scoped_result.visuals)
+                    scoped_visual_excluded = scoped_result.excluded_candidates
+                    scoped_visual_warnings.extend(scoped_result.warnings)
+                    scoped_visual_status = (
+                        "processed_with_warnings" if scoped_result.warnings else "processed"
+                    )
+                    visual_evidence = source_structure_store.scoped_visual_evidence(
+                        owner_user_id=owner_user_id,
+                        package_id=package.id,
+                        source_ingestion_id=source.id,
+                        chapter_id=chapter.id,
+                        scope_cache_key=scoped_visual_cache_key,
+                    )
+    else:
+        visual_evidence = source_structure_store.visual_evidence_for_scope(
             owner_user_id=owner_user_id,
             package_id=package.id,
             source_ingestion_id=source.id,
@@ -312,7 +759,6 @@ def resolve_source_grounded_board_plan(
                 else chapter.page_end if chapter else None
             ),
         )
-    )
 
     bundle = EvidenceBundle(
         owner_user_id=owner_user_id,
@@ -322,7 +768,9 @@ def resolve_source_grounded_board_plan(
         status="confirmed",
         query=selection.excerpt,
         evidence_items=evidence,
-        visual_items=visual_evidence,
+        # On-demand PDF visuals are registered source assets, not a frozen
+        # pre-generation completeness checklist.
+        visual_items=[] if uses_on_demand_range else visual_evidence,
         context_text=_evidence_context_text(evidence),
         token_count=sum(item.token_count for item in evidence),
         confirmed_by_user=True,
@@ -339,6 +787,12 @@ def resolve_source_grounded_board_plan(
             "catalog_version": range_read.catalog_version if range_read else None,
             "source_content_hash": range_read.source_content_hash if range_read else "",
             "source_range": range_read.source_range if range_read else None,
+            "visual_scope_cache_key": scoped_visual_cache_key,
+            "visual_scope_status": scoped_visual_status,
+            "visual_requested_range": range_read.source_range if range_read else None,
+            "visual_extracted_count": len(visual_evidence),
+            "visual_scope_warnings": scoped_visual_warnings,
+            "visual_excluded_candidates": scoped_visual_excluded,
         },
     )
     source_evidence_store.save_bundle(bundle)
@@ -387,7 +841,7 @@ def resolve_source_grounded_board_plan(
         body_start_offset=chapter.body_start_offset if chapter else None,
         body_end_offset=chapter.body_end_offset if chapter else None,
         chunk_ids=_dedupe_chunk_ids(evidence),
-        visual_ids=[item.visual_id for item in visual_evidence],
+        visual_ids=[] if uses_on_demand_range else [item.visual_id for item in visual_evidence],
         source_structure_id=view.structure.id,
         source_structure_updated_at=view.structure.updated_at,
         content_hash=_evidence_hash(evidence),
@@ -399,7 +853,7 @@ def resolve_source_grounded_board_plan(
         confirmed_at=bundle.confirmed_at,
         confirmed_references=[reference],
         frozen_evidence=evidence,
-        frozen_visual_evidence=visual_evidence,
+        frozen_visual_evidence=[] if uses_on_demand_range else visual_evidence,
     )
     source_label = " / ".join(part for part in [source.title, chapter_label, reference.page_range] if part)
     requirement = LearningRequirementSheet(
@@ -412,7 +866,17 @@ def resolve_source_grounded_board_plan(
                 label="confirmed_source",
                 value=source_label,
                 evidence="structured_source_selection",
-            )
+            ),
+            LearningRequirementAuxiliaryFactor(
+                label="source_visual_scope_status",
+                value=scoped_visual_status,
+                evidence="board_agent_visual_diagnostic",
+            ),
+            LearningRequirementAuxiliaryFactor(
+                label="source_visual_scope_cache_key",
+                value=scoped_visual_cache_key,
+                evidence="authenticated_source_scope",
+            ),
         ],
         theme=chapter_label,
         learning_goal=f"基于《{source.title}》的所选章节建立可学习的板书。",
@@ -462,6 +926,13 @@ def resolve_source_grounded_board_plan(
         teaching_plan=(
             "以冻结的资料正文为唯一事实依据，保留章节结构，提炼核心概念、"
             "关键关系和必要例证，生成一份可独立学习的板书。"
+            + (
+                " 当前运行时不支持教材视觉工具；继续生成文字板书，并在完成回复中明确说明本轮未处理教材视觉。"
+                if scoped_visual_status == "unsupported"
+                else " 将 Board Agent 登记的教学视觉放在相关知识段落附近；位置不确定时放入本章教学图表附录。"
+                if visual_evidence
+                else ""
+            )
         ),
     )
 

@@ -1,7 +1,7 @@
 import type { InterfaceLanguage } from "@/lib/profile-settings-state";
 
-function intl(locale: InterfaceLanguage): string {
-  return locale === "en" ? "en-US" : "zh-CN";
+function intl(_locale: InterfaceLanguage): string {
+  return "en-US";
 }
 
 export function uiIntlLocale(interfaceLanguage: InterfaceLanguage): string {
@@ -10,8 +10,9 @@ export function uiIntlLocale(interfaceLanguage: InterfaceLanguage): string {
 
 export type ProfileSettingsTexts = ReturnType<typeof profileSettingsTexts>;
 
-export function profileSettingsTexts(lang: InterfaceLanguage) {
-  const z = lang === "zh-CN";
+export function profileSettingsTexts(_lang: InterfaceLanguage) {
+  const lang: InterfaceLanguage = "en";
+  const z = false;
   return {
     intlLocale: intl(lang),
     lang,

@@ -37,19 +37,19 @@ export function ChatInkBoard({ panelRef, position, disabled, onClose, onSubmit }
     <div
       ref={panelRef}
       role="dialog"
-      aria-label="手写板"
+      aria-label="writing tablet"
       style={position}
       className="fixed z-[101] max-h-[calc(100vh-16px)] w-[min(560px,calc(100vw-16px))] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-3 shadow-2xl"
     >
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">手写板</p>
+        <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">writing tablet</p>
         <button
           type="button"
           onClick={onClose}
           disabled={isSubmitting}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-50 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label="关闭手写板"
-          title="关闭"
+          aria-label="Close tablet"
+          title="closure"
         >
           <X className="h-4 w-4" />
         </button>
@@ -57,7 +57,7 @@ export function ChatInkBoard({ panelRef, position, disabled, onClose, onSubmit }
 
       <canvas
         ref={canvasRef}
-        aria-label="手写输入画板"
+        aria-label="Handwriting input drawing board"
         className="mt-3 block h-[220px] w-full touch-none rounded-xl border border-gray-200 bg-white shadow-inner"
         {...canvasHandlers}
       />
@@ -70,7 +70,8 @@ export function ChatInkBoard({ panelRef, position, disabled, onClose, onSubmit }
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[12px] font-semibold text-gray-600 transition hover:border-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Eraser className="h-4 w-4" />
-          清空
+
+          Clear
         </button>
         <button
           type="button"
@@ -79,7 +80,7 @@ export function ChatInkBoard({ panelRef, position, disabled, onClose, onSubmit }
           className="inline-flex h-9 items-center gap-2 rounded-lg bg-gray-950 px-3 text-[12px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
-          {isSubmitting ? "正在添加" : "添加到消息"}
+          {isSubmitting ? "Adding" : "add to message"}
         </button>
       </div>
     </div>

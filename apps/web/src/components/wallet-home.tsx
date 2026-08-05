@@ -18,19 +18,19 @@ import type { CreditTransaction, CreditWalletOverview } from "@/lib/api";
 
 function transactionLabel(transaction: CreditTransaction) {
   if (transaction.kind === "paypal_top_up") {
-    return "PayPal 充值";
+    return "PayPal top-up";
   }
   if (transaction.kind === "paypal_refund") {
-    return "PayPal 退款";
+    return "PayPal refund";
   }
   if (transaction.kind === "model_usage") {
-    return "模型调用";
+    return "Model call";
   }
-  return "积分变动";
+  return "Points changes";
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
@@ -70,20 +70,20 @@ export function WalletHome() {
           setProcessingReturn(true);
           await api.capturePayPalOrder(orderId);
           if (!disposed) {
-            setNotice("付款已完成，OpenClass 已确认收到这笔款项。积分已到账。");
+            setNotice("The payment has been completed and OpenClass has confirmed receipt of the payment. Points have arrived.");
             window.history.replaceState({}, "", "/wallet");
           }
         } else if (paypalState === "cancelled") {
-          setNotice("你已取消本次付款，没有产生扣款。");
+          setNotice("You have canceled this payment and no deduction has been incurred.");
           window.history.replaceState({}, "", "/wallet");
         } else if (paymentState === "completed") {
-          setNotice("付款已完成，OpenClass 已确认收到这笔款项。积分已到账。");
+          setNotice("The payment has been completed and OpenClass has confirmed receipt of the payment. Points have arrived.");
           window.history.replaceState({}, "", "/wallet");
         }
         await loadWallet();
       } catch (loadError) {
         if (!disposed) {
-          setError(loadError instanceof Error ? loadError.message : "无法加载支付账户");
+          setError(loadError instanceof Error ? loadError.message : "Unable to load payment account");
         }
       } finally {
         if (!disposed) {
@@ -109,7 +109,8 @@ export function WalletHome() {
           className="inline-flex items-center gap-2 text-sm font-semibold text-stone-600 hover:text-stone-950"
         >
           <ArrowLeft className="h-4 w-4" />
-          返回主页
+
+          Return to home page
         </Link>
 
         <div className="mt-8 flex flex-wrap items-end justify-between gap-4">
@@ -117,9 +118,10 @@ export function WalletHome() {
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-stone-400">
               OpenClass Credits
             </p>
-            <h1 className="mt-2 text-3xl font-semibold">积分与充值</h1>
+            <h1 className="mt-2 text-3xl font-semibold">Credits and top-up</h1>
             <p className="mt-2 text-sm text-stone-500">
-              选择金额后，使用 PayPal 支持的付款方式安全充值。
+
+              After selecting the amount, top up securely using a PayPal-supported payment method.
             </p>
           </div>
           <Coins className="h-10 w-10 text-amber-500" />
@@ -128,7 +130,8 @@ export function WalletHome() {
         {processingReturn ? (
           <section className="mt-8 flex items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-5 text-sm font-medium text-blue-950">
             <LoaderCircle className="h-5 w-5 animate-spin" />
-            正在向 PayPal 确认付款结果，请不要关闭页面。
+
+            The payment result is being confirmed with PayPal, please do not close the page.
           </section>
         ) : null}
 
@@ -150,9 +153,10 @@ export function WalletHome() {
           <div className="flex items-start gap-3">
             <WalletCards className="mt-0.5 h-5 w-5 shrink-0 text-blue-700" />
             <div className="w-full">
-              <h2 className="font-semibold">选择充值金额</h2>
+              <h2 className="font-semibold">Select top-up amount</h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                付款由 PayPal 处理。OpenClass 不接触或保存你的银行卡信息。
+
+                Payments are processed by PayPal. OpenClass does not access or save your card information.
               </p>
               <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {(overview?.packages ?? []).map((paymentPackage) => {
@@ -172,18 +176,19 @@ export function WalletHome() {
                     >
                       <span className="block text-xl font-semibold">${paymentPackage.amount_usd}</span>
                       <span className="mt-1 block text-sm text-stone-600">
-                        获得 {paymentPackage.credits.toLocaleString()} 点数
+
+                        get {paymentPackage.credits.toLocaleString()}  Points
                       </span>
                       <span className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-blue-700">
                         {isNavigating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-                        {isNavigating ? "正在打开支付页面" : "前往支付"}
+                        {isNavigating ? "Opening payment page" : "Go to pay"}
                       </span>
                     </button>
                   );
                 })}
               </div>
               {!loading && !wallet?.paypal_configured ? (
-                <p className="mt-4 text-sm text-red-700">PayPal 收款配置尚未在当前服务中生效。</p>
+                <p className="mt-4 text-sm text-red-700">PayPal payment configuration has not yet taken effect in the current service.</p>
               ) : null}
             </div>
           </div>
@@ -191,7 +196,7 @@ export function WalletHome() {
 
         <section className="mt-6 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
           <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" />
-          <p>Credits 是 OpenClass 平台使用额度，不是现金，不可转让或提现。</p>
+          <p>Credits are OpenClass platform usage limits, not cash, and cannot be transferred or withdrawn.</p>
         </section>
 
         {wallet && wallet.balance_credits > 0 && wallet.model_access_status !== "ready" ? (
@@ -209,21 +214,22 @@ export function WalletHome() {
             )}
             <p>
               {wallet.model_access_status === "syncing"
-                ? "模型额度同步中，点数已经到账。"
-                : "模型额度暂不可用，请稍后重试或联系支持。"}
+                ? "The model quota is being synchronized and the points have been received."
+                : "The model quota is temporarily unavailable, please try again later or contact support."}
             </p>
           </section>
         ) : null}
 
         <section className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
-          <h2 className="font-semibold">交易明细</h2>
+          <h2 className="font-semibold">Transaction details</h2>
           {loading ? (
             <p className="mt-4 flex items-center gap-2 text-sm text-stone-500">
-              <LoaderCircle className="h-4 w-4 animate-spin" /> 正在加载交易记录
+              <LoaderCircle className="h-4 w-4 animate-spin" />  Loading transaction records
             </p>
           ) : transactions.length === 0 ? (
             <p className="mt-4 rounded-xl border border-dashed border-stone-200 px-4 py-8 text-center text-sm text-stone-500">
-              还没有交易记录。
+
+              No transaction recorded yet.
             </p>
           ) : (
             <div className="mt-4 divide-y divide-stone-100">
@@ -239,7 +245,8 @@ export function WalletHome() {
                       {transaction.delta_credits.toLocaleString()} Credits
                     </p>
                     <p className="mt-1 text-xs text-stone-500">
-                      余额 {transaction.balance_after.toLocaleString()}
+
+                      Balance {transaction.balance_after.toLocaleString()}
                     </p>
                   </div>
                 </div>

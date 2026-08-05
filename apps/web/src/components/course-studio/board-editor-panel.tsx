@@ -133,31 +133,36 @@ export function BoardEditorPanel({
     <section className="relative z-10 flex min-w-0 flex-col overflow-hidden bg-white shadow-[0_0_20px_rgba(0,0,0,0.02)]">
       {isPreviewMode ? (
         <div className="shrink-0 border-b border-violet-200 bg-violet-50 px-5 py-3 text-sm text-violet-700">
-          正在预览历史快照：{previewCommit?.label}
+
+          Previewing historical snapshots:{previewCommit?.label}
           <button
             type="button"
             className="ml-3 rounded-md border border-violet-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-violet-700"
             onClick={onExitPreviewMode}
           >
-            回到当前版本
+
+            Return to current version
           </button>
         </div>
       ) : null}
       {!isPreviewMode && isDraftPreviewMode ? (
         <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800">
-          正在预览未保存的生成草稿。生成未成功落库，当前内容不会自动保存。
+
+          Previewing an unsaved build draft. If the generation fails and is dropped into the database, the current content will not be automatically saved.
           <button
             type="button"
             className="ml-3 rounded-md border border-amber-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-800"
             onClick={onExitPreviewMode}
           >
-            回到当前版本
+
+            Return to current version
           </button>
         </div>
       ) : null}
       {isMergeMode ? (
         <div className="shrink-0 border-b border-blue-200 bg-blue-50 px-5 py-3 text-sm text-blue-800">
-          正在编辑合并草案。此处修改只自动保存到合并会话，不会产生普通提交。
+
+          Editing merge draft. The modifications here are only automatically saved to the merge session and no ordinary commits will be generated.
         </div>
       ) : null}
 

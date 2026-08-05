@@ -373,6 +373,45 @@ def test_chat_stream_emits_only_final_validated_board_document(monkeypatch) -> N
     assert "中间草稿" not in document_text
 
 
+def test_chat_stream_emits_persisted_board_before_chat_processing_returns(monkeypatch) -> None:
+    allow_process_return = threading.Event()
+    document_text = "# 已提交板书\n\n自动讲解仍在运行。"
+
+    def process_after_board_commit(*args, **kwargs) -> ChatResponse:
+        kwargs["on_document_commit"](document_text, "commit_board_saved")
+        assert allow_process_return.wait(timeout=1)
+        return _chat_response(
+            "lesson_stream_test",
+            chatbot_message="第一节讲解完成。",
+            document_text=document_text,
+            board_document_operation_status="succeeded",
+        )
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_after_board_commit)
+    monkeypatch.setattr(chat_router, "CHAT_STREAM_DOCUMENT_DELTA_CHARS", len(document_text))
+    monkeypatch.setattr(chat_router, "CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS", 0)
+
+    stream = chat_router._chat_stream_events(
+        "lesson_stream_test",
+        ChatRequest(message="生成后立即讲解", board_generation_action="start"),
+        user_id="user_stream_test",
+    )
+    first_event = _parse_sse(next(stream))
+    committed_event = _parse_sse(next(stream))
+
+    assert first_event[0] == "phase"
+    assert committed_event == ("document_delta", {"delta": document_text})
+
+    allow_process_return.set()
+    remaining_events = [_parse_sse(block) for block in stream]
+    all_events = [first_event, committed_event, *remaining_events]
+    assert _joined_delta(all_events, "document_delta") == document_text
+    assert [event for event, _payload in all_events].count("document_delta") == 1
+    assert [event for event, _payload in all_events].index("document_delta") < [
+        event for event, _payload in all_events
+    ].index("final")
+
+
 def test_chat_stream_does_not_synthesize_chat_delta_for_silent_board_generation(monkeypatch) -> None:
     monkeypatch.setattr(
         chat_router,
@@ -451,20 +490,21 @@ def test_chat_stream_logs_disconnect_before_final(monkeypatch) -> None:
     next(stream)
     stream.close()
 
-    assert "stream_disconnected_or_no_final" in [event["stream_event"] for event in logged_events]
+    assert "stream_disconnected_background_continues" in [
+        event["stream_event"] for event in logged_events
+    ]
 
 
-def test_chat_stream_cancels_worker_after_disconnect(monkeypatch) -> None:
+def test_chat_stream_continues_worker_after_disconnect(monkeypatch) -> None:
     logged_events: list[dict] = []
     allow_model_delta = threading.Event()
-    cancellation_seen = threading.Event()
+    worker_finished = threading.Event()
 
     def cancellable_process_chat_on_lesson(*args, **kwargs) -> ChatResponse:
         allow_model_delta.wait(timeout=1)
-        if kwargs["is_cancelled"]():
-            cancellation_seen.set()
-            raise CodexTurnCancelledError("cancelled")
+        assert not kwargs["is_cancelled"]()
         kwargs["on_delta"]("不会继续输出")
+        worker_finished.set()
         return _chat_response("lesson_stream_test")
 
     monkeypatch.setattr(chat_router, "process_chat_on_lesson", cancellable_process_chat_on_lesson)
@@ -483,9 +523,66 @@ def test_chat_stream_cancels_worker_after_disconnect(monkeypatch) -> None:
     stream.close()
     allow_model_delta.set()
 
-    assert cancellation_seen.wait(timeout=1)
+    assert worker_finished.wait(timeout=1)
+    deadline = time.monotonic() + 1
+    while "background_process_completed" not in [
+        event.get("stream_event") for event in logged_events
+    ]:
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
     stream_events = [event["stream_event"] for event in logged_events]
-    assert "stream_disconnected_or_no_final" in stream_events
+    assert "stream_disconnected_background_continues" in stream_events
+    assert "process_chat_returned" in stream_events
+    assert "background_process_completed" in stream_events
+    assert "stream_final_sent" not in stream_events
+    assert "stream_cancelled" not in stream_events
+
+
+def test_chat_stream_explicit_cancel_stops_worker(monkeypatch) -> None:
+    logged_events: list[dict] = []
+    worker_started = threading.Event()
+    cancellation_seen = threading.Event()
+
+    def cancellable_process_chat_on_lesson(*args, **kwargs) -> ChatResponse:
+        worker_started.set()
+        while not kwargs["is_cancelled"]():
+            time.sleep(0.001)
+        cancellation_seen.set()
+        raise CodexTurnCancelledError("cancelled")
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", cancellable_process_chat_on_lesson)
+    monkeypatch.setattr(
+        chat_router.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
+    )
+
+    request = ChatRequest(
+        message="停止这个回合",
+        session_id="session_explicit_cancel",
+        input_event_id="input_explicit_cancel",
+    )
+    stream = chat_router._chat_stream_events(
+        "lesson_stream_test",
+        request,
+        user_id="user_stream_test",
+    )
+    next(stream)
+    assert worker_started.wait(timeout=1)
+    assert chat_router.chat_stream_cancellation_registry.cancel(
+        user_id="user_stream_test",
+        lesson_id="lesson_stream_test",
+        session_id=request.session_id or "",
+        input_event_id=request.input_event_id or "",
+    )
+    stream.close()
+
+    assert cancellation_seen.wait(timeout=1)
+    deadline = time.monotonic() + 1
+    while "stream_cancelled" not in [event.get("stream_event") for event in logged_events]:
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
+    stream_events = [event["stream_event"] for event in logged_events]
     assert "stream_cancelled" in stream_events
     assert "stream_final_sent" not in stream_events
 

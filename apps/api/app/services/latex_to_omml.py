@@ -28,6 +28,7 @@ _LATEX_SYMBOLS = {
     r"\approx": "≈",
     r"\ne": "≠",
     r"\neq": "≠",
+    r"\neg": "¬",
     r"\pm": "±",
     r"\sim": "∼",
     r"\forall": "∀",

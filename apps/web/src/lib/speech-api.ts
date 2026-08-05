@@ -64,7 +64,7 @@ export async function getSpeechOptions(signal?: AbortSignal): Promise<SpeechOpti
     signal,
   });
   if (!response.ok) {
-    throw await speechApiError(response, "无法读取语音模型配置");
+    throw await speechApiError(response, "Unable to read speech model configuration");
   }
   return (await response.json()) as SpeechOptionsResponse;
 }
@@ -92,7 +92,7 @@ export async function synthesizeSpeech(
   });
 
   if (!response.ok) {
-    throw await speechApiError(response, "语音模型没有成功生成音频");
+    throw await speechApiError(response, "Speech model did not successfully generate audio");
   }
 
   return {
@@ -127,7 +127,7 @@ export async function connectLiveSpeech(
     }
   );
   if (!response.ok) {
-    throw await speechApiError(response, "Codex Live 没有成功建立播报连接");
+    throw await speechApiError(response, "Codex Live failed to successfully establish a broadcast connection");
   }
   return (await response.json()) as LiveSpeechConnectResponse;
 }

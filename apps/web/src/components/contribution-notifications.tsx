@@ -8,20 +8,20 @@ import { api } from "@/lib/api";
 import type { LessonContributionEvent, LessonContributionView } from "@/types";
 
 const EVENT_LABELS: Partial<Record<LessonContributionEvent["kind"], string>> = {
-  opened: "提交了新的课程改进",
-  revision_submitted: "更新了课程版本",
-  commented: "发表了评论",
-  merge_started: "开始合并审查",
-  returned_for_changes: "退回继续修改",
-  merged: "完成了合并",
-  closed: "关闭了改进方案",
-  reopened: "重新打开了改进方案",
+  opened: "Submitted new course improvements",
+  revision_submitted: "Updated course version",
+  commented: "Posted a comment",
+  merge_started: "Start merge review",
+  returned_for_changes: "Return to continue modification",
+  merged: "Merge completed",
+  closed: "Improvement plan closed",
+  reopened: "Improvement plan reopened",
 };
 
 function eventSummary(item: LessonContributionView) {
   const event = item.events[item.events.length - 1];
-  if (!event) return "课程协作状态已更新";
-  const action = EVENT_LABELS[event.kind] ?? "更新了协作状态";
+  if (!event) return "Course collaboration status updated";
+  const action = EVENT_LABELS[event.kind] ?? "Collaboration status updated";
   return `${event.actor.display_name} ${action}`;
 }
 
@@ -60,10 +60,11 @@ export function ContributionNotifications() {
       <div className="flex items-center justify-between gap-3">
         <p className="flex items-center gap-2 text-xs font-semibold text-violet-900">
           <GitPullRequest className="h-4 w-4" />
-          课程协作
+
+          Course Collaboration
         </p>
         <span className="rounded-full bg-violet-700 px-2 py-0.5 text-[10px] font-semibold text-white">
-          {activeCount} 待处理
+          {activeCount}  Pending
         </span>
       </div>
       <div className="mt-3 space-y-2">
@@ -73,11 +74,12 @@ export function ContributionNotifications() {
             <p className="mt-1 line-clamp-1 text-[11px] text-stone-500">{eventSummary(item)}</p>
           </Link>
         )) : (
-          <p className="rounded-xl border border-dashed border-violet-200 bg-white/70 px-3 py-4 text-xs text-stone-500">暂时没有收到课程改进方案。</p>
+          <p className="rounded-xl border border-dashed border-violet-200 bg-white/70 px-3 py-4 text-xs text-stone-500">No course improvement plan has been received yet.</p>
         )}
       </div>
       <Link href="/contributions" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-violet-800 hover:border-violet-400">
-        查看全部协作
+
+        View all collaborations
         <ArrowUpRight className="h-3.5 w-3.5" />
       </Link>
     </section>

@@ -65,17 +65,18 @@ export function RepositorySourceMap({
                 treeKind === kind ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-blue-50"
               )}
             >
-              {kind === "project" ? "项目结构" : "学习结构"}
+              {kind === "project" ? "Project structure" : "learning structure"}
             </button>
           ))}
         </div>
         <span className="text-[10px] text-gray-500">
-          已分析 {map.analyzed_file_count}/{map.readable_file_count} 个可读文件
+
+          Analyzed {map.analyzed_file_count}/{map.readable_file_count}  readable files
         </span>
       </div>
       {!nodes.length ? (
         <p className="text-xs leading-5 text-gray-600">
-          {treeKind === "learning" ? "学习结构尚未生成；项目结构仍可引用。" : "项目结构尚未准备好。"}
+          {treeKind === "learning" ? "The learning structure has not been generated yet; the project structure can still be referenced." : "The project structure is not ready yet."}
         </p>
       ) : (
         <div className="max-h-80 overflow-auto rounded-md border border-blue-100 bg-white py-1">
@@ -133,7 +134,7 @@ function RepositoryNodeRow({
         onClick={onToggle}
         disabled={!hasChildren}
         className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center text-gray-400 disabled:opacity-0"
-        aria-label={expanded ? `收起 ${node.title}` : `展开 ${node.title}`}
+        aria-label={expanded ? `Collapse ${node.title}` : `Expand ${node.title}`}
       >
         {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
@@ -147,13 +148,13 @@ function RepositoryNodeRow({
           type="button"
           onClick={onReference}
           className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-blue-600 opacity-70 hover:bg-blue-100 group-hover:opacity-100"
-          title="引用这个项目节点"
-          aria-label={`引用项目节点 ${node.title}`}
+          title="Reference this project node"
+          aria-label={`Reference project node ${node.title}`}
         >
           <TextQuote className="h-3.5 w-3.5" />
         </button>
       ) : (
-        <span className="mt-1.5 text-[9px] text-gray-400">未验证</span>
+        <span className="mt-1.5 text-[9px] text-gray-400">Not verified</span>
       )}
     </div>
   );

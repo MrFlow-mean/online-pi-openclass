@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { ResetPasswordPanel } from "@/components/account-recovery-panel";
 
-export const metadata: Metadata = { title: "重置密码", description: "使用一次性验证码设置开放课堂账号的新密码。" };
+export const metadata: Metadata = { title: "Reset Password", description: "Use a one-time verification code to set a new OpenClass password." };
 
 export default function ResetPasswordPage() {
   return <Suspense fallback={null}><ResetPasswordPanel /></Suspense>;

@@ -3,15 +3,15 @@ import type { Metadata } from "next";
 import { LegalPage, LegalSection } from "@/components/legal-page";
 import { publicContactEmail } from "@/lib/public-site";
 
-export const metadata: Metadata = { title: "安全说明", description: "开放课堂的账户安全措施和漏洞报告方式。" };
+export const metadata: Metadata = { title: "Security", description: "OpenClass account security practices and vulnerability reporting." };
 
 export default function SecurityPage() {
   const email = publicContactEmail();
-  return <LegalPage title="安全说明" summary="我们以最小权限、会话隔离和可撤销访问为原则保护账号、课程资料和模型凭据，并持续改进防护。">
-    <LegalSection title="账户与会话"><p>正式账号使用服务器签发的 HttpOnly 安全 Cookie 维持会话，支持密码轮换和退出所有会话。登录、注册、验证码和密码找回会接受频率限制与 Cloudflare Turnstile 人机验证。</p></LegalSection>
-    <LegalSection title="数据与传输"><p>生产流量通过 HTTPS 加密；敏感配置不写入公开代码仓库；用户级模型凭据按账号隔离。公开分享和社区发布不应自动包含私有资料，用户仍应在发布前检查内容。</p></LegalSection>
-    <LegalSection title="安全响应"><p>我们会记录必要的安全事件、限制异常请求，并在确认事件后采取撤销会话、修复漏洞、保留证据和通知受影响用户等措施。具体通知时间会服从适用法律及事件调查需要。</p></LegalSection>
-    <LegalSection title="负责任披露"><p>若发现可能影响开放课堂或其用户的漏洞，请发送邮件至 <a className="font-semibold text-stone-950 underline" href={`mailto:${email}?subject=OpenClass%20Security%20Report`}>{email}</a>，说明影响、复现步骤和必要证据。请勿访问他人数据、破坏服务、进行社会工程或公开尚未修复的漏洞。</p><p>我们会确认收到报告并评估风险，但目前不承诺漏洞奖励。合法、善意且遵守上述边界的测试将被优先协调处理。</p></LegalSection>
-    <LegalSection title="用户可以做什么"><p>使用唯一且足够长的密码，保护邮箱和第三方账号，定期检查登录状态；发现异常时立即修改密码并退出所有会话。不要在课程、聊天或公开社区中粘贴密码、支付凭据或 API Key。</p></LegalSection>
+  return <LegalPage title="Safety instructions" summary="We protect accounts, course materials, and model credentials based on the principles of least privilege, session isolation, and revocable access, and continue to improve protection.">
+    <LegalSection title="Accounts and Sessions"><p>Formal accounts use HttpOnly security cookies issued by the server to maintain sessions and support password rotation and exit from all sessions. Login, registration, verification code, and password retrieval are subject to frequency limits and Cloudflare Turnstile human verification.</p></LegalSection>
+    <LegalSection title="Data and transmission"><p>Production traffic is encrypted via HTTPS; sensitive configurations are not written to the public code repository; user-level model credentials are isolated by account. Public sharing and community posting should not automatically include private material, and users should still review content before posting.</p></LegalSection>
+    <LegalSection title="security response"><p>We will record necessary security events, limit abnormal requests, and after confirming the event, take measures such as revoking sessions, fixing vulnerabilities, retaining evidence, and notifying affected users. The specific notification time will be subject to applicable laws and incident investigation needs.</p></LegalSection>
+    <LegalSection title="Responsible Disclosure"><p>If you discover a vulnerability that may affect OpenClass or its users, please send an email to <a className="font-semibold text-stone-950 underline" href={`mailto:${email}?subject=OpenClass%20Security%20Report`}>{email}</a>, describing the impact, steps to reproduce and necessary evidence. Do not access other people’s data, disrupt services, conduct social engineering, or expose unpatched vulnerabilities.</p><p>We will acknowledge receipt of the report and assess the risk, but are not committing to bug bounties at this time. Tests that are legitimate, in good faith, and adhere to the above boundaries will be prioritized for coordination.</p></LegalSection>
+    <LegalSection title="What users can do"><p>Use a unique and long enough password to protect your email and third-party accounts, and check your login status regularly; if any abnormalities are found, immediately change your password and log out of all sessions. Do not paste passwords, payment credentials, or API keys in courses, chats, or public communities.</p></LegalSection>
   </LegalPage>;
 }

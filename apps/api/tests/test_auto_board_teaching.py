@@ -15,7 +15,10 @@ from app.services.auto_board_teaching import (
     continue_board_teaching,
     start_auto_board_teaching,
 )
-from app.services.board_teaching_turn_decision import BoardTeachingTurnDecision
+from app.services.board_teaching_turn_decision import (
+    BoardTeachingTurnDecision,
+    decide_board_teaching_turn,
+)
 from app.services.codex_app_server import CodexTurnResult
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -117,6 +120,27 @@ def test_heading_tree_uses_nested_title_scales_without_repeating_child_content()
         "1. 全面落实单位会计主体责任",
     ]
     assert guide.sequence_mode == "heading_tree_preorder"
+
+
+def test_explicit_first_section_request_bypasses_model_clarification(
+    teaching_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(teaching_store)
+
+    class FailingAdapter:
+        def parse_structured(self, **_kwargs):
+            raise AssertionError("an explicit first-section request must not call TurnDecision")
+
+    result = decide_board_teaching_turn(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson.id,
+        adapter=FailingAdapter(),
+        user_message="从第一节开始讲解",
+        has_selection=False,
+    )
+
+    assert result.decision.action == "start"
+    assert result.decision.target_heading == ""
 
 
 def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_title(
@@ -238,6 +262,8 @@ def test_chatbot_explanation_prompt_uses_a_warm_teacher_opening_without_a_templa
     assert "For later units" in CHATBOT_EXPLANATION_INSTRUCTIONS
     assert "Never open with a scope disclaimer" in CHATBOT_EXPLANATION_INSTRUCTIONS
     assert "not the complete content" in CHATBOT_EXPLANATION_INSTRUCTIONS
+    assert "Never ask which section" in CHATBOT_EXPLANATION_INSTRUCTIONS
+    assert "resolved mechanically from the saved board" in CHATBOT_EXPLANATION_INSTRUCTIONS
     assert "法语" not in CHATBOT_EXPLANATION_INSTRUCTIONS
 
 

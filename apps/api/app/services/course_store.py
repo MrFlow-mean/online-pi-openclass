@@ -61,6 +61,26 @@ class LessonRuntimeState:
     commit_metadata: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class LessonMutationResult:
+    package_id: str
+    active_package_id: str | None
+    active_lesson_id: str | None
+    open_lesson_ids: list[str]
+    workspace_tab_order: list[str]
+    workspace_revision: int
+    created_lesson: Lesson | None = None
+    deleted_lesson_id: str | None = None
+    graph_edge: CourseGraphEdge | None = None
+
+
+@dataclass(frozen=True)
+class LessonDocumentContext:
+    package_id: str
+    lesson: Lesson
+    workspace_revision: int
+
+
 def _active_package_setting_key(owner_user_id: str | None) -> str:
     if owner_user_id:
         return f"active_package_id:{owner_user_id}"
@@ -1077,6 +1097,376 @@ class SqliteCourseStore:
                     conn.rollback()
                     raise
 
+    def package_belongs_to_user(self, owner_user_id: str, package_id: str) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT 1 FROM course_packages WHERE id = ? AND owner_user_id = ?",
+                    (package_id, owner_user_id),
+                ).fetchone() is not None
+
+    def create_lesson_for_user(
+        self,
+        owner_user_id: str,
+        lesson: Lesson,
+        *,
+        target_package_id: str | None,
+        branch_from_lesson_id: str | None,
+    ) -> LessonMutationResult:
+        """Insert one lesson and its initial history without loading or replacing the workspace."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._ensure_user_workspace_for_targeted_write(conn, owner_user_id)
+                    source_package_id: str | None = None
+                    if branch_from_lesson_id:
+                        source_row = conn.execute(
+                            """
+                            SELECT lessons.package_id
+                            FROM lessons
+                            JOIN course_packages ON course_packages.id = lessons.package_id
+                            WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                            """,
+                            (branch_from_lesson_id, owner_user_id),
+                        ).fetchone()
+                        if source_row is None:
+                            raise KeyError(f"Unknown lesson {branch_from_lesson_id}")
+                        source_package_id = str(source_row["package_id"])
+
+                    if target_package_id:
+                        package_row = conn.execute(
+                            "SELECT id FROM course_packages WHERE id = ? AND owner_user_id = ?",
+                            (target_package_id, owner_user_id),
+                        ).fetchone()
+                    elif source_package_id:
+                        package_row = conn.execute(
+                            "SELECT id FROM course_packages WHERE id = ? AND owner_user_id = ?",
+                            (source_package_id, owner_user_id),
+                        ).fetchone()
+                    else:
+                        package_row = conn.execute(
+                            """
+                            SELECT id FROM course_packages
+                            WHERE owner_user_id = ?
+                            ORDER BY sort_order, id
+                            LIMIT 1
+                            """,
+                            (owner_user_id,),
+                        ).fetchone()
+                    if package_row is None:
+                        raise KeyError(f"Unknown course package {target_package_id or ''}".rstrip())
+                    package_id = str(package_row["id"])
+                    if source_package_id is not None and source_package_id != package_id:
+                        raise ValueError("Branch source lesson must be in the target package")
+
+                    lesson_sort_order = int(
+                        conn.execute(
+                            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM lessons WHERE package_id = ?",
+                            (package_id,),
+                        ).fetchone()[0]
+                    )
+                    self._insert_lesson(conn, package_id, lesson, lesson_sort_order)
+                    open_sort_order = int(
+                        conn.execute(
+                            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM package_open_lessons WHERE package_id = ?",
+                            (package_id,),
+                        ).fetchone()[0]
+                    )
+                    tab_sort_order = int(
+                        conn.execute(
+                            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM package_tab_order WHERE package_id = ?",
+                            (package_id,),
+                        ).fetchone()[0]
+                    )
+                    conn.execute(
+                        "INSERT INTO package_open_lessons(package_id, lesson_id, sort_order) VALUES (?, ?, ?)",
+                        (package_id, lesson.id, open_sort_order),
+                    )
+                    conn.execute(
+                        "INSERT INTO package_tab_order(package_id, lesson_id, sort_order) VALUES (?, ?, ?)",
+                        (package_id, lesson.id, tab_sort_order),
+                    )
+                    conn.execute(
+                        "UPDATE course_packages SET active_lesson_id = ? WHERE id = ?",
+                        (lesson.id, package_id),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+                        (_active_package_setting_key(owner_user_id), package_id),
+                    )
+
+                    edge: CourseGraphEdge | None = None
+                    if branch_from_lesson_id:
+                        edge = CourseGraphEdge(
+                            source_lesson_id=branch_from_lesson_id,
+                            target_lesson_id=lesson.id,
+                            relationship="deep_dive",
+                        )
+                        edge_sort_order = int(
+                            conn.execute(
+                                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM course_graph_edges WHERE package_id = ?",
+                                (package_id,),
+                            ).fetchone()[0]
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO course_graph_edges(
+                                id, package_id, sort_order, source_lesson_id, target_lesson_id, relationship
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                edge.id,
+                                package_id,
+                                edge_sort_order,
+                                edge.source_lesson_id,
+                                edge.target_lesson_id,
+                                edge.relationship,
+                            ),
+                        )
+
+                    revision = self._advance_workspace_revision(conn, owner_user_id)
+                    result = LessonMutationResult(
+                        package_id=package_id,
+                        active_package_id=package_id,
+                        active_lesson_id=lesson.id,
+                        open_lesson_ids=_ordered_values(conn, "package_open_lessons", package_id),
+                        workspace_tab_order=_ordered_values(conn, "package_tab_order", package_id),
+                        workspace_revision=revision,
+                        created_lesson=lesson,
+                        graph_edge=edge,
+                    )
+                    conn.commit()
+                    return result
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def close_lesson_for_user(self, owner_user_id: str, lesson_id: str) -> LessonMutationResult:
+        """Close one lesson tab while preserving every lesson and history row."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT lessons.package_id, course_packages.active_lesson_id
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                        """,
+                        (lesson_id, owner_user_id),
+                    ).fetchone()
+                    if row is None:
+                        raise KeyError(f"Unknown lesson {lesson_id}")
+                    package_id = str(row["package_id"])
+                    conn.execute(
+                        "DELETE FROM package_open_lessons WHERE package_id = ? AND lesson_id = ?",
+                        (package_id, lesson_id),
+                    )
+                    conn.execute(
+                        "DELETE FROM package_tab_order WHERE package_id = ? AND lesson_id = ?",
+                        (package_id, lesson_id),
+                    )
+                    tab_order = _ordered_values(conn, "package_tab_order", package_id)
+                    active_lesson_id = row["active_lesson_id"]
+                    if active_lesson_id == lesson_id:
+                        active_lesson_id = tab_order[0] if tab_order else None
+                        conn.execute(
+                            "UPDATE course_packages SET active_lesson_id = ? WHERE id = ?",
+                            (active_lesson_id, package_id),
+                        )
+                    revision = self._advance_workspace_revision(conn, owner_user_id)
+                    result = LessonMutationResult(
+                        package_id=package_id,
+                        active_package_id=_setting(conn, _active_package_setting_key(owner_user_id)),
+                        active_lesson_id=active_lesson_id,
+                        open_lesson_ids=_ordered_values(conn, "package_open_lessons", package_id),
+                        workspace_tab_order=tab_order,
+                        workspace_revision=revision,
+                    )
+                    conn.commit()
+                    return result
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def delete_lesson_for_user(self, owner_user_id: str, lesson_id: str) -> LessonMutationResult:
+        """Delete one owned lesson and only records directly associated with it."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT lessons.package_id, course_packages.active_lesson_id
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                        """,
+                        (lesson_id, owner_user_id),
+                    ).fetchone()
+                    if row is None:
+                        raise KeyError(f"Unknown lesson {lesson_id}")
+                    package_id = str(row["package_id"])
+                    self._document_segments.delete_for_lesson(conn, lesson_id)
+                    conn.execute(
+                        "DELETE FROM course_graph_edges WHERE package_id = ? AND (source_lesson_id = ? OR target_lesson_id = ?)",
+                        (package_id, lesson_id, lesson_id),
+                    )
+                    conn.execute(
+                        "DELETE FROM package_open_lessons WHERE package_id = ? AND lesson_id = ?",
+                        (package_id, lesson_id),
+                    )
+                    conn.execute(
+                        "DELETE FROM package_tab_order WHERE package_id = ? AND lesson_id = ?",
+                        (package_id, lesson_id),
+                    )
+                    contribution_rows = conn.execute(
+                        "SELECT id FROM lesson_contributions WHERE source_lesson_id = ? OR contributor_lesson_id = ?",
+                        (lesson_id, lesson_id),
+                    ).fetchall()
+                    for contribution_row in contribution_rows:
+                        conn.execute(
+                            "DELETE FROM lesson_contributions WHERE id = ?",
+                            (contribution_row["id"],),
+                        )
+                    conn.execute(
+                        "DELETE FROM lesson_merge_sessions WHERE owner_user_id = ? AND lesson_id = ?",
+                        (owner_user_id, lesson_id),
+                    )
+                    conn.execute(
+                        "DELETE FROM public_course_stars WHERE course_kind = 'lesson' AND course_id = ?",
+                        (lesson_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM resources WHERE package_id = ? AND scope_lesson_id = ?",
+                        (package_id, lesson_id),
+                    )
+                    conn.execute("DELETE FROM lessons WHERE id = ?", (lesson_id,))
+
+                    tab_order = _ordered_values(conn, "package_tab_order", package_id)
+                    active_lesson_id = row["active_lesson_id"]
+                    if active_lesson_id == lesson_id:
+                        active_lesson_id = tab_order[0] if tab_order else None
+                        conn.execute(
+                            "UPDATE course_packages SET active_lesson_id = ? WHERE id = ?",
+                            (active_lesson_id, package_id),
+                        )
+                    revision = self._advance_workspace_revision(conn, owner_user_id)
+                    result = LessonMutationResult(
+                        package_id=package_id,
+                        active_package_id=_setting(conn, _active_package_setting_key(owner_user_id)),
+                        active_lesson_id=active_lesson_id,
+                        open_lesson_ids=_ordered_values(conn, "package_open_lessons", package_id),
+                        workspace_tab_order=tab_order,
+                        workspace_revision=revision,
+                        deleted_lesson_id=lesson_id,
+                    )
+                    conn.commit()
+                    return result
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def load_lesson_document_context_for_user(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> LessonDocumentContext | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT lessons.*
+                    FROM lessons
+                    JOIN course_packages ON course_packages.id = lessons.package_id
+                    WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                    """,
+                    (lesson_id, owner_user_id),
+                ).fetchone()
+                if row is None:
+                    return None
+                return LessonDocumentContext(
+                    package_id=str(row["package_id"]),
+                    lesson=self._read_lesson(conn, row, owner_user_id=owner_user_id),
+                    workspace_revision=self._workspace_revision(conn, owner_user_id),
+                )
+
+    def save_document_for_user_if_head(
+        self,
+        owner_user_id: str,
+        lesson: Lesson,
+        *,
+        expected_branch_name: str,
+        expected_head_commit_id: str,
+    ) -> int | None:
+        """Persist the current document and append its one new commit atomically."""
+        commit = lesson.history_graph.commits[-1]
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT lessons.current_branch, lesson_branches.head_commit_id
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        LEFT JOIN lesson_branches
+                          ON lesson_branches.lesson_id = lessons.id
+                         AND lesson_branches.name = lessons.current_branch
+                        WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                        """,
+                        (lesson.id, owner_user_id),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["current_branch"] != expected_branch_name
+                        or row["head_commit_id"] != expected_head_commit_id
+                    ):
+                        conn.rollback()
+                        return None
+                    next_sort_order = int(
+                        conn.execute(
+                            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM lesson_commits WHERE lesson_id = ?",
+                            (lesson.id,),
+                        ).fetchone()[0]
+                    )
+                    document = lesson.board_document
+                    conn.execute(
+                        """
+                        UPDATE lessons SET
+                            board_document_id = ?, board_document_title = ?, board_content_json = ?,
+                            board_content_html = ?, board_content_text = ?, board_page_settings_json = ?,
+                            board_teaching_guide_json = NULL, board_teaching_progress_json = NULL,
+                            learning_requirements_json = NULL, board_task_requirements_json = NULL,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            document.id,
+                            document.title,
+                            _dumps(document.content_json),
+                            document.content_html,
+                            document.content_text,
+                            _dumps(document.page_settings.model_dump(mode="json")),
+                            lesson.updated_at,
+                            lesson.id,
+                        ),
+                    )
+                    self._insert_commit(conn, lesson.id, commit, next_sort_order)
+                    conn.execute(
+                        "UPDATE lesson_branches SET head_commit_id = ? WHERE lesson_id = ? AND name = ?",
+                        (commit.id, lesson.id, expected_branch_name),
+                    )
+                    self._document_segments.replace_segments(conn, lesson.id, document)
+                    revision = self._advance_workspace_revision(conn, owner_user_id)
+                    conn.commit()
+                    return revision
+                except Exception:
+                    conn.rollback()
+                    raise
+
     def save_lesson_for_user_if_head(
         self,
         owner_user_id: str,
@@ -2037,6 +2427,31 @@ class SqliteCourseStore:
             (owner_user_id,),
         ).fetchone()
         return row is not None
+
+    def _ensure_user_workspace_for_targeted_write(
+        self,
+        conn: sqlite3.Connection,
+        owner_user_id: str,
+    ) -> None:
+        if self._has_unowned_packages(conn) and self._is_registered_user(conn, owner_user_id):
+            self._claim_unowned_workspace(
+                conn,
+                self._legacy_workspace_owner_candidate(conn) or owner_user_id,
+            )
+        if self._has_user_packages(conn, owner_user_id):
+            return
+        workspace = build_empty_account_workspace_state()
+        conn.execute(
+            "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+            (_active_package_setting_key(owner_user_id), workspace.active_package_id or ""),
+        )
+        for package_index, package in enumerate(workspace.packages):
+            self._insert_package(
+                conn,
+                package,
+                package_index,
+                owner_user_id=owner_user_id,
+            )
 
     def _is_registered_user(self, conn: sqlite3.Connection, owner_user_id: str) -> bool:
         users_table = conn.execute(
@@ -3021,7 +3436,7 @@ def build_initial_workspace_state() -> WorkspaceState:
 
 def build_empty_account_workspace_state() -> WorkspaceState:
     package = CoursePackage(
-        title="开放课堂课程工作台",
+        title="OpenClass Course Workspace",
         summary="把 lesson 当作可编辑、可分支、可讲解的课程资产。",
         lessons=[],
         course_graph=[],

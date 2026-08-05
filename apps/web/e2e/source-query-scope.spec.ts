@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { chatMessageSelections } from "../src/components/chatbot";
 import {
   appendSourceQuerySelection,
   sourceQueryScopeFromComposer,
@@ -98,17 +99,25 @@ test("restores source citations from persisted chat history", () => {
         kind: "chat_flow",
         created_at: new Date().toISOString(),
         metadata: {
-          user_message: "定义是什么？",
-          assistant_message: "资料中的定义。",
+          user_message: "What is the definition?",
+          assistant_message: "Definitions in the data.",
           assistant_message_source: "source_qa",
+          source_query_scope: {
+            mode: "chapter",
+            refs: [{
+              source_ingestion_id: "source-a",
+              source_content_hash: HASH_A,
+              source_chapter_id: "chapter-1",
+            }],
+          },
           source_citations: [{
             evidence_id: "evidence-1",
             source_id: "source-a",
-            source_title: "资料 A",
-            section_path: ["第一章", "定义"],
+            source_title: "Data A",
+            section_path: ["Chapter 1", "definition"],
             page_start: 12,
             page_end: 12,
-            excerpt: "这是原文定义。",
+            excerpt: "This is the original definition.",
             chunk_ids: ["chunk-1"],
             bbox: [10, 20, 200, 80],
             source_content_hash: HASH_A,
@@ -120,10 +129,73 @@ test("restores source citations from persisted chat history", () => {
   } as unknown as Lesson;
 
   const assistant = buildLessonMessagesFromHistory(lesson).find((message) => message.role === "assistant");
+  const user = buildLessonMessagesFromHistory(lesson).find((message) => message.role === "user");
+  expect(user?.sourceSelections).toEqual([expect.objectContaining({
+    source_ingestion_id: "source-a",
+    source_chapter_id: "chapter-1",
+    source_chapter_title: "definition",
+  })]);
   expect(assistant?.sourceCitations).toEqual([expect.objectContaining({
     source_id: "source-a",
     page_start: 12,
-    excerpt: "这是原文定义。",
+    excerpt: "This is the original definition.",
+  })]);
+});
+
+test("restores the referenced chapter on a persisted source-grounded board turn", () => {
+  const lesson = {
+    history_graph: {
+      current_branch: "main",
+      branches: { main: { head_commit_id: "commit-1" } },
+      commits: [{
+        id: "commit-1",
+        parent_ids: [],
+        kind: "board_document_generation",
+        created_at: new Date().toISOString(),
+        metadata: {
+          user_message: "Explain this chapter to me",
+          assistant_message: "",
+          requirement_phase: "consumed",
+          frozen_requirement_payload: {
+            source_grounding: {
+              confirmed_references: [{
+                source_ingestion_id: "source-a",
+                source_title: "Machine Learning",
+                source_chapter_id: "chapter-8",
+                chapter_number: "8",
+                chapter_title: "Rule learning",
+                scope_kind: "chapter",
+                section_path: ["Rule learning"],
+                page_range: "physical PDF pages 363-386",
+                content_hash: HASH_A,
+              }],
+            },
+          },
+        },
+      }],
+    },
+  } as unknown as Lesson;
+
+  const user = buildLessonMessagesFromHistory(lesson).find((message) => message.role === "user");
+  expect(user?.sourceSelections).toEqual([expect.objectContaining({
+    excerpt: "Machine Learning · Rule learning · physical PDF pages 363-386",
+    source_chapter_id: "chapter-8",
+    source_chapter_title: "Rule learning",
+    source_scope_kind: "chapter",
+  })]);
+});
+
+test("keeps the referenced chapter in the submitted user message view", () => {
+  const selections = chatMessageSelections({
+    id: "message-1",
+    role: "user",
+    content: "Explain this chapter to me",
+    sourceSelections: [chapter("source-a", "Rule learning", HASH_A)],
+  });
+
+  expect(selections).toEqual([expect.objectContaining({
+    source_chapter_id: "Rule learning",
+    source_chapter_title: "Rule learning",
   })]);
 });
 
@@ -141,8 +213,8 @@ test("restores a downloaded public conversation before the learner's new turns",
           metadata: {
             history_node_kind: "system",
             published_conversation: [
-              { role: "user", content: "公开课程中的问题" },
-              { role: "assistant", content: "公开课程中的回答" },
+              { role: "user", content: "Questions in public courses" },
+              { role: "assistant", content: "Answers in public courses" },
             ],
           },
         },
@@ -153,8 +225,8 @@ test("restores a downloaded public conversation before the learner's new turns",
           created_at: new Date().toISOString(),
           metadata: {
             history_node_kind: "chat",
-            user_message: "下载后的新问题",
-            assistant_message: "下载后的新回答",
+            user_message: "New questions after downloading",
+            assistant_message: "New answers after downloading",
           },
         },
       ],
@@ -165,9 +237,9 @@ test("restores a downloaded public conversation before the learner's new turns",
     role,
     content,
   }))).toEqual([
-    { role: "user", content: "公开课程中的问题" },
-    { role: "assistant", content: "公开课程中的回答" },
-    { role: "user", content: "下载后的新问题" },
-    { role: "assistant", content: "下载后的新回答" },
+    { role: "user", content: "Questions in public courses" },
+    { role: "assistant", content: "Answers in public courses" },
+    { role: "user", content: "New questions after downloading" },
+    { role: "assistant", content: "New answers after downloading" },
   ]);
 });

@@ -27,7 +27,7 @@ const DEFAULT_SPEECH_OPTIONS: SpeechOptionsResponse = {
     {
       id: "cove",
       label: "Cove",
-      description: "Codex Live 实时音色",
+      description: "Codex Live real-time sounds",
     },
   ],
   minimum_speech_rate: 0,
@@ -77,7 +77,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     () => true
   );
   const [status, setStatus] = useState<SpeechPlaybackStatus>("idle");
-  const [statusMessage, setStatusMessage] = useState("等待新的 AI 回复");
+  const [statusMessage, setStatusMessage] = useState("Waiting for new AI reply");
   const [speechOptions, setSpeechOptions] = useState(DEFAULT_SPEECH_OPTIONS);
   const [selectedVoice, setSelectedVoiceState] = useState(DEFAULT_SPEECH_OPTIONS.default_voice);
   const [speechRate, setSpeechRateState] = useState(DEFAULT_SPEECH_OPTIONS.default_speech_rate);
@@ -124,7 +124,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     setCurrentTime(0);
     setDuration(0);
     setStatus("idle");
-    setStatusMessage(autoSpeakEnabled ? "等待新的 AI 回复" : "自动播报已关闭");
+    setStatusMessage(autoSpeakEnabled ? "Waiting for new AI reply" : "Auto-announcement is turned off");
   }, [autoSpeakEnabled, releaseAudio]);
 
   const speakMessage = useCallback(
@@ -147,8 +147,8 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       setStatusMessage(
         speechOptions.delivery === "buffered_live_audio" ||
         speechOptions.delivery === "realtime_audio"
-          ? "Codex Live 正在生成可拖动音频…"
-          : "TTS 正在生成音频…"
+          ? "Codex Live is generating draggable audio…"
+          : "TTS is generating audio..."
       );
 
       try {
@@ -157,7 +157,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
           speechOptions.delivery === "realtime_audio"
         ) {
           if (!lessonId) {
-            throw new Error("请先打开课程，再使用 Codex Live 播报");
+            throw new Error("Please open the course first and then use Codex Live to broadcast");
           }
           const playback = await startCodexLiveSpeech({
             lessonId,
@@ -171,7 +171,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
               audioRef.current = audio;
               setCurrentModel(model);
               setStatus("playing");
-              setStatusMessage(`Codex Live 正在播报 · ${model} · ${voice}`);
+              setStatusMessage(`Codex Live speaking · ${model} · ${voice}`);
             },
             onStatus: (message) => {
               if (requestSequenceRef.current === requestSequence) {
@@ -204,7 +204,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
             livePlaybackRef.current = null;
             audioRef.current = null;
             setStatus("idle");
-            setStatusMessage(autoSpeakEnabled ? "播报完成，等待下一条回复" : "播报完成");
+            setStatusMessage(autoSpeakEnabled ? "The broadcast is completed, waiting for the next reply" : "Report completed");
           }).catch((error: unknown) => {
             if (requestSequenceRef.current !== requestSequence) {
               return;
@@ -212,7 +212,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
             livePlaybackRef.current = null;
             audioRef.current = null;
             setStatus("error");
-            setStatusMessage(error instanceof Error ? error.message : "Codex Live 播报失败");
+            setStatusMessage(error instanceof Error ? error.message : "Codex Live broadcast failed");
           });
           return;
         }
@@ -244,7 +244,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
         };
         audio.onplay = () => {
           setStatus("playing");
-          setStatusMessage(modelLabel ? `正在播报 · ${modelLabel}` : "正在播报");
+          setStatusMessage(modelLabel ? `Speaking · ${modelLabel}` : "Speaking now");
         };
         audio.onended = () => {
           const finalDuration = Number.isFinite(audio.duration) ? audio.duration : 0;
@@ -254,12 +254,12 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
           }
           releaseAudio();
           setStatus("idle");
-          setStatusMessage(autoSpeakEnabled ? "播报完成，等待下一条回复" : "播报完成");
+          setStatusMessage(autoSpeakEnabled ? "The broadcast is completed, waiting for the next reply" : "Report completed");
         };
         audio.onerror = () => {
           releaseAudio();
           setStatus("error");
-          setStatusMessage("浏览器没有成功播放这段音频");
+          setStatusMessage("The browser did not successfully play this audio");
         };
         await audio.play();
       } catch (error) {
@@ -269,7 +269,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
         requestRef.current = null;
         releaseAudio();
         setStatus("error");
-        setStatusMessage(error instanceof Error ? error.message : "语音播报失败");
+        setStatusMessage(error instanceof Error ? error.message : "Voice broadcast failed");
       }
     },
     [
@@ -297,7 +297,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     audio.pause();
     setCurrentTime(audio.currentTime);
     setStatus("paused");
-    setStatusMessage("播报已暂停，可从当前位置继续");
+    setStatusMessage("The broadcast has been paused. You can continue from the current position.");
   }, []);
 
   const resumeSpeech = useCallback(async () => {
@@ -310,7 +310,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     } catch (error) {
       releaseAudio();
       setStatus("error");
-      setStatusMessage(error instanceof Error ? error.message : "浏览器没有成功继续播放音频");
+      setStatusMessage(error instanceof Error ? error.message : "The browser failed to continue playing the audio");
     }
   }, [releaseAudio]);
 
@@ -364,7 +364,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     }
     if (nextEnabled) {
       setStatus("idle");
-      setStatusMessage("等待新的 AI 回复");
+      setStatusMessage("Waiting for new AI reply");
       return;
     }
     requestSequenceRef.current += 1;
@@ -374,7 +374,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     setCurrentTime(0);
     setDuration(0);
     setStatus("idle");
-    setStatusMessage("自动播报已关闭");
+    setStatusMessage("Auto-announcement is turned off");
   }, [autoSpeakEnabled, releaseAudio]);
 
   useEffect(() => {
@@ -423,7 +423,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       trackedLessonIdRef.current = lessonId;
       latestSeenAssistantIdRef.current = latestId;
       setStatus("idle");
-      setStatusMessage(autoSpeakEnabled ? "等待新的 AI 回复" : "自动播报已关闭");
+      setStatusMessage(autoSpeakEnabled ? "Waiting for new AI reply" : "Auto-announcement is turned off");
       return;
     }
     if (!latestAssistantMessage || latestSeenAssistantIdRef.current === latestId) {

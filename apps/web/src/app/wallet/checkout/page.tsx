@@ -4,8 +4,8 @@ import { AuthGate } from "@/components/auth-gate";
 import { PayPalCheckoutPage } from "@/components/paypal-checkout-page";
 
 export const metadata: Metadata = {
-  title: "安全支付",
-  description: "使用 PayPal 支持的付款方式完成 OpenClass 点数充值。",
+  title: "Secure Checkout",
+  description: "Top up OpenClass Credits with a PayPal-supported payment method.",
 };
 
 type WalletCheckoutPageProps = {

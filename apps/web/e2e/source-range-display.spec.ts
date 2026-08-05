@@ -50,10 +50,10 @@ test("keeps EPUB authority fields raw while presenting a concise one-based range
 
   const selection = createSourceChapterSelection(source, chapter, catalog);
 
-  expect(sourceRangeDisplayLabel(rawRange)).toBe("EPUB 位置 19");
-  expect(selection.excerpt).toContain("EPUB 位置 19");
+  expect(sourceRangeDisplayLabel(rawRange)).toBe("EPUB location 19");
+  expect(selection.excerpt).toContain("EPUB location 19");
   expect(selection.excerpt).not.toContain("OPS/xhtml");
-  expect(selection.source_page_range).toBe("EPUB 位置 19");
+  expect(selection.source_page_range).toBe("EPUB location 19");
   expect(selection.source_range).toEqual(rawRange);
   expect(selection.source_range?.display_label).toBe("OPS/xhtml/chapter-1.xhtml#threads");
   expect(selection.catalog_version).toBe(4);
@@ -86,7 +86,7 @@ test("preserves non-EPUB labels and hides archive members in confirmed-source di
       pageRange: "EPUB spine 18-20",
       sourceLocator: "epub:OPS/xhtml/chapter-1.xhtml#threads",
     })
-  ).toBe("EPUB 位置 19-21");
+  ).toBe("EPUB locations 19-21");
 
   const display = buildLearningRequirementDisplay({
     requirementSheet: {
@@ -111,7 +111,7 @@ test("preserves non-EPUB labels and hides archive members in confirmed-source di
       ready_for_board: true,
     } as never,
   });
-  expect(display.summary).toBe("Systems / Threads / EPUB 位置 19");
+  expect(display.summary).toBe("Systems / Threads / EPUB location 19");
 });
 
 test("describes directory-only trust without claiming full-body coverage", () => {
@@ -128,11 +128,11 @@ test("describes directory-only trust without claiming full-body coverage", () =>
     "fully_verified"
   );
 
-  expect(note).toContain("资料目录定位与层级已校验");
-  expect(note).toContain("当前仅显示目录列表");
-  expect(note).not.toContain("资料范围已验证");
-  expect(note).not.toContain("正文边界");
-  expect(note).not.toContain("整体覆盖已通过验证");
+  expect(note).toContain("location and level of the data directory have been verified");
+  expect(note).toContain("currently only the directory list is displayed");
+  expect(note).not.toContain("Data range verified");
+  expect(note).not.toContain("Text boundaries");
+  expect(note).not.toContain("Overall coverage verified");
 });
 
 test("describes an unmapped Source Codex catalog as viewable but not citable", () => {
@@ -151,5 +151,5 @@ test("describes an unmapped Source Codex catalog as viewable but not citable", (
     "unverified"
   );
 
-  expect(note).toBe("目录已识别，正文范围未映射；当前仅用于查看目录。");
+  expect(note).toBe("Table of contents recognized, body range not mapped; currently only used to view the table of contents.");
 });

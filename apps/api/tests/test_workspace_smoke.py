@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 
@@ -34,6 +35,7 @@ from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
+from app.services import source_ingestion_jobs as source_ingestion_jobs_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
 from app.services.history import commit_operations
@@ -47,10 +49,15 @@ from app.services.publication_review import (
 )
 from app.services.publication_review_agent import default_publication_review_selection
 from app.services.rich_document import build_document, rich_structure_counts
-from app.services.source_evidence_store import source_evidence_store
+from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
-from app.services.source_ingestion_jobs import SourceIngestionJobStore, SourceIngestionTaskManager
+from app.services.source_ingestion_jobs import (
+    SourceIngestionJobStore,
+    SourceIngestionTaskManager,
+    SourceTaskHandle,
+)
 from app.services.source_directory_processor import DirectoryNormalizationResult
+from app.services.source_structure_store import SourceStructureStore
 from app.services.youtube_transcript_adapter import YouTubeTranscript
 
 
@@ -676,17 +683,36 @@ def test_source_task_manager_recovers_persisted_work_once(
         owner_user_id="user_test",
         package_id="course_test",
     )
+    source_store = SourceEvidenceStore(tmp_path / "source-tasks.sqlite3")
+    for source_id, status in (("source_pending", "parsing"), ("source_ready", "ready")):
+        source_store.save_source(
+            SourceIngestionRecord(
+                id=source_id,
+                owner_user_id="user_test",
+                package_id="course_test",
+                title=source_id,
+                source_type="local_file",
+                status=status,
+                metadata={"content_hash": source_id},
+            )
+        )
+    monkeypatch.setattr(
+        source_ingestion_module,
+        "source_ingestion_service",
+        SimpleNamespace(store=source_store),
+    )
     manager = SourceIngestionTaskManager(job_store)
     started = threading.Event()
     release = threading.Event()
 
-    def hold_task(*, key, retry):
+    def hold_task(*, key, retry, handle):
         assert key == ("user_test", "course_test", active.resource_id)
         assert retry is False
         started.set()
         release.wait(timeout=1)
         with manager._lock:
-            manager._active.discard(key)
+            if manager._active.get(key) is handle:
+                manager._active.pop(key, None)
 
     monkeypatch.setattr(manager, "_run", hold_task)
 
@@ -698,6 +724,99 @@ def test_source_task_manager_recovers_persisted_work_once(
         source_id="source_pending",
     ) is False
     release.set()
+
+
+def test_source_task_manager_does_not_automatically_continue_agent_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    key = ("user_test", "course_test", "source_partial")
+    record_store = SimpleNamespace()
+    record_store.record = SourceIngestionRecord(
+        id=key[2],
+        owner_user_id=key[0],
+        package_id=key[1],
+        title="Partial EPUB",
+        source_type="local_file",
+        status="ready",
+        metadata={"catalog_pipeline": "agent_catalog_v3"},
+    )
+    record_store.get_source = lambda **_kwargs: record_store.record
+
+    def save_source(record: SourceIngestionRecord) -> SourceIngestionRecord:
+        record_store.record = record
+        return record
+
+    record_store.save_source = save_source
+    structure = SourceStructure(
+        owner_user_id=key[0],
+        package_id=key[1],
+        source_ingestion_id=key[2],
+        status="ready",
+        strategy="codex_directory_v1",
+        catalog_schema_version="agent_catalog_v3",
+        metadata={
+            "catalog_pipeline": "agent_catalog_v3",
+            "work_state": "partial",
+            "pause_requested": False,
+        },
+    )
+    structure_store = SimpleNamespace(get_structure=lambda **_kwargs: structure)
+    calls: list[str] = []
+    fake_service = SimpleNamespace(
+        store=record_store,
+        structure_store=structure_store,
+        process_file_source=lambda **_kwargs: (calls.append("process") or record_store.record),
+        retry_source=lambda **_kwargs: calls.append("retry"),
+        continue_catalog_refine=lambda **_kwargs: calls.append("continue"),
+    )
+    monkeypatch.setattr(source_ingestion_module, "source_ingestion_service", fake_service)
+    manager = SourceIngestionTaskManager(
+        SourceIngestionJobStore(tmp_path / "source-auto-continue.sqlite3")
+    )
+    handle = SourceTaskHandle(cancel_event=threading.Event(), key=key)
+    with manager._lock:
+        manager._active[key] = handle
+
+    manager._run(key=key, retry=False, handle=handle)
+
+    assert calls == ["process"]
+    assert record_store.record.status == "ready"
+    assert manager.is_active(key) is False
+
+
+def test_source_task_recovery_does_not_revive_partial_agent_checkpoint(tmp_path) -> None:
+    database = tmp_path / "source-recovery.sqlite3"
+    key = ("user_test", "course_test", "source_partial")
+    structure_store = SourceStructureStore(database)
+    structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id=key[0],
+            package_id=key[1],
+            source_ingestion_id=key[2],
+            status="ready",
+            strategy="codex_directory_v1",
+            catalog_schema_version="agent_catalog_v3",
+            metadata={
+                "catalog_pipeline": "agent_catalog_v3",
+                "work_state": "partial",
+                "pause_requested": False,
+            },
+        ),
+        chapters=[],
+        chunks=[],
+    )
+    job_store = SourceIngestionJobStore(database)
+
+    assert job_store.list_active_scopes() == []
+
+    structure_store.set_catalog_pause_requested(
+        owner_user_id=key[0],
+        package_id=key[1],
+        source_id=key[2],
+        requested=True,
+    )
+    assert job_store.list_active_scopes() == []
 
 
 def test_health_reports_provider_neutral_board_and_realtime_status(
@@ -1469,6 +1588,48 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     )
     assert restored.status_code == 200
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
+
+
+def test_lesson_delta_create_save_close_reopen_delete_persists(api_client: TestClient) -> None:
+    workspace = api_client.get("/api/workspace").json()
+    package_id = workspace["active_package_id"]
+    created = api_client.post(
+        "/api/lessons/generate?response_mode=delta",
+        json={"topic": "Delta lesson", "target_package_id": package_id, "start_blank": True},
+    )
+    assert created.status_code == 200
+    create_delta = created.json()
+    assert create_delta["operation"] == "create"
+    lesson = create_delta["created_lesson"]
+    initial_head = lesson["history_graph"]["branches"]["main"]["head_commit_id"]
+
+    saved = api_client.post(
+        f"/api/lessons/{lesson['id']}/document/save?response_mode=delta",
+        json={
+            "document": _document_with_text(lesson["board_document"], "Delta saved"),
+            "base_commit_id": initial_head,
+            "metadata": {"kind": "auto_document_save", "autosave": True},
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["changed"] is True
+    assert saved.json()["document"]["content_text"] == "Delta saved"
+    assert saved.json()["branch_head_commit_id"] != initial_head
+
+    closed = api_client.post(f"/api/lessons/{lesson['id']}/close?response_mode=delta")
+    assert closed.status_code == 200
+    assert lesson["id"] not in closed.json()["workspace_tab_order"]
+    reopened = api_client.post(f"/api/lessons/{lesson['id']}/open")
+    assert reopened.status_code == 200
+    assert reopened.json()["active_lesson_id"] == lesson["id"]
+
+    deleted = api_client.post(f"/api/lessons/{lesson['id']}/delete?response_mode=delta")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_lesson_id"] == lesson["id"]
+    refreshed = api_client.get("/api/workspace")
+    assert refreshed.status_code == 200
+    target = next(item for item in refreshed.json()["packages"] if item["id"] == package_id)
+    assert all(item["id"] != lesson["id"] for item in target["lessons"])
 
 
 def test_autosave_rejects_unintended_table_loss_and_accepts_explicit_removal(

@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>开放课堂学习页面</title>
+    <title>OpenClass Learning Page</title>
     <style>
       :root {
         color-scheme: light;
@@ -139,27 +139,27 @@
     <div class="status" id="status">
       <div class="status__panel">
         <p class="status__eyebrow">Learning Page</p>
-        <h1 class="status__title">开放课堂学习页面</h1>
-        <p class="status__desc" id="statusText">正在连接本地前端服务…</p>
+        <h1 class="status__title">OpenClass Learning Page</h1>
+        <p class="status__desc" id="statusText">Connecting to the local web service…</p>
         <div class="status__actions">
-          <button class="status__button" id="retryButton" type="button">重新检测</button>
-          <button class="status__button" id="openButton" type="button">直接打开学习页面</button>
-          <a class="status__link" href="./personal-home.html">切到个人主页</a>
+          <button class="status__button" id="retryButton" type="button">Try again</button>
+          <button class="status__button" id="openButton" type="button">Open learning page</button>
+          <a class="status__link" href="./personal-home.html">Switch to profile</a>
         </div>
         <div class="status__hint">
-          这个文件是学习页面的独立 HTML 入口，会自动打开 Next.js 前端的课程工作台。<br />
-          个人主页已拆到单独的 <code>personal-home.html</code>。
+          This standalone HTML entry opens the course workspace in the Next.js web app automatically.<br />
+          The profile has its own <code>personal-home.html</code> entry.
         </div>
         <div class="status__meta" id="statusMeta"></div>
       </div>
     </div>
 
-    <iframe id="appFrame" title="开放课堂学习页面" allow="microphone; autoplay"></iframe>
+    <iframe id="appFrame" title="OpenClass learning page" allow="microphone; autoplay"></iframe>
 
     <script>
       const candidates = ["http://127.0.0.1:3000", "http://localhost:3000"];
       const targetPath = "/studio";
-      const targetLabel = "学习页面";
+      const targetLabel = "learning page";
       const statusEl = document.getElementById("status");
       const statusTextEl = document.getElementById("statusText");
       const statusMetaEl = document.getElementById("statusMeta");
@@ -229,7 +229,7 @@
 
       async function connect() {
         const currentToken = ++probeToken;
-        setStatus(`正在连接本地前端服务，准备打开${targetLabel}…`, "优先检测 127.0.0.1:3000，其次 localhost:3000");
+        setStatus(`Connecting to the local web service and preparing the ${targetLabel}…`, "Checking 127.0.0.1:3000 first, then localhost:3000");
 
         for (const url of candidates) {
           const ok = await probe(url, 1200);
@@ -252,8 +252,8 @@
         activeUrl = candidates[0];
         ensureRetryLoop();
         setStatus(
-          "还没有检测到本地前端服务。",
-          "先双击 start-ai-board.command。这个入口会继续自动重试。"
+          "The local web service is not available yet.",
+          "Double-click start-ai-board.command first. This entry will keep retrying automatically."
         );
       }
 

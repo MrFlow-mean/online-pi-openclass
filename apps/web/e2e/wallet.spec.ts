@@ -74,13 +74,13 @@ test("shows PayPal points at face value without exposing the internal cost value
 
   await page.goto("/wallet");
 
-  await expect(page.getByText("获得 10,000 点数", { exact: true })).toBeVisible();
-  await expect(page.getByText("可用积分", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("充值比例", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("收款状态", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("get 10,000 Points", { exact: true })).toBeVisible();
+  await expect(page.getByText("Available points", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Recharge ratio", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Payment status", { exact: true })).toHaveCount(0);
   await expect(page.getByText("$75", { exact: false })).toHaveCount(0);
-  await expect(page.getByText("75 美元", { exact: false })).toHaveCount(0);
-  await expect(page.getByText("模型额度同步中，点数已经到账。")).toBeVisible();
+  await expect(page.getByText("$75", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("The model quota is being synchronized and the points have been received.")).toBeVisible();
 });
 
 test("opens a standalone checkout with eligible PayPal payment methods", async ({
@@ -229,7 +229,7 @@ test("opens a standalone checkout with eligible PayPal payment methods", async (
   await page.getByRole("button", { name: /\$100\.00/ }).click();
 
   await expect(page).toHaveURL(/\/wallet\/checkout\?package=usd_10000$/);
-  await expect(page.getByRole("heading", { name: "完成支付" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Complete payment" })).toBeVisible();
   await expect(page.getByTestId("paypal-checkout-panel")).toBeVisible();
   await expect(page.getByRole("button", { name: "PayPal", exact: true })).toBeVisible();
   await expect(page.getByTestId("paypal-card-fields")).toBeVisible();

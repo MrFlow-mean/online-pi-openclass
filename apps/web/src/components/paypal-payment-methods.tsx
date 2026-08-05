@@ -111,7 +111,7 @@ function loadScript(id: string, source: string, attributes: Record<string, strin
     }
     if (existing) {
       existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener("error", () => reject(new Error(`无法加载 ${id}`)), { once: true });
+      existing.addEventListener("error", () => reject(new Error(`Could not load ${id}`)), { once: true });
       return;
     }
     const script = document.createElement("script");
@@ -127,7 +127,7 @@ function loadScript(id: string, source: string, attributes: Record<string, strin
       },
       { once: true }
     );
-    script.addEventListener("error", () => reject(new Error(`无法加载 ${id}`)), { once: true });
+    script.addEventListener("error", () => reject(new Error(`Could not load ${id}`)), { once: true });
     document.head.appendChild(script);
   });
 }
@@ -146,7 +146,7 @@ async function loadPayPalSdk(config: PayPalClientConfig) {
   );
   const paymentWindow = window as PaymentBrowserWindow;
   if (!paymentWindow.paypal) {
-    throw new Error("PayPal 支付组件未正确初始化");
+    throw new Error("PayPal payment component did not initialize correctly");
   }
   return paymentWindow.paypal;
 }
@@ -184,7 +184,7 @@ export function PayPalPaymentMethods({
         await api.capturePayPalOrder(orderId);
         await onSuccess();
       } catch (error) {
-        onError(errorMessage(error, "PayPal 付款确认失败"));
+        onError(errorMessage(error, "PayPal payment confirmation failed"));
         throw error;
       } finally {
         setBusy(false);
@@ -215,8 +215,8 @@ export function PayPalPaymentMethods({
           fundingSource: "paypal",
           createOrder: () => createOrder("paypal"),
           onApprove: (data: PayPalOrderData) => captureOrder(data.orderID),
-          onCancel: () => onNotice("你已取消本次付款，没有产生扣款。"),
-          onError: (error: unknown) => onError(errorMessage(error, "PayPal 付款失败")),
+          onCancel: () => onNotice("You have canceled this payment and no deduction has been incurred."),
+          onError: (error: unknown) => onError(errorMessage(error, "PayPal payment failed")),
           style: { layout: "vertical", shape: "rect", color: "black", label: "paypal", height: 48 },
         });
         if (buttons.isEligible()) {
@@ -227,7 +227,7 @@ export function PayPalPaymentMethods({
           cardFields = paypal.CardFields({
             createOrder: () => createOrder("card"),
             onApprove: (data: PayPalOrderData) => captureOrder(data.orderID),
-            onError: (error: unknown) => onError(errorMessage(error, "银行卡付款失败")),
+            onError: (error: unknown) => onError(errorMessage(error, "Bank card payment failed")),
             style: {
               input: {
                 "font-size": "16px",
@@ -246,10 +246,10 @@ export function PayPalPaymentMethods({
             cardFieldsRef.current = cardFields;
             await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
             await Promise.all([
-              cardFields.NameField({ placeholder: "持卡人姓名" }).render("#paypal-card-name"),
-              cardFields.NumberField({ placeholder: "卡号" }).render("#paypal-card-number"),
-              cardFields.ExpiryField({ placeholder: "有效期" }).render("#paypal-card-expiry"),
-              cardFields.CVVField({ placeholder: "安全码" }).render("#paypal-card-cvv"),
+              cardFields.NameField({ placeholder: "Cardholder name" }).render("#paypal-card-name"),
+              cardFields.NumberField({ placeholder: "card number" }).render("#paypal-card-number"),
+              cardFields.ExpiryField({ placeholder: "Validity period" }).render("#paypal-card-expiry"),
+              cardFields.CVVField({ placeholder: "security code" }).render("#paypal-card-cvv"),
             ]);
           }
         }
@@ -281,7 +281,7 @@ export function PayPalPaymentMethods({
         ]);
       } catch (error) {
         if (!disposed) {
-          onError(errorMessage(error, "PayPal 支付组件暂时不可用，仍可前往 PayPal 安全页面付款。"));
+          onError(errorMessage(error, "The PayPal payment component is temporarily unavailable, but you can still go to the PayPal secure page to pay."));
         }
       } finally {
         if (!disposed) setSdkLoading(false);
@@ -304,7 +304,7 @@ export function PayPalPaymentMethods({
     try {
       await cardFieldsRef.current.submit();
     } catch (error) {
-      onError(errorMessage(error, "请检查银行卡信息后重试"));
+      onError(errorMessage(error, "Please check your bank card information and try again"));
     } finally {
       setCardSubmitting(false);
       onBusyChange(false);
@@ -316,10 +316,10 @@ export function PayPalPaymentMethods({
     onBusyChange(true);
     try {
       const order = await api.createPayPalOrder(paymentPackage.id, "redirect");
-      if (!order.approve_url) throw new Error("PayPal 未返回付款地址");
+      if (!order.approve_url) throw new Error("PayPal did not return payment address");
       window.location.assign(order.approve_url);
     } catch (error) {
-      onError(errorMessage(error, "无法创建 PayPal 订单"));
+      onError(errorMessage(error, "Unable to create PayPal order"));
       setRedirecting(false);
       onBusyChange(false);
     }
@@ -329,9 +329,10 @@ export function PayPalPaymentMethods({
     <section className="mx-auto mt-8 max-w-md" data-testid="paypal-checkout-panel">
       <div className="flex items-start justify-between gap-5 border-b border-stone-200 pb-5">
         <div>
-          <p className="text-sm font-semibold text-stone-950">付款</p>
+          <p className="text-sm font-semibold text-stone-950">Payment</p>
           <p className="mt-1 text-sm text-stone-500">
-            购买 {paymentPackage.credits.toLocaleString()} 点数
+
+            Buy {paymentPackage.credits.toLocaleString()}  Points
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -341,7 +342,7 @@ export function PayPalPaymentMethods({
       </div>
 
       <div className="mt-6">
-        <p className="text-sm font-semibold text-stone-950">快捷付款</p>
+        <p className="text-sm font-semibold text-stone-950">Quick payment</p>
         <div
           className={`mt-3 grid gap-3 ${applePayEligible || googlePayEligible ? "sm:grid-cols-2" : ""}`}
         >
@@ -353,7 +354,7 @@ export function PayPalPaymentMethods({
 
       <div className={cardEligible ? "my-6 flex items-center gap-3" : "hidden"} aria-hidden="true">
         <span className="h-px flex-1 bg-stone-200" />
-        <span className="text-xs text-stone-400">或使用银行卡</span>
+        <span className="text-xs text-stone-400">or use bank card</span>
         <span className="h-px flex-1 bg-stone-200" />
       </div>
 
@@ -363,13 +364,14 @@ export function PayPalPaymentMethods({
             <span className="flex items-center gap-2 text-sm font-semibold text-stone-900">
               <span className="flex h-5 w-5 items-center justify-center rounded-full border-[5px] border-stone-950" />
               <CreditCard className="h-4 w-4" />
-              银行卡
+
+              bank card
             </span>
             <span className="text-xs font-medium tracking-wide text-stone-400">VISA · MASTERCARD</span>
           </div>
 
           <div className="p-4">
-            <label className="mb-2 block text-xs font-medium text-stone-500">银行卡信息</label>
+            <label className="mb-2 block text-xs font-medium text-stone-500">Bank card information</label>
             <div className="overflow-hidden rounded-lg border border-stone-300 bg-white shadow-sm">
               <div id="paypal-card-number" className="h-[52px] overflow-hidden" />
               <div className="grid grid-cols-2 border-t border-stone-300">
@@ -378,7 +380,7 @@ export function PayPalPaymentMethods({
               </div>
             </div>
 
-            <label className="mb-2 mt-4 block text-xs font-medium text-stone-500">持卡人姓名</label>
+            <label className="mb-2 mt-4 block text-xs font-medium text-stone-500">Cardholder name</label>
             <div
               id="paypal-card-name"
               className="h-[52px] overflow-hidden rounded-lg border border-stone-300 bg-white shadow-sm"
@@ -393,7 +395,7 @@ export function PayPalPaymentMethods({
           className="mt-6 inline-flex h-14 w-full items-center justify-center gap-2 rounded-lg bg-[#0878d1] px-4 text-base font-semibold text-white shadow-sm transition hover:bg-[#066ab9] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {cardSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-          {cardSubmitting ? "正在确认付款" : `支付 $${paymentPackage.amount_usd}`}
+          {cardSubmitting ? "Confirming payment" : `Pay $${paymentPackage.amount_usd}`}
         </button>
       </div>
 
@@ -404,20 +406,23 @@ export function PayPalPaymentMethods({
         className="mx-auto mt-5 flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {redirecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
-        {redirecting ? "正在前往 PayPal" : "在 PayPal 安全页面付款"}
+        {redirecting ? "Heading to PayPal" : "Pay on PayPal secure page"}
       </button>
 
       <p className="mt-5 text-center text-xs leading-5 text-stone-400">
-        付款方式由 PayPal 根据账户、地区和设备资格提供。支付数据由 PayPal 按其
+
+        Payment methods are provided by PayPal based on account, region, and device qualifications. Payment data is provided by PayPal according to its
         <a
           href="https://www.paypal.com/c2/legalhub/paypal/privacy-full"
           target="_blank"
           rel="noreferrer"
           className="ml-1 underline underline-offset-2 hover:text-stone-600"
         >
-          隐私声明
+
+          Privacy Statement
         </a>
-        处理。
+
+        deal with.
       </p>
     </section>
   );
@@ -450,7 +455,7 @@ async function initializeApplePay(
   const button = document.createElement("apple-pay-button");
   button.setAttribute("buttonstyle", "black");
   button.setAttribute("type", "pay");
-  button.setAttribute("locale", "zh-CN");
+  button.setAttribute("locale", "en-US");
   button.style.display = "block";
   button.style.width = "100%";
   button.style.height = "48px";
@@ -464,7 +469,7 @@ async function initializeApplePay(
     });
     session.onvalidatemerchant = async (event) => {
       try {
-        if (!applePay.validateMerchant) throw new Error("Apple Pay 商户验证不可用");
+        if (!applePay.validateMerchant) throw new Error("Apple Pay merchant verification is not available");
         const result = await applePay.validateMerchant({
           validationUrl: event.validationURL,
           displayName: "OpenClass",
@@ -482,11 +487,11 @@ async function initializeApplePay(
           token: event.payment.token,
           billingContact: event.payment.billingContact,
         });
-        if (result.status !== "APPROVED") throw new Error("Apple Pay 订单未获批准");
+        if (result.status !== "APPROVED") throw new Error("Apple Pay order not approved");
         await captureOrder(orderId);
         session.completePayment(ApplePaySession.STATUS_SUCCESS);
       } catch (error) {
-        reportError(errorMessage(error, "Apple Pay 付款失败"));
+        reportError(errorMessage(error, "Apple Pay payment failed"));
         session.completePayment(ApplePaySession.STATUS_FAILURE);
       }
     };
@@ -530,17 +535,17 @@ async function initializeGooglePay(
           if (result.status === "PAYER_ACTION_REQUIRED" && googlePay.initiatePayerAction) {
             await googlePay.initiatePayerAction({ orderId });
           } else if (result.status !== "APPROVED") {
-            throw new Error("Google Pay 订单未获批准");
+            throw new Error("Google Pay order not approved");
           }
           await captureOrder(orderId);
           return { transactionState: "SUCCESS" };
         } catch (error) {
-          reportError(errorMessage(error, "Google Pay 付款失败"));
+          reportError(errorMessage(error, "Google Pay payment failed"));
           return {
             transactionState: "ERROR",
             error: {
               intent: "PAYMENT_AUTHORIZATION",
-              message: errorMessage(error, "Google Pay 付款失败"),
+              message: errorMessage(error, "Google Pay payment failed"),
             },
           };
         }
@@ -570,7 +575,7 @@ async function initializeGooglePay(
     onClick: () => {
       void paymentsClient.loadPaymentData(paymentDataRequest).catch((error) => {
         if ((error as { statusCode?: string })?.statusCode !== "CANCELED") {
-          reportError(errorMessage(error, "Google Pay 付款失败"));
+          reportError(errorMessage(error, "Google Pay payment failed"));
         }
       });
     },

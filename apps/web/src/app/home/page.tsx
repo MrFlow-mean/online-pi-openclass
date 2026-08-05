@@ -4,8 +4,8 @@ import { AuthGate } from "@/components/auth-gate";
 import { LearningHome } from "@/components/learning-home";
 
 export const metadata: Metadata = {
-  title: "交互式学习主页",
-  description: "开放课堂的课程包、随手笔记与精品课程商城入口。",
+  title: "Learning Home",
+  description: "Manage course packages, standalone lessons, activity, and public course discovery.",
 };
 
 export default function HomeAliasPage() {

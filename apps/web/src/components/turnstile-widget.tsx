@@ -90,13 +90,14 @@ export function TurnstileWidget({ action, onTokenChange, resetKey = 0 }: Turnsti
         className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700"
         role="alert"
       >
-        人机验证尚未配置，当前无法提交。请联系管理员。
+
+        Human verification is not configured, so this form cannot be submitted. Contact an administrator.
       </p>
     );
   }
 
   return (
-    <div className="min-h-[65px]" aria-label="Cloudflare Turnstile 人机验证">
+    <div className="min-h-[65px]" aria-label="Cloudflare Turnstile human verification">
       <Script
         id={`cloudflare-turnstile-${reactId.replaceAll(":", "")}`}
         src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
@@ -111,7 +112,7 @@ export function TurnstileWidget({ action, onTokenChange, resetKey = 0 }: Turnsti
         }}
       />
       <div ref={containerRef} />
-      {loadError ? <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert">人机验证加载失败，请检查网络后刷新页面。</p> : null}
+      {loadError ? <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert">Human verification did not load. Check your connection and refresh the page.</p> : null}
     </div>
   );
 }

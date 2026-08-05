@@ -4,8 +4,8 @@ import { AuthGate } from "@/components/auth-gate";
 import { FollowingFeed } from "@/components/following-feed";
 
 export const metadata: Metadata = {
-  title: "学习动态",
-  description: "查看与主页 Feed 同步的课程提交和工作台更新。",
+  title: "Following Activity",
+  description: "View updates from courses and creators you follow.",
 };
 
 export default function FollowingPage() {

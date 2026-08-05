@@ -64,7 +64,7 @@ export function ModelSelectionPanel({
       .catch((error: unknown) => {
         if (!cancelled) {
           setCredentialMessage(
-            error instanceof Error ? error.message : "无法读取个人 API 状态"
+            error instanceof Error ? error.message : "Unable to read personal API status"
           );
         }
       });
@@ -96,7 +96,7 @@ export function ModelSelectionPanel({
   async function saveCredential(provider: AIProvider) {
     const apiKey = credentialDrafts[provider]?.trim() ?? "";
     if (!apiKey) {
-      setCredentialMessage("请输入 API Key");
+      setCredentialMessage("Please enter API Key");
       return;
     }
     setCredentialBusy(provider);
@@ -105,10 +105,10 @@ export function ModelSelectionPanel({
       const status = await api.saveModelCredential(provider, apiKey);
       updateCredentialStatus(status);
       setCredentialDrafts((current) => ({ ...current, [provider]: "" }));
-      setCredentialMessage(`${status.label} API Key 已连接`);
+      setCredentialMessage(`${status.label} API key connected`);
     } catch (error) {
       setCredentialMessage(
-        error instanceof Error ? error.message : "API Key 保存失败"
+        error instanceof Error ? error.message : "API Key failed to save"
       );
     } finally {
       setCredentialBusy(null);
@@ -121,10 +121,10 @@ export function ModelSelectionPanel({
     try {
       const status = await api.deleteModelCredential(provider);
       updateCredentialStatus(status);
-      setCredentialMessage(`${status.label} API Key 已删除`);
+      setCredentialMessage(`${status.label} API key removed`);
     } catch (error) {
       setCredentialMessage(
-        error instanceof Error ? error.message : "API Key 删除失败"
+        error instanceof Error ? error.message : "API Key deletion failed"
       );
     } finally {
       setCredentialBusy(null);
@@ -137,14 +137,14 @@ export function ModelSelectionPanel({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
-              当前模型
+
+              current model
             </p>
             <p className="mt-1 text-sm font-semibold text-gray-950">
               {modelButtonLabel(selectedOption, selectedModel)}
             </p>
             <p className="mt-1 text-xs text-gray-500">
-              {modelAccessMethodLabel(selectedOption ?? selectedModel)} ·
-              与聊天输入框共用选择状态
+              {modelAccessMethodLabel(selectedOption ?? selectedModel)}  · Share selection state with chat input box
             </p>
           </div>
           <Cpu className="h-5 w-5 shrink-0 text-gray-400" />
@@ -152,7 +152,7 @@ export function ModelSelectionPanel({
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <h3 className="text-sm font-semibold text-gray-950">调用途径</h3>
+        <h3 className="text-sm font-semibold text-gray-950">Calling route</h3>
         <div className="mt-3 space-y-2">
           {MODEL_ACCESS_METHODS.map((method) => {
             const Icon = ACCESS_METHOD_ICONS[method.id];
@@ -192,7 +192,7 @@ export function ModelSelectionPanel({
                   )}
                 >
                   {method.description}
-                  {!routeEnabled && !canConfigurePersonal ? " 尚未连接。" : ""}
+                  {!routeEnabled && !canConfigurePersonal ? "Not connected yet." : ""}
                 </span>
               </button>
             );
@@ -202,10 +202,11 @@ export function ModelSelectionPanel({
         <div className="mt-4 border-t border-gray-100 pt-4">
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-gray-500" />
-            <h4 className="text-sm font-semibold text-gray-950">个人 API Key</h4>
+            <h4 className="text-sm font-semibold text-gray-950">Personal API Key</h4>
           </div>
           <p className="mt-1 text-xs leading-5 text-gray-500">
-            Key 仅保存到当前账户的私有模型目录，不会在页面中回显。
+
+            Key is only saved to the private model directory of the current account and will not be echoed on the page.
           </p>
           <div className="mt-3 space-y-3">
             {credentials.map((credential) => (
@@ -226,7 +227,7 @@ export function ModelSelectionPanel({
                       credential.configured ? "text-emerald-700" : "text-gray-400"
                     )}
                   >
-                    {credential.configured ? "已连接" : "未连接"}
+                    {credential.configured ? "Connected" : "Not connected"}
                   </span>
                 </div>
                 <input
@@ -242,7 +243,7 @@ export function ModelSelectionPanel({
                       [credential.provider]: event.target.value,
                     }))
                   }
-                  placeholder={credential.configured ? "输入新 Key 可替换" : "输入 API Key"}
+                  placeholder={credential.configured ? "Enter a new Key to replace" : "Enter API Key"}
                   className="mt-2 h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-gray-500 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
                 <div className="mt-2 flex items-center gap-2">
@@ -257,10 +258,10 @@ export function ModelSelectionPanel({
                     className="rounded-lg bg-gray-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {credentialBusy === credential.provider
-                      ? "保存中"
+                      ? "Saving"
                       : credential.configured
-                        ? "替换 Key"
-                        : "保存 Key"}
+                        ? "Replace Key"
+                        : "SaveKey"}
                   </button>
                   {credential.configured ? (
                     <button
@@ -270,13 +271,15 @@ export function ModelSelectionPanel({
                       className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:opacity-40"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
-                      删除
+
+                      delete
                     </button>
                   ) : null}
                 </div>
                 {!credential.manageable ? (
                   <p className="mt-2 text-xs text-amber-700">
-                    登录账户后可以保存个人 API Key。
+
+                    You can save your personal API Key after logging in to your account.
                   </p>
                 ) : null}
               </div>
@@ -291,7 +294,7 @@ export function ModelSelectionPanel({
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <h3 className="text-sm font-semibold text-gray-950">可用模型</h3>
+        <h3 className="text-sm font-semibold text-gray-950">Available models</h3>
         <div className="mt-3 space-y-2">
           {visibleOptions.map((option) => {
             const active =
@@ -322,7 +325,7 @@ export function ModelSelectionPanel({
                     active ? "text-gray-300" : "text-gray-500",
                   )}
                 >
-                  {PROVIDER_LABELS[option.provider]} · {option.enabled ? "可用" : "尚未配置"}
+                  {PROVIDER_LABELS[option.provider]} · {option.enabled ? "Available" : "Not configured yet"}
                 </span>
                 {selectedAccessMethod === "platform_credits" ? (
                   <span
@@ -331,10 +334,11 @@ export function ModelSelectionPanel({
                       active ? "text-emerald-300" : "text-emerald-700",
                     )}
                   >
-                    每 100 万输入 token ·{" "}
+
+                    Every 1 million input tokens ·{" "}
                     {option.input_price_credits_per_million == null
-                      ? "价格暂不可用"
-                      : `${option.input_price_credits_per_million.toLocaleString("zh-CN")} 平台积分`}
+                      ? "Price is not available yet"
+                      : `${option.input_price_credits_per_million.toLocaleString("en-US")} platform credits`}
                   </span>
                 ) : null}
               </button>

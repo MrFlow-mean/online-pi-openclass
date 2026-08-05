@@ -25,6 +25,15 @@ _JOB_PHASE_RANK = {
     "source_codex_writing_catalog": 4,
 }
 
+_LIVE_PHASE_TO_JOB_PHASE = {
+    "directory_discovery": "source_codex_investigation",
+    "page_calibration": "source_codex_mapping_nodes",
+    "range_mapping": "source_codex_verifying_ranges",
+    "validation": "source_codex_writing_catalog",
+    "terminal": "source_codex_writing_catalog",
+    "background_catalog_refine": "source_codex_verifying_ranges",
+}
+
 _UNIT_LABELS = {
     "pages": "页",
     "nodes": "个目录节点",
@@ -75,6 +84,14 @@ class SourceCodexProgressTracker:
             self.scanned_pages.update(scanned)
             self.rendered_pages.update(rendered)
 
+        live_progress = event.metadata.get("source_progress")
+        if (
+            str(event.metadata.get("kind") or "")
+            in {"sourceCatalogProgress", "sourceCatalogStage", "sourceCatalogPublished"}
+            and isinstance(live_progress, dict)
+        ):
+            return self._observe_live_heartbeat(event, live_progress)
+
         snapshot = _structured_progress(event)
         structured_detail = ""
         if snapshot is not None:
@@ -101,7 +118,9 @@ class SourceCodexProgressTracker:
             detail_parts.append(f"文件共 {self.total_pages} 页")
         if self.rendered_pages:
             detail_parts.append(f"已渲染核对 {len(self.rendered_pages)} 页")
-        if self.completed_tool_actions:
+        if self.completed_tool_actions and not any(
+            "工具检查" in part for part in detail_parts
+        ):
             detail_parts.append(f"已完成 {self.completed_tool_actions} 次工具检查")
 
         source_progress = {
@@ -109,6 +128,67 @@ class SourceCodexProgressTracker:
             "label": self.label,
             "detail": " · ".join(dict.fromkeys(detail_parts)),
             "progress": self.progress,
+            "pages_scanned": len(self.scanned_pages),
+            "total_pages": self.total_pages,
+            "pages_rendered": len(self.rendered_pages),
+            "completed_tool_actions": self.completed_tool_actions,
+        }
+        decorated = event.model_copy(
+            update={"metadata": {**event.metadata, "source_progress": source_progress}}
+        )
+        return SourceCodexProgressObservation(
+            event=decorated,
+            progress=self.progress,
+            phase=self.phase,
+        )
+
+    def _observe_live_heartbeat(
+        self,
+        event: AgentActivityEvent,
+        live_progress: dict[str, object],
+    ) -> SourceCodexProgressObservation:
+        label = str(live_progress.get("label") or "").strip()
+        if label:
+            self.label = label
+        live_phase = _LIVE_PHASE_TO_JOB_PHASE.get(
+            str(live_progress.get("phase") or ""),
+            self.phase,
+        )
+        if _JOB_PHASE_RANK.get(live_phase, 0) >= _JOB_PHASE_RANK.get(self.phase, 0):
+            self.phase = live_phase
+        completed = live_progress.get("completed")
+        total = live_progress.get("total")
+        determinate = bool(live_progress.get("determinate"))
+        if (
+            determinate
+            and isinstance(completed, int)
+            and not isinstance(completed, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and total > 0
+        ):
+            candidate = 55 + round(33 * max(0, min(completed, total)) / total)
+            self.progress = max(self.progress, min(88, candidate))
+        detail_parts = [str(live_progress.get("detail") or "").strip()]
+        if self.total_pages and self.scanned_pages:
+            detail_parts.append(f"已扫描 {len(self.scanned_pages)}/{self.total_pages} 页")
+        elif self.total_pages:
+            detail_parts.append(f"文件共 {self.total_pages} 页")
+        if self.rendered_pages:
+            detail_parts.append(f"已渲染核对 {len(self.rendered_pages)} 页")
+        if self.completed_tool_actions and not any(
+            "工具检查" in part for part in detail_parts
+        ):
+            detail_parts.append(f"已完成 {self.completed_tool_actions} 次工具检查")
+        source_progress = {
+            **live_progress,
+            "phase": self.phase,
+            "label": self.label,
+            "detail": " · ".join(
+                dict.fromkeys(part for part in detail_parts if part)
+            ),
+            "progress": self.progress,
+            "determinate": determinate,
             "pages_scanned": len(self.scanned_pages),
             "total_pages": self.total_pages,
             "pages_rendered": len(self.rendered_pages),

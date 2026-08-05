@@ -4,8 +4,8 @@ import { AdminDashboard } from "@/components/admin-dashboard";
 import { AuthGate } from "@/components/auth-gate";
 
 export const metadata: Metadata = {
-  title: "管理员后台",
-  description: "开放课堂用户与课程管理后台。",
+  title: "Admin Dashboard",
+  description: "Manage OpenClass users and courses.",
 };
 
 export default function AdminPage() {

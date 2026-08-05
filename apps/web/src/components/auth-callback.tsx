@@ -16,7 +16,7 @@ type AuthCallbackProps = {
 export function AuthCallback({ error, nextPath }: AuthCallbackProps) {
   const router = useRouter();
   const hasError = Boolean(error);
-  const message = error || "正在安全地确认登录会话。";
+  const message = error || "Securely confirming login session.";
 
   useEffect(() => {
     if (error) {
@@ -31,7 +31,7 @@ export function AuthCallback({ error, nextPath }: AuthCallbackProps) {
       })
       .catch(() => {
         if (!disposed) {
-          router.replace(`/login?error=${encodeURIComponent("第三方登录没有建立有效会话")}`);
+          router.replace(`/login?error=${encodeURIComponent("Third-party login does not establish a valid session")}`);
         }
       });
     return () => {
@@ -45,7 +45,7 @@ export function AuthCallback({ error, nextPath }: AuthCallbackProps) {
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-stone-950 text-white">
           {hasError ? <TriangleAlert className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
         </div>
-        <h1 className="mt-5 text-2xl font-semibold tracking-tight">{hasError ? "登录未完成" : "登录成功"}</h1>
+        <h1 className="mt-5 text-2xl font-semibold tracking-tight">{hasError ? "Login not completed" : "Login successful"}</h1>
         <p className="mt-3 text-sm leading-6 text-stone-600">
           {message}
         </p>
@@ -55,7 +55,8 @@ export function AuthCallback({ error, nextPath }: AuthCallbackProps) {
             href="/login"
             className="mt-6 inline-flex h-10 items-center justify-center rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
           >
-            返回登录
+
+            Return to login
           </Link>
         ) : null}
       </section>

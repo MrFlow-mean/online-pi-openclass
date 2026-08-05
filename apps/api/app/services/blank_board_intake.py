@@ -455,6 +455,10 @@ def process_blank_board_turn(
     is_cancelled: Callable[[], bool] | None,
     generate_board: BoardGenerationRunner,
     discard_generated_thread: Callable[[str], None],
+    source_plan=None,
+    visual_model_supports_images: bool = False,
+    visual_model_identity: str = "",
+    on_document_commit: Callable[[str, str], None] | None = None,
 ) -> ChatResponse:
     from app.services import workspace_state
 
@@ -481,9 +485,8 @@ def process_blank_board_turn(
 
     active_state = _active_requirement_state_from_history(lesson)
     active_requirement = active_state.requirement
-    source_plan = None
     source_error = ""
-    if request.selection is not None and request.selection.kind == "source":
+    if source_plan is None and request.selection is not None and request.selection.kind == "source":
         from app.services.source_grounded_board import (
             SourceGroundedBoardError,
             resolve_source_grounded_board_plan,
@@ -495,6 +498,11 @@ def process_blank_board_turn(
                 lesson=lesson,
                 selection=request.selection,
                 query=request.message,
+                visual_adapter=adapter,
+                visual_model_supports_images=visual_model_supports_images,
+                visual_model_identity=visual_model_identity,
+                is_cancelled=is_cancelled,
+                on_activity=record_activity,
             )
         except SourceGroundedBoardError as exc:
             source_error = str(exc)
@@ -850,7 +858,11 @@ def process_blank_board_turn(
     visual_insertion_metadata: dict[str, object] = {
         "board_visual_requested_count": 0,
         "board_visual_applied_ids": [],
+        "board_visual_appendix_ids": [],
         "board_visual_asset_ids": [],
+        "board_visual_registered": [],
+        "board_visual_excluded": [],
+        "board_visual_warnings": [],
         "skipped_visual_placements": [],
     }
     generation_started_at = time.monotonic()
@@ -923,20 +935,14 @@ def process_blank_board_turn(
                 next_document,
                 plan=insertion_plan,
             )
-            evidence_by_id = {
-                item.visual_id: item
-                for item in outcome.requirement.source_grounding.frozen_visual_evidence
-                if item.visual_id
-            }
             visual_assets = getattr(generation_result, "visual_assets", {})
 
             def resolve_visual_bytes(visual_id: str):
-                evidence = evidence_by_id.get(visual_id)
                 stored = visual_assets.get(visual_id)
-                if evidence is None or stored is None:
+                if stored is None:
                     return None
                 source_visual, content = stored
-                if source_visual.id != evidence.visual_id:
+                if source_visual.id != visual_id:
                     return None
                 return source_visual, content
 
@@ -954,18 +960,50 @@ def process_blank_board_turn(
                 "board_visual_applied_ids": list(visual_result.applied_visual_ids),
                 "board_visual_recreated_ids": list(visual_result.recreated_visual_ids),
                 "board_visual_original_ids": list(visual_result.original_visual_ids),
+                "board_visual_appendix_ids": list(visual_result.appendix_visual_ids),
                 "board_visual_asset_ids": list(visual_result.asset_ids),
+                "board_visual_registered": getattr(
+                    generation_result, "registered_visuals", []
+                ),
+                "board_visual_excluded": getattr(
+                    generation_result, "excluded_visuals", []
+                ),
+                "board_visual_warnings": [
+                    *getattr(generation_result, "visual_warnings", []),
+                    *[
+                        f"{item.get('visual_id', 'visual')}: {item.get('reason', 'insert failed')}"
+                        for item in visual_result.skipped
+                    ],
+                ],
                 "skipped_visual_placements": list(visual_result.skipped),
             }
             if visual_result.skipped:
                 visual_insertion_notice = (
-                    f"视觉内容已安全处理 {len(visual_result.applied_visual_ids)}/"
-                    f"{len(insertion_plan.items)} 项，其中 Codex 可编辑复刻 "
-                    f"{len(visual_result.recreated_visual_ids)} 项、保留原图 "
-                    f"{len(visual_result.original_visual_ids)} 项；其余内容因位置或资产校验"
-                    "未通过而未插入，"
-                    "可重新生成后重试。"
+                    f"有 {len(visual_result.skipped)} 项教学图表裁剪或插入失败；"
+                    "文字板书已正常生成，失败项已记录为警告。"
                 )
+            if visual_result.appendix_visual_ids:
+                appendix_notice = (
+                    f"有 {len(visual_result.appendix_visual_ids)} 项图表无法确定正文位置，"
+                    "已放入“本章教学图表”。"
+                )
+                visual_insertion_notice = " ".join(
+                    item for item in (visual_insertion_notice, appendix_notice) if item
+                )
+        else:
+            visual_insertion_metadata.update(
+                {
+                    "board_visual_registered": getattr(
+                        generation_result, "registered_visuals", []
+                    ),
+                    "board_visual_excluded": getattr(
+                        generation_result, "excluded_visuals", []
+                    ),
+                    "board_visual_warnings": getattr(
+                        generation_result, "visual_warnings", []
+                    ),
+                }
+            )
         current_lesson.learning_requirements = None
         commit_operations(
             current_lesson,
@@ -1028,6 +1066,17 @@ def process_blank_board_turn(
             elapsed_ms=round((time.monotonic() - generation_started_at) * 1000),
             requirement_retry=frozen_retry,
         )
+        if on_document_commit is not None:
+            committed_id = current_head_commit(current_lesson).id
+            try:
+                on_document_commit(next_document.content_text, committed_id)
+            except Exception as delivery_error:  # noqa: BLE001 - persistence already succeeded
+                ai_usage_logger.log_event(
+                    "blank_board_commit_delivery_failed",
+                    lesson_id=lesson.id,
+                    commit_id=committed_id,
+                    error=str(delivery_error)[:500],
+                )
     except Exception as exc:
         ai_usage_logger.log_event(
             "blank_board_generation_failed",
@@ -1058,6 +1107,7 @@ def process_blank_board_turn(
                 ready_version_id=ready_version_id,
                 frozen_version_id=frozen_version_id,
                 teaching_plan=outcome.teaching_plan,
+                user_message=request.message,
                 assistant_message=outcome.chatbot_message,
                 error=exc,
             )
@@ -1067,6 +1117,110 @@ def process_blank_board_turn(
                 f"{failure_record_error}"
             )
         raise
+    if request.post_generation_action == "auto_explain":
+        teaching_result = _start_auto_board_teaching(
+            owner_user_id=user_id,
+            lesson_id=lesson.id,
+            model=model,
+            adapter=adapter,
+            on_delta=on_delta,
+            on_activity=record_activity,
+            is_cancelled=is_cancelled,
+        )
+        merge_unreported_activity(teaching_result.activity)
+        if teaching_result.status == "succeeded":
+            final_chatbot_message = teaching_result.chatbot_message.strip()
+            if visual_insertion_notice:
+                final_chatbot_message = "\n\n".join(
+                    part
+                    for part in [final_chatbot_message, visual_insertion_notice]
+                    if part
+                )
+            if on_delta is not None and final_chatbot_message and not teaching_result.chatbot_streamed:
+                on_delta(final_chatbot_message)
+            workspace = workspace_state.load_workspace_for_user(user_id)
+            package, current_lesson = workspace_state.find_lesson_package(
+                workspace,
+                lesson.id,
+            )
+            return ChatResponse(
+                chatbot_message=final_chatbot_message,
+                follow_up_suggestions=teaching_result.follow_up_suggestions,
+                agent_activity=current_activity(),
+                learning_requirement_sheet=outcome.requirement,
+                active_requirement_sheet=None,
+                learning_clarification=outcome.clarification,
+                requirement_run_id=run_id,
+                requirement_version_id=frozen_version_id,
+                requirement_phase="consumed",
+                learning_requirement_operation_status="succeeded",
+                board_task_sheet=teaching_result.board_task,
+                active_board_task_sheet=teaching_result.board_task,
+                board_task_run_id=teaching_result.board_task_run_id,
+                board_task_version_id=teaching_result.board_task_version_id,
+                board_task_phase="consumed",
+                board_task_questions=[],
+                board_decision=BoardDecision(
+                    action="edit_board",
+                    reason=(
+                        "The agent saved the board before teaching its first "
+                        "title-scoped section."
+                    ),
+                ),
+                requirement_cleared=True,
+                board_document_operation_status="succeeded",
+                teaching_progress=teaching_result.progress,
+                auto_teaching_operation_status="succeeded",
+                auto_teaching_operation_failure_reason=None,
+                course_package=workspace_state.package_view_for_lesson(
+                    workspace,
+                    package,
+                    current_lesson.id,
+                ),
+            )
+        final_chatbot_message = "板书已保存，但第一节讲解未能启动。请重试讲解。"
+        if visual_insertion_notice:
+            final_chatbot_message = "\n\n".join(
+                part for part in [final_chatbot_message, visual_insertion_notice] if part
+            )
+        if on_delta is not None:
+            on_delta(final_chatbot_message)
+        workspace = workspace_state.load_workspace_for_user(user_id)
+        package, current_lesson = workspace_state.find_lesson_package(
+            workspace,
+            lesson.id,
+        )
+        return ChatResponse(
+            chatbot_message=final_chatbot_message,
+            agent_activity=current_activity(),
+            learning_requirement_sheet=outcome.requirement,
+            active_requirement_sheet=None,
+            learning_clarification=outcome.clarification,
+            requirement_run_id=run_id,
+            requirement_version_id=frozen_version_id,
+            requirement_phase="consumed",
+            learning_requirement_operation_status="succeeded",
+            board_task_sheet=teaching_result.board_task,
+            active_board_task_sheet=teaching_result.board_task,
+            board_task_run_id=teaching_result.board_task_run_id,
+            board_task_version_id=teaching_result.board_task_version_id,
+            board_task_phase="not_executed",
+            board_task_questions=[],
+            board_decision=BoardDecision(
+                action="edit_board",
+                reason="The board was saved before automatic teaching failed.",
+            ),
+            requirement_cleared=True,
+            board_document_operation_status="succeeded",
+            teaching_progress=None,
+            auto_teaching_operation_status="failed",
+            auto_teaching_operation_failure_reason=teaching_result.failure_reason,
+            course_package=workspace_state.package_view_for_lesson(
+                workspace,
+                package,
+                current_lesson.id,
+            ),
+        )
     try:
         handoff_result = adapter.parse_structured(
             system_prompt=BOARD_GENERATION_HANDOFF_INSTRUCTIONS,
@@ -1217,6 +1371,13 @@ def process_blank_board_turn(
             current_lesson.id,
         ),
     )
+
+
+def _start_auto_board_teaching(**kwargs):
+    # Keep the import lazy because workspace_state imports this intake module.
+    from app.services.auto_board_teaching import start_auto_board_teaching
+
+    return start_auto_board_teaching(**kwargs)
 
 
 def _emit_requirement_update(
@@ -1454,6 +1615,7 @@ def _record_generation_failure(
     ready_version_id: str | None,
     frozen_version_id: str,
     teaching_plan: str,
+    user_message: str,
     assistant_message: str,
     error: Exception,
 ) -> None:
@@ -1474,6 +1636,7 @@ def _record_generation_failure(
         message="The frozen learning requirement remains available for retry.",
         metadata={
             "kind": "learning_requirement_generation_failed",
+            "user_message": user_message,
             "requirement_run_id": run_id,
             "requirement_version_id": frozen_version_id,
             "requirement_ready_version_id": ready_version_id,

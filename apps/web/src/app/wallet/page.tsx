@@ -4,8 +4,8 @@ import { AuthGate } from "@/components/auth-gate";
 import { WalletHome } from "@/components/wallet-home";
 
 export const metadata: Metadata = {
-  title: "积分与充值",
-  description: "OpenClass 模型调用积分与充值入口。",
+  title: "Credits and top-up",
+  description: "View OpenClass Credits and choose a top-up amount.",
 };
 
 export default function WalletPage() {

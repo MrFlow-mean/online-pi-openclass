@@ -10,7 +10,7 @@ import shutil
 import stat
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,10 +37,15 @@ from app.services.ai_execution_adapter import (
     AIExecutionAdapter,
     BoardGenerationExecutionRequest,
     BoardGenerationExecutionResult,
+    BoardGenerationSourceScope,
     CodexAIExecutionAdapter,
     build_ai_execution_adapter,
 )
-from app.services.ai_model_catalog import build_model_catalog, resolve_text_model_selection
+from app.services.ai_model_catalog import (
+    build_model_catalog,
+    resolve_text_model_selection,
+    text_model_supports_image_inputs,
+)
 from app.services.blank_board_intake import process_blank_board_turn
 from app.services.board_visual_insertion import (
     BoardInsertionPlan,
@@ -99,8 +104,10 @@ from app.services.rich_document import (
 from app.services.source_grounded_board import (
     SOURCE_BOARD_TOKEN_BUDGET,
     SourceGroundedBoardError,
+    resolve_source_query_grounded_board_plan,
     resolve_source_grounded_board_plan,
 )
+from app.services.source_evidence_store import source_evidence_store
 from app.services.source_structure_store import source_structure_store
 from app.services.source_retrieval_service import (
     SourceRetrievalError,
@@ -134,11 +141,14 @@ _PRESERVED_VISUAL_MARKER_RE = re.compile(
 
 @dataclass(frozen=True)
 class CodexBoardGenerationResult:
-    """Codex turn plus the backend-owned visual insertion contract."""
+    """Board turn plus registered/excluded visual decisions and insertion data."""
 
     turn: BoardGenerationExecutionResult
     insertion_plan: BoardInsertionPlan
     visual_assets: dict[str, tuple[SourceVisualAsset, bytes]]
+    registered_visuals: list[dict[str, object]] = field(default_factory=list)
+    excluded_visuals: list[dict[str, object]] = field(default_factory=list)
+    visual_warnings: list[str] = field(default_factory=list)
 
     @property
     def thread_id(self) -> str:
@@ -756,63 +766,70 @@ def _prepare_source_generation_inputs(
                     "The selected source range could not be compacted within the board token budget"
                 )
         else:
-            chunk_ids = list(
-                dict.fromkeys(
-                    chunk_id
-                    for reference in grounding.confirmed_references
-                    for chunk_id in reference.chunk_ids
-                )
-            )
-            chunks = source_structure_store.source_chunks_by_ids(
-                owner_user_id=owner_user_id,
-                chunk_ids=chunk_ids,
-            )
-            if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
-                raise CodexAppServerError(
-                    "The frozen source range cannot be fully reconstructed from its chunk IDs"
-                )
-            prototype = evidence[0]
             summaries: list[RetrievalEvidence] = []
-            for batch_index, batch in enumerate(_source_text_batches(chunks)):
-                batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
-                response = adapter.parse_structured(
-                    system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
-                    user_prompt=json.dumps(
-                        {
-                            "batch_index": batch_index,
-                            "chunks": [
-                                {"chunk_id": chunk_id, "text": text}
-                                for chunk_id, text in batch
-                            ],
-                        },
-                        ensure_ascii=False,
-                    ),
-                    schema=_SourceBatchSummary,
+            for reference_index, reference in enumerate(grounding.confirmed_references):
+                chunk_ids = list(dict.fromkeys(reference.chunk_ids))
+                chunks = source_structure_store.source_chunks_by_ids(
+                    owner_user_id=owner_user_id,
+                    chunk_ids=chunk_ids,
                 )
-                if on_activity is not None:
-                    for event in response.activity:
-                        on_activity(event)
-                summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
-                if not summary:
-                    raise CodexAppServerError("Source batch summarization returned empty content")
-                summaries.append(
-                    prototype.model_copy(
-                        update={
-                            "id": f"{prototype.id}:summary:{batch_index}",
-                            "chunk_ids": batch_chunk_ids,
-                            "excerpt": summary[:360],
-                            "expanded_text": summary,
-                            "token_count": max(1, (len(summary) + 3) // 4),
-                            "reason": "Provider-generated summary of one consecutive frozen source batch.",
-                            "metadata": {
-                                **prototype.metadata,
-                                "retrieval_mode": "frozen_source_batch_summary",
-                                "batch_index": batch_index,
-                                "covered_chunk_ids": batch_chunk_ids,
-                            },
-                        }
+                if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
+                    raise CodexAppServerError(
+                        "The frozen source range cannot be fully reconstructed from its chunk IDs"
                     )
+                prototype = next(
+                    (
+                        item
+                        for item in evidence
+                        if item.source_ingestion_id == reference.source_ingestion_id
+                        and (not reference.source_chapter_id or item.chapter_id == reference.source_chapter_id)
+                    ),
+                    None,
                 )
+                if prototype is None:
+                    raise CodexAppServerError("Frozen source evidence lost its reference identity")
+                for batch_index, batch in enumerate(_source_text_batches(chunks)):
+                    batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
+                    response = adapter.parse_structured(
+                        system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
+                        user_prompt=json.dumps(
+                            {
+                                "reference_index": reference_index,
+                                "batch_index": batch_index,
+                                "chunks": [
+                                    {"chunk_id": chunk_id, "text": text}
+                                    for chunk_id, text in batch
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        schema=_SourceBatchSummary,
+                    )
+                    if on_activity is not None:
+                        for event in response.activity:
+                            on_activity(event)
+                    summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
+                    if not summary:
+                        raise CodexAppServerError("Source batch summarization returned empty content")
+                    summaries.append(
+                        prototype.model_copy(
+                            update={
+                                "id": f"{prototype.id}:summary:{reference_index}:{batch_index}",
+                                "chunk_ids": batch_chunk_ids,
+                                "excerpt": summary[:360],
+                                "expanded_text": summary,
+                                "token_count": max(1, (len(summary) + 3) // 4),
+                                "reason": "Provider-generated summary of one frozen source reference batch.",
+                                "metadata": {
+                                    **prototype.metadata,
+                                    "retrieval_mode": "frozen_source_batch_summary",
+                                    "reference_index": reference_index,
+                                    "batch_index": batch_index,
+                                    "covered_chunk_ids": batch_chunk_ids,
+                                },
+                            }
+                        )
+                    )
             grounding.frozen_evidence = summaries
 
     visuals = grounding.frozen_visual_evidence
@@ -882,6 +899,7 @@ def _prepare_existing_board_source_context(
     selection: SelectionRef | None,
     adapter: AIExecutionAdapter,
     include_raster_images: bool,
+    visual_model_identity: str,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> ExistingBoardSourceContext | None:
@@ -896,12 +914,25 @@ def _prepare_existing_board_source_context(
         owner_user_id=owner_user_id,
         lesson=lesson,
         selection=selection,
+        visual_adapter=adapter,
+        visual_model_supports_images=include_raster_images,
+        visual_model_identity=visual_model_identity,
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
     )
     if plan is None:
         return None
+    workspace = workspace_state.load_workspace_for_user(owner_user_id)
+    package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
+    scoped_requirement, _scope, _excluded, _warnings = _load_registered_board_visual_scope(
+        requirement=plan.requirement,
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        supports_source_visual_tools=getattr(adapter, "supports_source_visual_tools", False),
+    )
     prepared_requirement, image_inputs = _prepare_source_generation_inputs(
         adapter=adapter,
-        requirement=plan.requirement,
+        requirement=scoped_requirement,
         owner_user_id=owner_user_id,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
@@ -1102,7 +1133,14 @@ def _source_evidence_batches(
     batches: list[list[tuple[RetrievalEvidence, str, int, int]]] = []
     current: list[tuple[RetrievalEvidence, str, int, int]] = []
     used_tokens = 0
+    current_identity: tuple[str, str] | None = None
     for item in evidence:
+        identity = (item.source_ingestion_id, item.chapter_id)
+        if current and identity != current_identity:
+            batches.append(current)
+            current = []
+            used_tokens = 0
+        current_identity = identity
         text_parts = _split_text_by_utf8_bytes(
             item.expanded_text,
             max_bytes=SOURCE_RANGE_BATCH_BYTE_BUDGET,
@@ -1228,6 +1266,7 @@ def _generate_blank_board_with_adapter(
     *,
     adapter: AIExecutionAdapter,
     user_id: str,
+    package_id: str = "",
     requirement: LearningRequirementSheet,
     teaching_plan: str,
     content_extent: BoardContentExtent,
@@ -1235,9 +1274,20 @@ def _generate_blank_board_with_adapter(
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> tuple[CodexBoardGenerationResult, str]:
+    (
+        scoped_requirement,
+        source_scope,
+        excluded_visuals,
+        source_visual_warnings,
+    ) = _load_registered_board_visual_scope(
+        requirement=requirement,
+        owner_user_id=user_id,
+        package_id=package_id,
+        supports_source_visual_tools=getattr(adapter, "supports_source_visual_tools", False),
+    )
     prepared_requirement, image_inputs = _prepare_source_generation_inputs(
         adapter=adapter,
-        requirement=requirement,
+        requirement=scoped_requirement,
         owner_user_id=user_id,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
@@ -1270,6 +1320,7 @@ def _generate_blank_board_with_adapter(
             content_extent=content_extent,
             image_inputs=image_inputs,
             visual_manifest=visual_manifest,
+            source_scope=source_scope,
         ),
         is_cancelled=is_cancelled,
         on_activity=on_activity,
@@ -1298,9 +1349,111 @@ def _generate_blank_board_with_adapter(
             turn=turn,
             insertion_plan=insertion_plan,
             visual_assets=visual_assets,
+            registered_visuals=[
+                item.model_dump(mode="json")
+                for item in prepared_requirement.source_grounding.frozen_visual_evidence
+            ],
+            excluded_visuals=excluded_visuals,
+            visual_warnings=source_visual_warnings,
         ),
         content,
     )
+
+
+def _load_registered_board_visual_scope(
+    *,
+    requirement: LearningRequirementSheet,
+    owner_user_id: str,
+    package_id: str,
+    supports_source_visual_tools: bool,
+) -> tuple[
+    LearningRequirementSheet,
+    BoardGenerationSourceScope | None,
+    list[dict[str, object]],
+    list[str],
+]:
+    references = requirement.source_grounding.confirmed_references
+    if len(references) != 1:
+        return requirement, None, [], []
+    reference = references[0]
+    bundle = source_evidence_store.get_bundle(
+        owner_user_id=owner_user_id,
+        bundle_id=requirement.source_grounding.confirmed_bundle_id,
+    )
+    expected_hash = next(
+        (
+            str(item.metadata.get("source_content_hash") or "").strip().lower()
+            for item in requirement.source_grounding.frozen_evidence
+            if item.source_ingestion_id == reference.source_ingestion_id
+            and item.metadata.get("source_content_hash")
+        ),
+        "",
+    )
+    if not expected_hash and bundle is not None:
+        expected_hash = str(bundle.metadata.get("source_content_hash") or "").strip().lower()
+    source_scope = BoardGenerationSourceScope(
+        source_ingestion_id=reference.source_ingestion_id,
+        source_content_hash=expected_hash,
+        source_chapter_id=reference.source_chapter_id,
+        source_title=reference.source_title,
+        chapter_title=reference.chapter_title,
+        physical_page_start=reference.page_start,
+        physical_page_end=reference.page_end,
+    )
+    if not package_id:
+        return requirement, source_scope, [], []
+    source = source_evidence_store.get_source(
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        source_id=reference.source_ingestion_id,
+    )
+    if source is None:
+        raise CodexAppServerError("The confirmed source is no longer available.")
+    actual_hash = str(source.metadata.get("content_hash") or "").strip().lower()
+    if expected_hash and actual_hash != expected_hash:
+        raise CodexAppServerError("The confirmed source content changed before board generation.")
+    source_scope = BoardGenerationSourceScope(
+        source_ingestion_id=reference.source_ingestion_id,
+        source_content_hash=expected_hash or actual_hash,
+        source_chapter_id=reference.source_chapter_id,
+        source_title=reference.source_title,
+        chapter_title=reference.chapter_title,
+        physical_page_start=reference.page_start,
+        physical_page_end=reference.page_end,
+    )
+    excluded_visuals: list[dict[str, object]] = []
+    visual_warnings: list[str] = []
+    if bundle is not None:
+        raw_excluded = bundle.metadata.get("visual_excluded_candidates") or []
+        if isinstance(raw_excluded, list):
+            excluded_visuals = [dict(item) for item in raw_excluded if isinstance(item, dict)]
+        raw_warnings = (
+            bundle.metadata.get("visual_warnings")
+            or bundle.metadata.get("visual_scope_warnings")
+            or []
+        )
+        if isinstance(raw_warnings, list):
+            visual_warnings = [str(item) for item in raw_warnings if str(item).strip()]
+    cache_key = next(
+        (
+            factor.value
+            for factor in requirement.auxiliary_factors
+            if factor.label == "source_visual_scope_cache_key"
+        ),
+        "",
+    )
+    visuals: list[SourceVisualEvidence] = []
+    if supports_source_visual_tools and cache_key and reference.source_chapter_id:
+        visuals = source_structure_store.scoped_visual_evidence(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_ingestion_id=reference.source_ingestion_id,
+            chapter_id=reference.source_chapter_id,
+            scope_cache_key=cache_key,
+        )
+    prepared = requirement.model_copy(deep=True)
+    prepared.source_grounding.frozen_visual_evidence = visuals
+    return prepared, source_scope, excluded_visuals, visual_warnings
 
 
 def _run_codex_board_generation(
@@ -1797,6 +1950,7 @@ def process_codex_chat_on_lesson(
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+    on_document_commit: Callable[[str, str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ChatResponse:
     with _turn_lock(user_id):
@@ -1811,11 +1965,25 @@ def process_codex_chat_on_lesson(
         board_state_before = _board_state(initial_lesson.board_document.content_text)
         model_selection = _text_model_selection(request, user_id=user_id)
         selected_model = model_selection.model
+        selected_model_supports_images = text_model_supports_image_inputs(
+            model_selection,
+            user_id=user_id,
+        )
+        visual_model_identity = ":".join(
+            part
+            for part in (
+                model_selection.provider,
+                model_selection.model,
+                model_selection.access_method or "",
+            )
+            if part
+        )
         adapter = build_ai_execution_adapter(
             model_selection,
             owner_user_id=user_id,
             board_runner=_run_codex_board_generation,
             image_analysis_runner=_run_codex_visual_analysis,
+            supports_source_visual_tools=selected_model_supports_images,
         )
         verified_attachments = verify_chat_attachments(
             owner_user_id=user_id,
@@ -1824,6 +1992,42 @@ def process_codex_chat_on_lesson(
         )
         prepared_attachments = prepare_chat_attachments(attachments=verified_attachments)
         source_query_scope = _source_query_scope_for_turn(request, verified_attachments)
+        source_board_plan = None
+        if (
+            board_state_before == "empty"
+            and source_query_scope is not None
+            and request.board_generation_action == "start"
+        ):
+            try:
+                all_ready_retrieval = (
+                    source_retrieval_service.retrieve(
+                        owner_user_id=user_id,
+                        package_id=initial_package.id,
+                        lesson_id=lesson_id,
+                        query=request.message,
+                        scope=source_query_scope,
+                    )
+                    if source_query_scope.mode == "all_ready_sources"
+                    else None
+                )
+                source_board_plan = resolve_source_query_grounded_board_plan(
+                    owner_user_id=user_id,
+                    lesson=initial_lesson,
+                    scope=source_query_scope,
+                    query=request.message,
+                    retrieval_bundle=(
+                        all_ready_retrieval.bundle if all_ready_retrieval else None
+                    ),
+                    visual_adapter=adapter,
+                    visual_model_supports_images=selected_model_supports_images,
+                    visual_model_identity=visual_model_identity,
+                    is_cancelled=is_cancelled,
+                    on_activity=on_agent_activity,
+                )
+            except (SourceGroundedBoardError, SourceRetrievalError) as exc:
+                raise CodexAppServerError(str(exc)) from exc
+            request = request.model_copy(update={"source_query_scope": None})
+            source_query_scope = None
         source_retrieval = None
         if source_query_scope is not None:
             try:
@@ -1884,6 +2088,7 @@ def process_codex_chat_on_lesson(
                 return _generate_blank_board_with_adapter(
                     adapter=adapter,
                     user_id=selected_user_id,
+                    package_id=initial_package.id,
                     requirement=requirement,
                     teaching_plan=teaching_plan,
                     content_extent=content_extent,
@@ -1911,6 +2116,7 @@ def process_codex_chat_on_lesson(
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
                 on_agent_activity=on_agent_activity,
+                on_document_commit=on_document_commit,
                 is_cancelled=is_cancelled,
                 generate_board=(
                     generate_with_selected_adapter
@@ -1925,6 +2131,9 @@ def process_codex_chat_on_lesson(
                         user_id=user_id,
                     )
                 ),
+                source_plan=source_board_plan,
+                visual_model_supports_images=selected_model_supports_images,
+                visual_model_identity=visual_model_identity,
             )
 
         from app.services.auto_board_teaching import (
@@ -2038,10 +2247,8 @@ def process_codex_chat_on_lesson(
                     lesson=initial_lesson,
                     selection=request.selection,
                     adapter=adapter,
-                    include_raster_images=(
-                        model_selection.agent_backend == "codex"
-                        and model_selection.provider == "openai_codex"
-                    ),
+                    include_raster_images=selected_model_supports_images,
+                    visual_model_identity=visual_model_identity,
                     is_cancelled=is_cancelled,
                     on_activity=on_agent_activity,
                 )

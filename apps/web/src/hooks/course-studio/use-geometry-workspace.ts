@@ -126,7 +126,7 @@ export function useGeometryWorkspace({
       if (!controller.signal.aborted) {
         setWorkspaceState((current) => ({
           ...(current.referenceKey === referenceKey ? current : emptyWorkspaceState(referenceKey)),
-          error: generationError instanceof Error ? generationError.message : "图形生成失败，请稍后重试",
+          error: generationError instanceof Error ? generationError.message : "Graphic generation failed, please try again later",
         }));
       }
     } finally {

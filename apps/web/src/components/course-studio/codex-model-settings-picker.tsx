@@ -29,25 +29,25 @@ function clamp(value: number, minimum: number, maximum: number) {
 }
 
 const REASONING_EFFORT_LABELS: Record<string, string> = {
-  none: "无",
-  minimal: "极低",
-  low: "轻度",
-  medium: "中",
-  high: "高",
-  xhigh: "极高",
-  max: "最高",
-  ultra: "极高",
+  none: "none",
+  minimal: "extremely low",
+  low: "Mild",
+  medium: "middle",
+  high: "high",
+  xhigh: "extremely high",
+  max: "Highest",
+  ultra: "extremely high",
 };
 
 function reasoningEffortLabel(effort: string | null | undefined) {
   if (!effort) {
-    return "默认";
+    return "default";
   }
   return REASONING_EFFORT_LABELS[effort] ?? effort;
 }
 
 function reasoningEffortDescription(option: AIReasoningEffortOption) {
-  return option.reasoning_effort === "ultra" ? "使用更多额度" : "";
+  return option.reasoning_effort === "ultra" ? "Use more credit" : "";
 }
 
 function shortModelLabel(option: AIModelOption | null, selection: AIModelSelection) {
@@ -59,11 +59,11 @@ function shortModelLabel(option: AIModelOption | null, selection: AIModelSelecti
 }
 
 function serviceTierLabel(option: AIServiceTierOption) {
-  return option.id === "priority" ? "快速" : option.name || option.id;
+  return option.id === "priority" ? "fast" : option.name || option.id;
 }
 
 function serviceTierDescription(option: AIServiceTierOption) {
-  return option.id === "priority" ? "1.5 倍速，用量更多" : option.description;
+  return option.id === "priority" ? "1.5 times faster, more usage" : option.description;
 }
 
 function SettingsRow({
@@ -139,7 +139,7 @@ export function CodexModelSettingsPicker({
   options,
   onChange,
   disabled = false,
-  contextLabel = "模型设置",
+  contextLabel = "Model settings",
   testIdPrefix = "codex-model",
   preferredPlacement = "above",
   preferredSubmenuSide = "right",
@@ -176,7 +176,7 @@ export function CodexModelSettingsPicker({
   const hasSelectableSpeed = serviceTiers.length > 0;
   const modelLabel = shortModelLabel(selectedOption, normalizedSelection);
   const effortLabel = reasoningEffortLabel(normalizedSelection.reasoning_effort);
-  const speedLabel = selectedServiceTier ? serviceTierLabel(selectedServiceTier) : "标准";
+  const speedLabel = selectedServiceTier ? serviceTierLabel(selectedServiceTier) : "standard";
 
   function applySelection(selection: AIModelSelection) {
     setActiveMenu(null);
@@ -335,7 +335,7 @@ export function CodexModelSettingsPicker({
               className="fixed z-[100] w-56 rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
             >
               <SettingsRow
-                label="模型"
+                label="Model"
                 value={modelLabel}
                 active={activeMenu === "model"}
                 testId={`${testIdPrefix}-model-row`}
@@ -343,7 +343,7 @@ export function CodexModelSettingsPicker({
               />
               {hasSelectableReasoning ? (
                 <SettingsRow
-                  label="推理强度"
+                  label="Reasoning strength"
                   value={effortLabel}
                   active={activeMenu === "reasoning"}
                   testId={`${testIdPrefix}-reasoning-row`}
@@ -352,7 +352,7 @@ export function CodexModelSettingsPicker({
               ) : null}
               {hasSelectableSpeed ? (
                 <SettingsRow
-                  label="速度"
+                  label="speed"
                   value={speedLabel}
                   active={activeMenu === "speed"}
                   testId={`${testIdPrefix}-speed-row`}
@@ -366,7 +366,7 @@ export function CodexModelSettingsPicker({
                 onClick={resetDefaults}
                 className="flex h-10 w-full items-center rounded-lg px-2.5 text-left text-sm text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-900"
               >
-                <span>重置为默认设置</span>
+                <span>Reset to default settings</span>
                 <RotateCcw className="ml-auto h-4 w-4" />
               </button>
             </div>
@@ -383,7 +383,7 @@ export function CodexModelSettingsPicker({
                 className="fixed z-[110] max-h-[420px] w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
               >
                 <p className="px-2.5 pb-1 pt-1.5 text-sm text-gray-400">
-                  {activeMenu === "model" ? "模型" : activeMenu === "reasoning" ? "推理强度" : "速度"}
+                  {activeMenu === "model" ? "Model" : activeMenu === "reasoning" ? "Reasoning strength" : "speed"}
                 </p>
 
                 {activeMenu === "model"
@@ -393,7 +393,7 @@ export function CodexModelSettingsPicker({
                         label={shortModelLabel(option, normalizedSelection)}
                         description={modelAccessMethodLabel(option)}
                         selected={modelOptionKey(option) === modelSelectionKey(normalizedSelection)}
-                        ariaLabel={`选择模型 ${shortModelLabel(option, normalizedSelection)}`}
+                        ariaLabel={`Select model ${shortModelLabel(option, normalizedSelection)}`}
                         disabled={!option.enabled}
                         onClick={() => applySelection(selectionForModelOption(option, normalizedSelection))}
                       />
@@ -407,7 +407,7 @@ export function CodexModelSettingsPicker({
                         label={reasoningEffortLabel(option.reasoning_effort)}
                         description={reasoningEffortDescription(option)}
                         selected={option.reasoning_effort === normalizedSelection.reasoning_effort}
-                        ariaLabel={`推理强度 ${reasoningEffortLabel(option.reasoning_effort)}${option.reasoning_effort === "ultra" ? " Ultra" : ""}`}
+                        ariaLabel={`Reasoning effort ${reasoningEffortLabel(option.reasoning_effort)}${option.reasoning_effort === "ultra" ? " Ultra" : ""}`}
                         onClick={() =>
                           applySelection({
                             ...normalizedSelection,
@@ -421,10 +421,10 @@ export function CodexModelSettingsPicker({
                 {activeMenu === "speed" ? (
                   <>
                     <OptionButton
-                      label="标准"
-                      description="默认速度"
+                      label="standard"
+                      description="Default speed"
                       selected={!normalizedSelection.service_tier}
-                      ariaLabel="速度 标准"
+                      ariaLabel="speed standard"
                       onClick={() => applySelection({ ...normalizedSelection, service_tier: null })}
                     />
                     {serviceTiers.map((option) => (
@@ -433,7 +433,7 @@ export function CodexModelSettingsPicker({
                         label={serviceTierLabel(option)}
                         description={serviceTierDescription(option)}
                         selected={option.id === normalizedSelection.service_tier}
-                        ariaLabel={`速度 ${serviceTierLabel(option)}`}
+                        ariaLabel={`Speed ${serviceTierLabel(option)}`}
                         onClick={() => applySelection({ ...normalizedSelection, service_tier: option.id })}
                       />
                     ))}
@@ -453,7 +453,7 @@ export function CodexModelSettingsPicker({
         type="button"
         data-testid={`${testIdPrefix}-settings-button`}
         aria-expanded={open}
-        aria-label={`${contextLabel}，当前 ${modelLabel}，推理强度 ${effortLabel}，速度 ${speedLabel}`}
+        aria-label={`${contextLabel}, current ${modelLabel}, reasoning effort ${effortLabel}, speed ${speedLabel}`}
         disabled={disabled}
         onClick={togglePicker}
         className="flex h-10 w-full items-center justify-center gap-1.5 rounded-full bg-gray-100 px-3 text-sm text-gray-900 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-gray-100"

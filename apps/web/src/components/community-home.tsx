@@ -83,7 +83,7 @@ function communitySharePrefill(current: URL) {
   );
   referenceUrl.searchParams.set("history_node", historyNodeId);
   return answerPrefillValue(
-    `> [课堂历史节点引用 · 点击打开](${referenceUrl.toString()})`
+    `> [Course history reference · Open](${referenceUrl.toString()})`
   );
 }
 
@@ -100,21 +100,21 @@ function CommunityStatusPage({
   const available = integration?.available ?? false;
   const ssoReady = integration?.sso_enabled && !integration.setup_required;
   const title = loading
-    ? "正在连接学习社区"
+    ? "Connecting to the learning community"
     : available && !ssoReady
-      ? "社区单点登录尚未就绪"
-      : "学习社区暂时不可用";
+      ? "Community single sign-on is not ready yet"
+      : "Learning community is temporarily unavailable";
   const detail = loading
-    ? "正在确认社区服务与登录状态。"
+    ? "Confirming community service and login status."
     : error || (available
-      ? "Apache Answer 已运行，但 OpenClass 单点登录连接器尚未完成配置。"
-      : "OpenClass 无法连接 Apache Answer，请检查社区服务状态。");
+      ? "Apache Answer is running, but the OpenClass single sign-on connector has not yet been configured."
+      : "OpenClass cannot connect to Apache Answer, please check the community service status.");
 
   return (
     <main className="min-h-screen bg-[#f5f3ee] text-stone-900">
       <header className="border-b border-stone-200/80 bg-[#f5f3ee]/92">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <Link href="/home" aria-label="返回学习主页" className="flex items-center gap-2">
+          <Link href="/home" aria-label="Return to study home page" className="flex items-center gap-2">
             <BrandMark className="h-8 w-8" />
             <span className="text-sm font-bold tracking-tight">OpenClass</span>
           </Link>
@@ -133,11 +133,11 @@ function CommunityStatusPage({
         {!loading ? (
           <div className="mt-7 flex flex-wrap justify-center gap-3">
             <button type="button" onClick={() => window.location.reload()} className="inline-flex items-center gap-2 rounded-xl bg-stone-950 px-5 py-3 text-sm font-semibold text-white">
-              <RefreshCw className="h-4 w-4" />重新检查
+              <RefreshCw className="h-4 w-4" />recheck
             </button>
             {integration?.public_url ? (
               <a href={integration.public_url} className="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-5 py-3 text-sm font-semibold text-stone-700">
-                <ExternalLink className="h-4 w-4" />查看社区服务
+                <ExternalLink className="h-4 w-4" />View community services
               </a>
             ) : null}
           </div>
@@ -166,7 +166,7 @@ export function CommunityHome() {
       setAuthChecked(true);
     }).catch((requestError) => {
       if (!active) return;
-      setError(requestError instanceof Error ? requestError.message : "社区服务状态检查失败");
+      setError(requestError instanceof Error ? requestError.message : "Community service status check failed");
       setAuthChecked(true);
     });
     return () => { active = false; };

@@ -45,6 +45,7 @@ from app.services.openrouter_provisioning import (
 )
 from app.services.workspace_state import ensure_data_dirs
 from app.services.source_ingestion_jobs import source_ingestion_task_manager
+from app.services.pi_source_runtime import cleanup_orphan_source_workspaces
 
 ensure_data_dirs()
 openrouter_provisioning_service = OpenRouterProvisioningService(billing.billing_service)
@@ -55,6 +56,7 @@ openrouter_provisioning_worker = OpenRouterProvisioningWorker(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    cleanup_orphan_source_workspaces()
     source_ingestion_task_manager.recover_active()
     openrouter_provisioning_worker.start()
     try:

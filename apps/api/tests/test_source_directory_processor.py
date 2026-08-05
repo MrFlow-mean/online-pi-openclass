@@ -39,6 +39,12 @@ from app.services.source_directory_processor import (
 )
 from app.services.pdf_toc_parser import PdfTocExtraction, PdfTocNode
 from app.services.source_evidence_store import SourceEvidenceStore
+from app.services.source_codex_catalog import (
+    AgentCatalogDirectoryEvidence,
+    AgentCatalogV3,
+    AgentCatalogV3Node,
+    SourceCodexCatalogResult,
+)
 from app.services.source_ingestion_jobs import SourceIngestionJobStore
 from app.services.source_ingestion_service import SourceIngestionError, SourceIngestionService
 from app.services.source_structure_store import SourceStructureStore
@@ -997,6 +1003,331 @@ def test_epub_extensionless_content_document_can_verify_fragment(tmp_path: Path)
     assert extraction.metadata["body_text_extracted"] is False
 
 
+def test_production_processor_uses_complete_native_epub_navigation_without_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "native-navigation.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation=(
+            "<li><a href='s1.xhtml#chapter'>Chapter</a><ol>"
+            "<li><a href='s1.xhtml#section'>Section</a></li>"
+            "</ol></li>"
+        ),
+        document=(
+            "<html><body><section id='chapter'></section>"
+            "<section id='section'></section></body></html>"
+        ),
+    )
+    record = _record(path)
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.generate_codex_direct_catalog",
+        lambda **_kwargs: pytest.fail(
+            "Complete native EPUB navigation must bypass the source Agent"
+        ),
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    view = store.get_catalog_view(source=record)
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert structure.status == "ready"
+    assert structure.chapter_count == 2
+    assert structure.has_verified_toc is True
+    assert structure.catalog_schema_version == "codex_directory_v1"
+    assert structure.metadata["catalog_authority"] == "native_epub_navigation"
+    assert structure.metadata["catalog_task_contract"] == "native_epub_navigation_v1"
+    assert structure.metadata["body_text_extracted"] is False
+    assert structure.metadata["work_state"] == "satisfied"
+    assert structure.metadata["auto_continuing"] is False
+    assert [chapter.title for chapter in view.chapters] == ["Chapter", "Section"]
+    assert [chapter.level for chapter in view.chapters] == [1, 2]
+    assert all(chapter.mapping_status == "verified" for chapter in view.chapters)
+    assert runs[-1].status == "succeeded"
+    assert runs[-1].turn_count == 0
+
+
+def test_production_processor_resolves_ncx_opf_spine_and_xhtml_anchors_without_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "native-ncx.epub"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            "<container><rootfiles><rootfile full-path='OPS/content.opf'/></rootfiles></container>",
+        )
+        archive.writestr(
+            "OPS/content.opf",
+            "<package><manifest>"
+            "<item id='ncx' href='toc.ncx' media-type='application/x-dtbncx+xml'/>"
+            "<item id='s1' href='s1.xhtml' media-type='application/xhtml+xml'/>"
+            "</manifest><spine toc='ncx'><itemref idref='s1'/></spine></package>",
+        )
+        archive.writestr(
+            "OPS/toc.ncx",
+            "<ncx><navMap><navPoint id='chapter'><navLabel><text>Chapter</text></navLabel>"
+            "<content src='s1.xhtml#chapter'/><navPoint id='section'>"
+            "<navLabel><text>Section</text></navLabel><content src='s1.xhtml#section'/>"
+            "</navPoint></navPoint></navMap></ncx>",
+        )
+        archive.writestr(
+            "OPS/s1.xhtml",
+            "<html><body><section id='chapter'></section><section id='section'></section></body></html>",
+        )
+    record = _record(path)
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.generate_codex_direct_catalog",
+        lambda **_kwargs: pytest.fail("Complete NCX/OPF/XHTML navigation must bypass the Agent"),
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    view = store.get_catalog_view(source=record)
+
+    assert structure.status == "ready"
+    assert structure.metadata["catalog_authority"] == "native_epub_navigation"
+    assert [chapter.title for chapter in view.chapters] == ["Chapter", "Section"]
+    assert [chapter.level for chapter in view.chapters] == [1, 2]
+    assert [chapter.range.start_anchor for chapter in view.chapters if chapter.range] == [
+        "chapter",
+        "section",
+    ]
+
+
+def test_production_processor_uses_complete_native_pdf_navigation_without_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "native-navigation.pdf"
+    writer = PdfWriter()
+    for _ in range(12):
+        writer.add_blank_page(width=500, height=700)
+    root = writer.add_outline_item("Part One", 1)
+    writer.add_outline_item("1.1 First topic", 3, parent=root)
+    writer.add_outline_item("Part Two", 7)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    record = _record(path)
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.generate_codex_direct_catalog",
+        lambda **_kwargs: pytest.fail(
+            "Complete native PDF navigation must bypass the source Agent"
+        ),
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    view = store.get_catalog_view(source=record)
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert structure.status == "ready"
+    assert structure.catalog_model == ""
+    assert structure.metadata["catalog_authority"] == "openclass_host_native_navigation"
+    assert structure.metadata["native_navigation_node_count"] == 3
+    assert structure.metadata["host_pdf_range_count"] == 3
+    assert structure.metadata["body_text_extracted"] is False
+    assert [chapter.title for chapter in view.chapters] == [
+        "Part One",
+        "First topic",
+        "Part Two",
+    ]
+    assert [chapter.level for chapter in view.chapters] == [1, 2, 1]
+    assert [chapter.range.start for chapter in view.chapters if chapter.range] == [2, 4, 8]
+    assert [chapter.range.end for chapter in view.chapters if chapter.range] == [7, 7, 12]
+    assert all(chapter.mapping_status == "verified" for chapter in view.chapters)
+    assert runs[-1].turn_count == 0
+    assert runs[-1].model == ""
+    assert "native_pdf_navigation" in runs[-1].stage_history
+
+
+def test_sparse_native_pdf_navigation_still_uses_agent_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "sparse-navigation.pdf"
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(width=500, height=700)
+    writer.add_outline_item("Cover", 0)
+    writer.add_outline_item("Main text", 1)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    record = _record(path)
+    fallback_chapter = SourceChapter(
+        id="agent-fallback",
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        title="Agent fallback",
+        order_index=0,
+        mapping_status="unmapped",
+    )
+    calls = 0
+
+    def fallback(**_kwargs):
+        nonlocal calls
+        calls += 1
+        catalog = AgentCatalogV3(
+            schema_version="agent_catalog_v3",
+            phase="terminal",
+            directory_status="complete",
+            index_status="partial",
+            work_state="partial",
+            summary="Directory published; range mapping remains.",
+            stop_reason="Range mapping remains.",
+            directory_evidence=[
+                AgentCatalogDirectoryEvidence(
+                    kind="native_navigation_exhausted",
+                    detail="Sparse native navigation was checked before the fallback.",
+                )
+            ],
+            nodes=[
+                AgentCatalogV3Node(
+                    key="agent-fallback",
+                    parent_key=None,
+                    number="",
+                    title="Agent fallback",
+                    level=1,
+                    locator_source="unmapped",
+                )
+            ],
+        )
+        return SourceCodexCatalogResult(
+            chapters=(fallback_chapter,),
+            turn_count=1,
+            raw_output='{"complete":true,"nodes":[]}',
+            raw_output_sha256="0" * 64,
+            audit_metadata={"catalog_authority": "source_pi"},
+            work_state="partial",
+            summary=catalog.summary,
+            stop_reason=catalog.stop_reason,
+            catalog_payload=catalog.model_dump(mode="json"),
+        )
+
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.generate_agent_catalog_turn",
+        fallback,
+    )
+
+    structure = SourceDirectoryProcessor(
+        store=SourceStructureStore(tmp_path / "openclass.sqlite3")
+    ).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+
+    assert calls == 1
+    assert structure.catalog_model == _model().model
+    assert structure.metadata["catalog_authority"] == "source_pi"
+
+
+def test_epub_with_missing_xhtml_anchor_falls_back_to_staged_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "missing-anchor.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation="<li><a href='s1.xhtml#missing'>Missing anchor</a></li>",
+        document="<html><body><section id='different'></section></body></html>",
+    )
+    record = _record(path)
+    chapter = SourceChapter(
+        id="agent-fallback",
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        title="Agent fallback",
+        order_index=0,
+        mapping_status="unmapped",
+    )
+    calls = 0
+
+    def fallback(**_kwargs):
+        nonlocal calls
+        calls += 1
+        catalog = AgentCatalogV3(
+            schema_version="agent_catalog_v3",
+            phase="terminal",
+            directory_status="complete",
+            index_status="partial",
+            work_state="partial",
+            summary="Directory published; anchor mapping remains.",
+            stop_reason="Anchor mapping remains.",
+            directory_evidence=[
+                AgentCatalogDirectoryEvidence(
+                    kind="authored_navigation_exhausted",
+                    detail="The authored navigation was traversed before the fallback.",
+                )
+            ],
+            nodes=[
+                AgentCatalogV3Node(
+                    key="agent-fallback",
+                    parent_key=None,
+                    number="",
+                    title="Agent fallback",
+                    level=1,
+                    locator_source="unmapped",
+                )
+            ],
+        )
+        return SourceCodexCatalogResult(
+            chapters=(chapter,),
+            turn_count=1,
+            raw_output='{"complete":true,"nodes":[]}',
+            raw_output_sha256="0" * 64,
+            audit_metadata={"catalog_authority": "source_pi"},
+            work_state="partial",
+            summary=catalog.summary,
+            stop_reason=catalog.stop_reason,
+            catalog_payload=catalog.model_dump(mode="json"),
+        )
+
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.generate_agent_catalog_turn",
+        fallback,
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+
+    assert calls == 1
+    assert structure.catalog_schema_version == "codex_directory_v1"
+    assert structure.metadata["catalog_authority"] == "source_pi"
+
+
 def test_epub_native_navigation_truncation_is_explicit(
     tmp_path: Path,
     monkeypatch,
@@ -1523,7 +1854,7 @@ def test_directory_processing_is_serial_per_source_and_reuses_completed_upload(
     assert final_catalog.catalog_version == 3
 
 
-def test_deleting_source_waits_for_active_directory_processing_and_removes_final_catalog(
+def test_deleting_source_does_not_wait_for_active_directory_processing_or_get_recreated(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1585,10 +1916,10 @@ def test_deleting_source_waits_for_active_directory_processing_and_removes_final
         assert normalizer_started.wait(timeout=5)
         removing = executor.submit(remove_source)
         assert remove_attempted.wait(timeout=5)
-        assert not removing.done()
-        release_normalizer.set()
-        assert processing.result(timeout=5).status == "ready"
         assert removing.result(timeout=5) is not None
+        release_normalizer.set()
+        with pytest.raises(SourceIngestionError, match="removed during processing"):
+            processing.result(timeout=5)
 
     assert source_store.get_source(
         owner_user_id="user_directory",
@@ -1601,6 +1932,31 @@ def test_deleting_source_waits_for_active_directory_processing_and_removes_final
         source_id=queued.id,
     ) is None
     assert not Path(str(queued.metadata["local_source_path"])).exists()
+
+
+def test_deleted_source_tombstone_rejects_late_background_save(tmp_path: Path) -> None:
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    record = SourceIngestionRecord(
+        id="source_deleted",
+        owner_user_id="user_directory",
+        package_id="course_directory",
+        title="Deleted source",
+        source_type="local_file",
+    )
+    store.save_source(record)
+    assert store.delete_source(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    ) is not None
+
+    store.save_source(record.model_copy(update={"status": "ready"}))
+
+    assert store.get_source(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    ) is None
 
 
 def test_stale_directory_task_cannot_recreate_an_already_deleted_source(

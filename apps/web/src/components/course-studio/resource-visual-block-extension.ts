@@ -146,7 +146,7 @@ export const ResourceVisualBlock = Node.create({
   },
 
   renderHTML({ HTMLAttributes, node }) {
-    const caption = visualAttr(node.attrs.caption) || "资料视觉素材";
+    const caption = visualAttr(node.attrs.caption) || "Information visual material";
     const sourceLabel = visualSourceLabel(node.attrs);
     const imageSource = serializableImageSource(visualAttr(node.attrs.originalSrc));
     const figure = imageSource
@@ -176,7 +176,7 @@ export const ResourceVisualBlock = Node.create({
   },
 
   renderText({ node }) {
-    const caption = visualAttr(node.attrs.caption) || "资料视觉素材";
+    const caption = visualAttr(node.attrs.caption) || "Information visual material";
     return `${visualKindLabel(node.attrs.kind)}：${caption}\n${visualSourceLabel(node.attrs)}`;
   },
 
@@ -185,7 +185,7 @@ export const ResourceVisualBlock = Node.create({
       const attrs = node.attrs;
       const assetId = visualAttr(attrs.assetId);
       const visualId = visualAttr(attrs.visualId);
-      const caption = visualAttr(attrs.caption) || "资料视觉素材";
+      const caption = visualAttr(attrs.caption) || "Information visual material";
       const originalSrc = visualAttr(attrs.originalSrc);
       const originalAlt = visualAttr(attrs.originalAlt) || caption;
       const abortController = new AbortController();
@@ -248,13 +248,13 @@ export const ResourceVisualBlock = Node.create({
           image.hidden = true;
           status.hidden = false;
           status.classList.add("word-editor__resource-visual-status--error");
-          status.textContent = "图片内容不可用";
+          status.textContent = "Image content is not available";
         };
         image.src = src;
       }
 
       if (assetId) {
-        status.textContent = "正在读取资料图片";
+        status.textContent = "Loading data pictures";
         void api
           .getBoardAssetContent(assetId, { signal: abortController.signal })
           .then((blob) => {
@@ -262,7 +262,7 @@ export const ResourceVisualBlock = Node.create({
               return;
             }
             if (!blob.size || (blob.type && !blob.type.startsWith("image/"))) {
-              throw new Error("板书资产不是可显示的图片");
+              throw new Error("The board asset is not a displayable image");
             }
             objectUrl = URL.createObjectURL(blob);
             showImage(objectUrl);
@@ -272,14 +272,14 @@ export const ResourceVisualBlock = Node.create({
               return;
             }
             status.classList.add("word-editor__resource-visual-status--error");
-            status.textContent = error instanceof Error && error.message ? error.message : "图片内容不可用";
+            status.textContent = error instanceof Error && error.message ? error.message : "Image content is not available";
           });
       } else if (isSafeLegacyImageSource(originalSrc)) {
-        status.textContent = "正在读取旧版资料图片";
+        status.textContent = "Loading old version data pictures";
         showImage(originalSrc);
       } else {
         status.classList.add("word-editor__resource-visual-status--error");
-        status.textContent = "图片内容不可用";
+        status.textContent = "Image content is not available";
       }
 
       return {
@@ -317,13 +317,13 @@ function visualPositiveInteger(value: unknown): number | null {
 function visualKindLabel(value: unknown): string {
   switch (visualAttr(value)) {
     case "table":
-      return "资料表格";
+      return "Information form";
     case "chart":
-      return "资料图表";
+      return "Information chart";
     case "image":
-      return "资料图片";
+      return "Data pictures";
     default:
-      return "资料图示";
+      return "Data icon";
   }
 }
 
@@ -337,16 +337,16 @@ function visualSourceLabel(attrs: Record<string, unknown>): string {
   const location =
     pageRange ||
     (pageNo != null
-      ? `第 ${pageNo} 页`
+      ? `Page ${pageNo}`
       : slideNo != null
-        ? `第 ${slideNo} 张幻灯片`
+        ? `Slide ${slideNo}`
         : sheetName
-          ? `工作表 ${sheetName}`
+          ? `Worksheet ${sheetName}`
           : sourceLocator && sourceLocator !== title
             ? sourceLocator
             : "");
   const detail = [title, location].filter(Boolean).join(" / ");
-  return detail ? `来源：${detail}` : "来源：解析资料";
+  return detail ? `Source: ${detail}` : "Source: Analytical data";
 }
 
 function isSafeLegacyImageSource(value: string): boolean {

@@ -63,6 +63,7 @@ class BoardVisualInsertionResult:
     applied_visual_ids: list[str] = field(default_factory=list)
     recreated_visual_ids: list[str] = field(default_factory=list)
     original_visual_ids: list[str] = field(default_factory=list)
+    appendix_visual_ids: list[str] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     asset_ids: list[str] = field(default_factory=list)
 
@@ -215,9 +216,14 @@ def apply_board_insertion_plan(
         current_markers=set(plan_by_marker),
     )
     marker_locations = _standalone_marker_locations(root_nodes)
+    document_marker_tokens = {
+        token
+        for node in root_nodes
+        for token in _MARKER_TOKEN_RE.findall(_node_plain_text(node))
+    }
     result = BoardVisualInsertionResult(document=document)
     _ = placements
-    candidates: list[tuple[PlannedBoardVisual, Any, int]] = []
+    candidates: list[tuple[PlannedBoardVisual, Any, int | None]] = []
 
     for item in plan.items:
         marker_choices = [item.marker]
@@ -229,13 +235,18 @@ def apply_board_insertion_plan(
             for location in marker_locations.get(marker, [])
         ]
         if not located:
-            _record_skip(
-                result,
-                item.visual_id,
-                item.marker,
-                "placement_missing",
-                lesson_id=lesson_id,
-            )
+            item_marker_tokens = {item.marker, item.recreation_marker} - {""}
+            unknown_marker_tokens = document_marker_tokens - set(plan_by_marker)
+            if document_marker_tokens & item_marker_tokens or unknown_marker_tokens:
+                _record_skip(
+                    result,
+                    item.visual_id,
+                    item.marker,
+                    "placement_missing",
+                    lesson_id=lesson_id,
+                )
+                continue
+            candidates.append((item, {"marker": item.marker}, None))
             continue
         marker_index, selected_marker = min(located, key=lambda value: value[0])
         candidates.append((item, {"marker": selected_marker}, marker_index))
@@ -245,7 +256,11 @@ def apply_board_insertion_plan(
     for item, placement, marker_index in candidates:
         selected_marker = _string_value(placement, "marker")
         selected_recreation = bool(item.recreation_marker and selected_marker == item.recreation_marker)
-        if selected_recreation and _editable_recreation_is_structured(root_nodes, marker_index):
+        if (
+            selected_recreation
+            and marker_index is not None
+            and _editable_recreation_is_structured(root_nodes, marker_index)
+        ):
             continue
         if selected_recreation:
             recreation_fallback_ids.add(item.visual_id)
@@ -308,6 +323,7 @@ def apply_board_insertion_plan(
     candidates_by_index = {
         marker_index: (item, placement)
         for item, placement, marker_index in candidates
+        if marker_index is not None
     }
     next_nodes: list[dict[str, Any]] = []
     for node_index, node in enumerate(root_nodes):
@@ -376,6 +392,36 @@ def apply_board_insertion_plan(
         )
         if cleaned is not None:
             next_nodes.append(cleaned)
+
+    appendix_items = [
+        item
+        for item, _placement, marker_index in candidates
+        if marker_index is None and item.visual_id in replacements
+    ]
+    if appendix_items:
+        next_nodes.append(
+            {
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": [{"type": "text", "text": "本章教学图表"}],
+            }
+        )
+        for item in appendix_items:
+            replacement = replacements[item.visual_id]
+            next_nodes.append(replacement)
+            result.applied_visual_ids.append(item.visual_id)
+            result.appendix_visual_ids.append(item.visual_id)
+            asset_id = _string_value(replacement.get("attrs", {}), "assetId")
+            if asset_id:
+                result.asset_ids.append(asset_id)
+                result.original_visual_ids.append(item.visual_id)
+            ai_usage_logger.log_event(
+                "board_visual_placed",
+                lesson_id=lesson_id,
+                visual_id=item.visual_id,
+                asset_id=asset_id,
+                placement_kind="chapter_visual_appendix",
+            )
 
     normalized_nodes = next_nodes or [{"type": "paragraph"}]
     next_json = {**content_json, "type": "doc", "content": normalized_nodes}

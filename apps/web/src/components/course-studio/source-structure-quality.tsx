@@ -5,11 +5,11 @@ import type {
 } from "@/types";
 
 const QUALITY_LABELS: Record<SourceStructureQualityLevel, string> = {
-  unassessed: "质量待评估",
-  fully_verified: "目录完整可信",
-  partially_verified: "目录部分可信",
-  unverified: "目录待验证",
-  search_only: "无可用目录",
+  unassessed: "Quality to be assessed",
+  fully_verified: "Directory is complete and trustworthy",
+  partially_verified: "Directory partially trusted",
+  unverified: "Directory to be verified",
+  search_only: "No directory available",
 };
 
 export function sourceStructureQualityLevel(
@@ -36,19 +36,19 @@ export function sourceStructureBadgeLabel(
   quality?: SourceStructureQuality | null
 ) {
   if (source.structure_status === "failed") {
-    return "结构失败";
+    return "Structure failed";
   }
   if (source.structure_status === "pending") {
-    return "待建目录";
+    return "Directory to be created";
   }
   if (source.structure_status === "building") {
-    return "目录建立中";
+    return "Directory being created";
   }
   if (quality?.text_readiness === "empty") {
-    return "范围不可用";
+    return "Range not available";
   }
   if (level === "unverified" && isDirectoryOnlyCatalog(source)) {
-    return "目录已识别";
+    return "Directory recognized";
   }
   return QUALITY_LABELS[level];
 }
@@ -85,39 +85,39 @@ export function sourceStructureQualityNote(
   level: SourceStructureQualityLevel
 ) {
   if (source.structure_status === "failed") {
-    return "目录建立失败；如果之前已有可用版本，系统会继续保留它。";
+    return "Catalog creation failed; if a version was previously available, it will be retained.";
   }
   if (source.structure_status === "pending" || source.structure_status === "building") {
-    return "正在读取文件并生成目录。";
+    return "Reading files and generating directories.";
   }
   if (quality?.text_readiness === "empty") {
-    return "没有得到可验证的目录范围；请检查文件文字层或明确重建。";
+    return "No verifiable directory range obtained; please check file literal layer or rebuild explicitly.";
   }
   if (level === "fully_verified") {
     if (isDirectoryOnlyCatalog(source)) {
-      return "资料目录定位与层级已校验；当前仅显示目录列表。";
+      return "The location and level of the data directory have been verified; currently only the directory list is displayed.";
     }
-    return "目录节点、正文边界与整体覆盖已通过验证，可以按章节引用。";
+    return "Table of contents nodes, text boundaries and overall coverage have been verified and can be referenced by chapter.";
   }
   if (level === "partially_verified") {
     const counts = quality?.total_chapter_count
-      ? `已验证 ${quality.verified_chapter_count}/${quality.total_chapter_count} 个目录节点；`
-      : "目录只有部分节点完成整体验证；";
-    return `${counts}只能引用标记为“已验证”的章节。`;
+      ? `${quality.verified_chapter_count}/${quality.total_chapter_count} outline nodes verified; `
+      : "Only some nodes in the directory have completed overall verification;";
+    return `${counts}only chapters marked as verified can be referenced.`;
   }
   if (level === "unverified") {
     if (quality?.verified_chapter_count && quality.total_chapter_count) {
-      return `仅 ${quality.verified_chapter_count}/${quality.total_chapter_count} 个节点可验证，整份目录暂不可信；已验证章节仍可单独引用。`;
+      return `Only ${quality.verified_chapter_count}/${quality.total_chapter_count} nodes could be verified. The full outline is not yet trusted, but verified chapters can still be referenced individually.`;
     }
     if (isDirectoryOnlyCatalog(source) && quality?.total_chapter_count) {
-      return "目录已识别，正文范围未映射；当前仅用于查看目录。";
+      return "Table of contents recognized, body range not mapped; currently only used to view the table of contents.";
     }
-    return "识别到目录候选，但尚未建立可靠正文边界，当前不会把整份目录标为可信。";
+    return "Directory candidates have been identified, but reliable text boundaries have not yet been established, and the entire directory will not be marked as trusted at this time.";
   }
   if (level === "search_only") {
-    return "未形成可安全引用的章节目录；普通展开不会触发重新处理。";
+    return "No chapter table of contents that can be safely referenced is formed; normal expansion does not trigger reprocessing.";
   }
-  return "这份资料尚未完成目录质量评估；重建后会给出整体验证结果。";
+  return "Catalog quality assessment has not yet been completed for this material; overall verification results will be provided after reconstruction.";
 }
 
 export function SourceStructureQualitySummary({
@@ -142,7 +142,7 @@ export function SourceStructureQualitySummary({
   return (
     <div className="rounded-md border border-blue-100 bg-white/80 p-2">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-[11px] font-semibold text-gray-700">目录质量</p>
+        <p className="text-[11px] font-semibold text-gray-700">Catalog quality</p>
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${sourceStructureBadgeClass(source, level, quality)}`}
         >
@@ -154,21 +154,23 @@ export function SourceStructureQualitySummary({
         <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-gray-600">
           <span className="rounded bg-gray-50 px-1.5 py-1">
             {directoryOnlyCatalog && quality.verified_chapter_count === 0
-              ? `目录节点 ${quality.total_chapter_count}`
-              : `节点 ${quality.verified_chapter_count}/${quality.total_chapter_count}`}
+              ? `Outline nodes ${quality.total_chapter_count}`
+              : `Nodes ${quality.verified_chapter_count}/${quality.total_chapter_count}`}
           </span>
           <span className="rounded bg-gray-50 px-1.5 py-1">
-            边界 {formatPercent(quality.boundary_valid_ratio)}
+
+            boundary {formatPercent(quality.boundary_valid_ratio)}
           </span>
           {directoryOnlyCatalog ? (
-            <span className="rounded bg-blue-50 px-1.5 py-1 text-blue-700">正文按需读取</span>
+            <span className="rounded bg-blue-50 px-1.5 py-1 text-blue-700">Text is read on demand</span>
           ) : (
             <span className="rounded bg-gray-50 px-1.5 py-1">
-              范围覆盖 {formatPercent(quality.body_coverage_ratio)}
+
+              range coverage {formatPercent(quality.body_coverage_ratio)}
             </span>
           )}
           {quality.text_readiness === "sparse" || quality.text_readiness === "very_sparse" ? (
-            <span className="rounded bg-amber-50 px-1.5 py-1 text-amber-700">文字层稀疏</span>
+            <span className="rounded bg-amber-50 px-1.5 py-1 text-amber-700">Text layer is sparse</span>
           ) : null}
         </div>
       ) : null}

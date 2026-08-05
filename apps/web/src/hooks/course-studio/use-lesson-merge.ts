@@ -100,7 +100,7 @@ export function useLessonMerge({
       } catch (error) {
         dirtyRef.current = true;
         setIsDraftDirty(true);
-        setError(error instanceof Error ? error.message : "合并草案保存失败");
+        setError(error instanceof Error ? error.message : "Failed to save merge draft");
         return false;
       }
     })();
@@ -164,7 +164,7 @@ export function useLessonMerge({
         })
         .catch((error) => {
           if (!cancelled) {
-            setError(error instanceof Error ? error.message : "读取合并草案失败");
+            setError(error instanceof Error ? error.message : "Failed to read merge draft");
           }
         })
         .finally(() => {
@@ -198,7 +198,7 @@ export function useLessonMerge({
         replaceSession(next);
         setError(null);
       } catch (error) {
-        setError(error instanceof Error ? error.message : "创建合并草案失败");
+        setError(error instanceof Error ? error.message : "Failed to create merge draft");
       } finally {
         setBusyAction(null);
       }
@@ -224,7 +224,7 @@ export function useLessonMerge({
         replaceSession(next);
         setError(null);
       } catch (error) {
-        setError(error instanceof Error ? error.message : "保存冲突决议失败");
+        setError(error instanceof Error ? error.message : "Saving conflict resolution failed");
       } finally {
         setBusyAction(null);
       }
@@ -263,7 +263,7 @@ export function useLessonMerge({
       setError(null);
     } catch (error) {
       if (!controller.signal.aborted) {
-        setError(error instanceof Error ? error.message : "AI 合并失败");
+        setError(error instanceof Error ? error.message : "AI merge failed");
         try {
           replaceSession(await api.getMergeSession(current.lesson_id, current.id));
         } catch {
@@ -297,7 +297,7 @@ export function useLessonMerge({
       replaceSession(next);
       setError(null);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "重新计算合并草案失败");
+      setError(error instanceof Error ? error.message : "Recalculation of merge draft failed");
     } finally {
       setBusyAction(null);
     }
@@ -322,7 +322,7 @@ export function useLessonMerge({
       replaceSession(null);
       setError(null);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "放弃合并草案失败");
+      setError(error instanceof Error ? error.message : "Abandoning merge draft failed");
     } finally {
       setBusyAction(null);
     }
@@ -354,7 +354,7 @@ export function useLessonMerge({
         window.location.assign(`/contributions/${encodeURIComponent(contributionId)}`);
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : "提交合并失败");
+      setError(error instanceof Error ? error.message : "Commit merge failed");
       try {
         replaceSession(await api.getMergeSession(current.lesson_id, current.id));
       } catch {

@@ -98,6 +98,8 @@ def extract_pdf_visuals(
     path: Path,
     *,
     progress_callback: Callable[[int, int], None] | None = None,
+    page_start: int | None = None,
+    page_end: int | None = None,
 ) -> SourceVisualAdapterResult:
     try:
         import fitz  # type: ignore[import-not-found]
@@ -115,6 +117,7 @@ def extract_pdf_visuals(
         return SourceVisualAdapterResult(status="failed", warnings=[f"PDF visual parsing failed: {exc}"])
 
     native_order = 0
+    scoped_total = 0
     render_budget = _PdfRenderBudget()
     native_image_identities: dict[int, str] = {}
     try:
@@ -126,9 +129,17 @@ def extract_pdf_visuals(
                     f"{MAX_PDF_SOURCE_PAGES}."
                 ],
             )
-        for page_index in range(document.page_count):
+        first_page_index = max(0, (page_start or 1) - 1)
+        last_page_index = min(document.page_count - 1, (page_end or document.page_count) - 1)
+        if first_page_index > last_page_index:
+            return SourceVisualAdapterResult(
+                status="failed",
+                warnings=["The requested PDF visual range is outside the document."],
+            )
+        scoped_total = last_page_index - first_page_index + 1
+        for scoped_index, page_index in enumerate(range(first_page_index, last_page_index + 1)):
             if progress_callback is not None:
-                progress_callback(page_index, document.page_count)
+                progress_callback(scoped_index, scoped_total)
             page = document.load_page(page_index)
             page_rect = page.rect
             occupied: list[tuple[float, float, float, float]] = []
@@ -395,7 +406,7 @@ def extract_pdf_visuals(
 
     finally:
         if progress_callback is not None and not render_budget.exhausted:
-            progress_callback(document.page_count, document.page_count)
+            progress_callback(scoped_total, scoped_total)
         document.close()
     if render_budget.exhausted:
         warnings.append("PDF visual indexing stopped at the configured render resource budget.")

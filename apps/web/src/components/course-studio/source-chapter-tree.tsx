@@ -71,6 +71,9 @@ function SourceChapterNode({
   const isExpanded = expandedIds.has(node.chapter.id);
   const directoryOnly = catalog.task_contract === "directory_pages_offset_tree_v1";
   const isVerified = !directoryOnly && hasVerifiedChapterRange(node.chapter, catalog);
+  const hasConflict = catalog.remaining_work.some(
+    (item) => item.kind === "conflict_resolution" && item.node_keys.includes(agentNodeKey(node.chapter))
+  );
   const title = sourceChapterLabel(node.chapter);
   const rangeLabel = directoryOnly ? "" : sourceChapterRangeLabel(node.chapter);
   return (
@@ -94,23 +97,31 @@ function SourceChapterNode({
           ) : (
             <span className="h-3.5 w-3.5 shrink-0" />
           )}
-          <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
+          <span className="min-w-0 flex-1 truncate">{title || "Unnamed chapter"}</span>
           {rangeLabel ? (
             <span className="shrink-0 text-[10px] tabular-nums text-gray-400">{rangeLabel}</span>
           ) : null}
         </button>
-        {!directoryOnly && !isVerified ? (
-          <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录已识别，正文范围未映射">
-            范围未映射
+        {!directoryOnly && hasConflict ? (
+          <span className="shrink-0 text-[10px] font-medium text-rose-700" title="Published evidence conflicts and must be reviewed">
+            存在冲突，暂不可引用
+          </span>
+        ) : !directoryOnly && !isVerified ? (
+          <span className="shrink-0 text-[10px] font-medium text-amber-700" title="Table of contents recognized, body range not mapped">
+            待定位
+          </span>
+        ) : !directoryOnly && isVerified ? (
+          <span className="shrink-0 text-[10px] font-medium text-emerald-700">
+            可引用
           </span>
         ) : null}
-        {onSourceReference && !directoryOnly && isVerified ? (
+        {onSourceReference && !directoryOnly && isVerified && !hasConflict ? (
           <button
             type="button"
             onClick={() => onSourceReference(createSourceChapterSelection(source, node.chapter, catalog))}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
-            title="引用到输入框"
-            aria-label={`引用章节到输入框 ${title || "未命名章节"}`}
+            title="Reference to input box"
+            aria-label={`Reference chapter in composer: ${title || "Unnamed chapter"}`}
           >
             <TextQuote className="h-4 w-4" />
           </button>
@@ -136,6 +147,11 @@ function SourceChapterNode({
   );
 }
 
+function agentNodeKey(chapter: SourceChapter) {
+  const value = chapter.metadata?.agent_catalog_key;
+  return typeof value === "string" ? value : "";
+}
+
 function sourceChapterRangeLabel(chapter: SourceChapter) {
   const authoritative = sourceRangeDisplayLabel(chapter.range);
   if (authoritative) {
@@ -156,7 +172,9 @@ function sourceChapterRangeLabel(chapter: SourceChapter) {
 function hasVerifiedChapterRange(chapter: SourceChapter, catalog: SourceCatalogView) {
   if (
     catalog.strategy === "codex_directory_v1" ||
-    catalog.catalog_schema_version === "codex_directory_v1"
+    catalog.catalog_schema_version === "codex_directory_v1" ||
+    catalog.catalog_schema_version === "agent_catalog_v2" ||
+    catalog.catalog_schema_version === "agent_catalog_v3"
   ) {
     return chapter.mapping_status === "verified" && Boolean(chapter.range);
   }

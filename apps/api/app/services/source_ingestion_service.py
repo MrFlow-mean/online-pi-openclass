@@ -21,6 +21,7 @@ from app.models import (
     SourceIngestionJob,
     SourceIngestionRecord,
     SourceStructureQuality,
+    new_id,
 )
 from app.services.ai_model_catalog import default_text_selection
 from app.services.ai_logging import ai_usage_logger
@@ -40,11 +41,15 @@ from app.services.source_evidence_store import (
 from app.services.source_directory_extractor import supports_directory_catalog
 from app.services.source_directory_processor import (
     CATALOG_SCHEMA_VERSION,
+    LEGACY_CATALOG_SCHEMA_VERSION,
+    PREVIOUS_CATALOG_SCHEMA_VERSION,
     SourceDirectoryProcessor,
 )
 from app.services.source_ingestion_jobs import (
     SourceIngestionJobStore,
+    source_ingestion_task_manager,
     source_ingestion_job_store,
+    update_current_source_task_run_id,
 )
 from app.services.source_codex_progress import SourceCodexProgressTracker
 from app.services.source_structure_indexer import (
@@ -94,11 +99,29 @@ def _directory_catalog_processing_slot(
     database_path: Path,
     record: SourceIngestionRecord,
 ) -> Iterator[None]:
+    content_identity = str(record.metadata.get("content_hash") or record.id)
+    with _source_content_processing_slot(
+        database_path=database_path,
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        content_identity=content_identity,
+    ):
+        yield
+
+
+@contextmanager
+def _source_content_processing_slot(
+    *,
+    database_path: Path,
+    owner_user_id: str,
+    package_id: str,
+    content_identity: str,
+) -> Iterator[None]:
     key = (
         str(database_path.resolve()),
-        record.owner_user_id,
-        record.package_id,
-        record.id,
+        owner_user_id,
+        package_id,
+        content_identity,
     )
     with _DIRECTORY_CATALOG_LOCKS_GUARD:
         lock = _DIRECTORY_CATALOG_LOCKS.setdefault(key, threading.RLock())
@@ -190,7 +213,24 @@ class SourceIngestionService:
                 else self._refresh_open_notebook_source(record)
                 for record in records
             ]
-        return [self._attach_job(self.structure_store.attach_summary(record)) for record in records]
+        attached: list[SourceIngestionRecord] = []
+        for record in records:
+            summarized = self.structure_store.attach_summary(record)
+            if (
+                summarized.status == "ready"
+                and summarized.source_type == "code_repository"
+                and summarized.structure_status in {"pending", "building"}
+                and self.repository_store.has_snapshot(source=summarized)
+            ):
+                summarized = summarized.model_copy(
+                    update={
+                        "structure_status": "ready",
+                        "structure_strategy": "code_repository_v1",
+                        "structure_error": "",
+                    }
+                )
+            attached.append(self._attach_job(summarized))
+        return attached
 
     def add_url_source(
         self,
@@ -534,61 +574,129 @@ class SourceIngestionService:
             and _supported_directory_file_name(file_name)
             and self.directory_catalog_enabled
         )
-        record = SourceIngestionRecord(
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        def create_source() -> SourceIngestionRecord:
+            record = SourceIngestionRecord(
+                owner_user_id=owner_user_id,
+                package_id=package.id,
+                title=display_title,
+                source_type=source_type,
+                source_uri=None,
+                file_name=file_name,
+                mime_type=mime_type or "application/octet-stream",
+                size_bytes=len(content),
+                status=(
+                    "parsing"
+                    if use_directory_catalog
+                    else "queued"
+                    if self.source_backend == "open_notebook"
+                    else "parsing"
+                ),
+                metadata={
+                    "adapter": (
+                        CATALOG_SCHEMA_VERSION
+                        if use_directory_catalog
+                        else "open_notebook"
+                        if self.source_backend == "open_notebook"
+                        else "openclass_native"
+                    ),
+                    "package_title": package.title,
+                    **(
+                        {
+                            "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                            "catalog_model": selected_catalog_model.model_dump(mode="json"),
+                        }
+                        if use_directory_catalog
+                        else {}
+                    ),
+                },
+            )
+            file_metadata = _save_local_source_file(record, content)
+            queued = self.store.save_source(
+                record.model_copy(
+                    update={
+                        "metadata": {
+                            **record.metadata,
+                            **file_metadata,
+                            "content_hash": content_hash,
+                            "native_index_version": 1,
+                        }
+                    }
+                )
+            )
+            self._start_job(
+                queued,
+                adapter=str(queued.metadata.get("adapter") or "openclass_native"),
+                phase="uploaded",
+                progress=15,
+            )
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package.id,
+                source_id=queued.id,
+            ) or queued
+            return self._attach_job(self.structure_store.attach_summary(current))
+
+        if not use_directory_catalog:
+            return create_source()
+        with _source_content_processing_slot(
+            database_path=self.store.path,
             owner_user_id=owner_user_id,
             package_id=package.id,
-            title=display_title,
-            source_type=source_type,
-            source_uri=None,
-            file_name=file_name,
-            mime_type=mime_type or "application/octet-stream",
-            size_bytes=len(content),
-            status=(
-                "parsing"
-                if use_directory_catalog
-                else "queued"
-                if self.source_backend == "open_notebook"
-                else "parsing"
-            ),
-            metadata={
-                "adapter": (
-                    "codex_directory_v1"
-                    if use_directory_catalog
-                    else "open_notebook"
-                    if self.source_backend == "open_notebook"
-                    else "openclass_native"
+            content_identity=content_hash,
+        ):
+            existing = next(
+                (
+                    candidate
+                    for candidate in self.store.list_sources(
+                        owner_user_id=owner_user_id,
+                        package_id=package.id,
+                    )
+                    if candidate.source_type == source_type
+                    and str(candidate.metadata.get("content_hash") or "") == content_hash
                 ),
-                "package_title": package.title,
-                **(
-                    {
-                        "catalog_pipeline": CATALOG_SCHEMA_VERSION,
-                        "catalog_model": selected_catalog_model.model_dump(mode="json"),
-                    }
-                    if use_directory_catalog
-                    else {}
-                ),
-            },
-        )
-        file_metadata = _save_local_source_file(record, content)
-        queued = self.store.save_source(
-            record.model_copy(
-                update={
-                    "metadata": {
-                        **record.metadata,
-                        **file_metadata,
-                        "content_hash": hashlib.sha256(content).hexdigest(),
-                        "native_index_version": 1,
-                    }
-                }
+                None,
             )
-        )
-        self._start_job(
-            queued,
-            adapter=str(queued.metadata.get("adapter") or "openclass_native"),
-            phase="uploaded",
-            progress=15,
-        )
-        return self._attach_job(self.structure_store.attach_summary(queued))
+            if existing is None:
+                return create_source()
+            ai_usage_logger.log_event(
+                "source_ingestion_dedupe_hit",
+                owner_user_id=owner_user_id,
+                package_id=package.id,
+                source_ingestion_id=existing.id,
+                existing_status=existing.status,
+                source_type=source_type,
+            )
+            if existing.status == "failed":
+                file_metadata = _save_local_source_file(existing, content)
+                existing = self.store.save_source(
+                    existing.model_copy(
+                        update={
+                            "status": "parsing",
+                            "error": "",
+                            "metadata": {
+                                **existing.metadata,
+                                **file_metadata,
+                                "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                                "catalog_model": selected_catalog_model.model_dump(mode="json"),
+                                "content_hash": content_hash,
+                            },
+                        }
+                    )
+                )
+                self._start_job(
+                    existing,
+                    adapter=CATALOG_SCHEMA_VERSION,
+                    phase="uploaded",
+                    progress=15,
+                )
+                existing = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package.id,
+                    source_id=existing.id,
+                ) or existing
+            return self._attach_job(self.structure_store.attach_summary(existing))
 
     def process_file_source(
         self,
@@ -615,6 +723,24 @@ class SourceIngestionService:
             )
             if current is None:
                 raise SourceIngestionError("Source not found.")
+            current_job = self.job_store.latest_for_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if (
+                current.status == "ready"
+                and current_job is not None
+                and current_job.status in {"parsing", "indexing"}
+                and current_job.phase_history
+                and current_job.phase_history[-1] == "source_agent_working"
+            ):
+                return self._save_and_index(
+                    current,
+                    current_job,
+                    rebuild=True,
+                    resume_catalog=True,
+                )
             if current.status in {"ready", "failed"}:
                 return self._attach_job(self.structure_store.attach_summary(current))
             return self._process_file_source_unlocked(current)
@@ -798,22 +924,34 @@ class SourceIngestionService:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
-        if supports_directory_catalog(record):
-            with _directory_catalog_processing_slot(
-                database_path=self.store.path,
-                record=record,
-            ):
-                current = self.store.get_source(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    source_id=source_id,
-                )
-                if current is None:
-                    return None
-                return self._remove_source_unlocked(current)
-        return self._remove_source_unlocked(record)
+        removed = self.store.delete_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if removed is None:
+            return None
+        cancel_started_at = time.monotonic()
+        cancelled_synchronously = source_ingestion_task_manager.cancel(
+            (owner_user_id, package_id, source_id),
+            timeout_seconds=5.0,
+        )
+        ai_usage_logger.log_event(
+            "source_ingestion_cancelled",
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_ingestion_id=source_id,
+            cancelled_synchronously=cancelled_synchronously,
+            cancel_duration_ms=max(0, round((time.monotonic() - cancel_started_at) * 1000)),
+        )
+        return self._remove_source_unlocked(record, removed=removed)
 
-    def _remove_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+    def _remove_source_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        removed: SourceIngestionRecord | None = None,
+    ) -> SourceIngestionRecord | None:
         if self.source_backend == "open_notebook" and record.open_notebook_source_id:
             try:
                 self.adapter.delete_source(record.open_notebook_source_id)
@@ -827,11 +965,12 @@ class SourceIngestionService:
         )
         if record.source_type == "code_repository":
             self.repository_store.delete_source(record.id)
-        removed = self.store.delete_source(
-            owner_user_id=record.owner_user_id,
-            package_id=record.package_id,
-            source_id=record.id,
-        )
+        if removed is None:
+            removed = self.store.delete_source(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
         self.job_store.delete_for_source(
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
@@ -950,7 +1089,7 @@ class SourceIngestionService:
         job = self._start_job(
             editable_record,
             adapter=(
-                "codex_directory_v1"
+                CATALOG_SCHEMA_VERSION
                 if use_directory_catalog
                 else "open_notebook"
                 if self.source_backend == "open_notebook"
@@ -1020,7 +1159,7 @@ class SourceIngestionService:
         job = self._start_job(
             retrying,
             adapter=(
-                "codex_directory_v1"
+                CATALOG_SCHEMA_VERSION
                 if use_directory_catalog
                 else "open_notebook"
                 if self.source_backend == "open_notebook"
@@ -1119,11 +1258,101 @@ class SourceIngestionService:
         self.store.save_source(rebuilding)
         job = self._start_job(
             rebuilding,
-            adapter="codex_directory_v1",
+            adapter=CATALOG_SCHEMA_VERSION,
             phase="reading_directory_metadata",
             progress=20,
         )
         return self._save_and_index(rebuilding, job, rebuild=True)
+
+    def request_catalog_refine(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None:
+            return None
+        if not supports_directory_catalog(record):
+            raise SourceIngestionError("This source format does not support catalog refinement.")
+        if record.status in {"queued", "fetching", "parsing", "indexing"}:
+            raise SourceIngestionError("This catalog already has an active autonomous run.")
+        selected_model = default_text_selection()
+        try:
+            selected_model = AIModelSelection.model_validate(
+                record.metadata.get("catalog_model")
+                or record.metadata.get("catalog_model_selection")
+            )
+        except Exception:
+            pass
+        existing_structure = self.structure_store.get_structure(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        has_published_snapshot = bool(
+            existing_structure
+            and existing_structure.catalog_version > 0
+            and existing_structure.has_verified_toc
+        )
+        queued = _as_directory_catalog_record(record).model_copy(
+            update={
+                "status": "ready" if has_published_snapshot else "parsing",
+                "error": "",
+                "metadata": {
+                    **record.metadata,
+                    "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                    "catalog_model": selected_model.model_dump(mode="json"),
+                },
+            }
+        )
+        saved = self.store.save_source(queued)
+        self.structure_store.set_catalog_pause_requested(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+            requested=False,
+        )
+        self._start_job(
+            saved,
+            adapter=CATALOG_SCHEMA_VERSION,
+            phase="source_agent_working",
+            progress=25,
+        )
+        return self._attach_job(saved)
+
+    def continue_catalog_refine(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None:
+            return None
+        job = self.job_store.latest_for_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if job is None:
+            job = self._start_job(
+                record,
+                adapter=CATALOG_SCHEMA_VERSION,
+                phase="source_agent_working",
+                progress=25,
+            )
+        return self._save_and_index(record, job, rebuild=True, resume_catalog=True)
 
     def list_jobs(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionJob]:
         return self.job_store.list(owner_user_id=owner_user_id, package_id=package_id)
@@ -1312,8 +1541,11 @@ class SourceIngestionService:
         phase: str,
         progress: int,
     ) -> SourceIngestionJob:
-        return self.job_store.save(
+        job_id = new_id("ingest")
+        job = self.job_store.save(
             SourceIngestionJob(
+                id=job_id,
+                run_id=job_id,
                 resource_id=record.id,
                 source_type=record.source_type,
                 source_uri=record.source_uri,
@@ -1325,6 +1557,23 @@ class SourceIngestionService:
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
         )
+        update_current_source_task_run_id(job.id)
+        if adapter in {
+            CATALOG_SCHEMA_VERSION,
+            PREVIOUS_CATALOG_SCHEMA_VERSION,
+            LEGACY_CATALOG_SCHEMA_VERSION,
+        }:
+            self.store.save_source(
+                record.model_copy(
+                    update={
+                        "metadata": {
+                            **record.metadata,
+                            "active_catalog_run_id": job.id,
+                        }
+                    }
+                )
+            )
+        return job
 
     def _finish_job(
         self,
@@ -1356,9 +1605,34 @@ class SourceIngestionService:
         error: str = "",
         agent_activity: list[AgentActivityEvent] | None = None,
     ) -> SourceIngestionJob:
+        current = self.store.get_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        if current is None:
+            return job
+        if job.adapter in {
+            CATALOG_SCHEMA_VERSION,
+            PREVIOUS_CATALOG_SCHEMA_VERSION,
+            LEGACY_CATALOG_SCHEMA_VERSION,
+        }:
+            active_run_id = str(current.metadata.get("active_catalog_run_id") or "")
+            if active_run_id and active_run_id != (job.run_id or job.id):
+                return job
         phases = job.phase_history
         if not phases or phases[-1] != phase:
             phases = [*phases, phase]
+        activities = job.agent_activity if agent_activity is None else agent_activity
+        heartbeat_at = job.heartbeat_at
+        for event in reversed(activities):
+            source_progress = event.metadata.get("source_progress")
+            if not isinstance(source_progress, dict):
+                continue
+            candidate = source_progress.get("heartbeat_at")
+            if isinstance(candidate, str) and candidate.strip():
+                heartbeat_at = candidate
+                break
         return self.job_store.save(
             job.model_copy(
                 update={
@@ -1366,9 +1640,8 @@ class SourceIngestionService:
                     "progress": max(job.progress, min(100, progress)),
                     "error": error,
                     "phase_history": phases,
-                    "agent_activity": (
-                        job.agent_activity if agent_activity is None else agent_activity
-                    ),
+                    "agent_activity": activities,
+                    "heartbeat_at": heartbeat_at,
                 }
             ),
             owner_user_id=record.owner_user_id,
@@ -1389,9 +1662,15 @@ class SourceIngestionService:
         job: SourceIngestionJob,
         *,
         rebuild: bool = False,
+        resume_catalog: bool = False,
     ) -> SourceIngestionRecord:
         if not _uses_directory_catalog(record):
-            return self._save_and_index_unlocked(record, job, rebuild=rebuild)
+            return self._save_and_index_unlocked(
+                record,
+                job,
+                rebuild=rebuild,
+                resume_catalog=resume_catalog,
+            )
         with _directory_catalog_processing_slot(
             database_path=self.store.path,
             record=record,
@@ -1409,7 +1688,12 @@ class SourceIngestionService:
                 completed = self._reuse_completed_directory_catalog(record, job)
                 if completed is not None:
                     return completed
-            return self._save_and_index_unlocked(record, job, rebuild=rebuild)
+            return self._save_and_index_unlocked(
+                current,
+                job,
+                rebuild=rebuild,
+                resume_catalog=resume_catalog,
+            )
 
     def _reuse_completed_directory_catalog(
         self,
@@ -1456,8 +1740,36 @@ class SourceIngestionService:
         job: SourceIngestionJob,
         *,
         rebuild: bool = False,
+        resume_catalog: bool = False,
     ) -> SourceIngestionRecord:
-        saved = self.store.save_source(record.model_copy(update={"status": "parsing", "error": ""}))
+        use_directory_catalog = (
+            record.metadata.get("catalog_pipeline") == CATALOG_SCHEMA_VERSION
+            and supports_directory_catalog(record)
+        )
+        previous_structure = (
+            self.structure_store.get_structure(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
+            if use_directory_catalog
+            else None
+        )
+        keep_published_snapshot_ready = bool(
+            resume_catalog
+            and previous_structure
+            and previous_structure.status in {"ready", "linear_only"}
+            and previous_structure.catalog_version > 0
+            and previous_structure.has_verified_toc
+        )
+        saved = self.store.save_source(
+            record.model_copy(
+                update={
+                    "status": "ready" if keep_published_snapshot_ready else "parsing",
+                    "error": "",
+                }
+            )
+        )
         indexing_job = self._update_job(
             job,
             record=saved,
@@ -1472,7 +1784,7 @@ class SourceIngestionService:
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
             next_status = "indexing" if progress >= 60 else "parsing"
-            if saved.status != next_status:
+            if not keep_published_snapshot_ready and saved.status != next_status:
                 saved = self.store.save_source(saved.model_copy(update={"status": next_status}))
             indexing_job = self._update_job(
                 indexing_job,
@@ -1492,7 +1804,7 @@ class SourceIngestionService:
                 progress = observation.progress
                 phase = observation.phase
             next_status = "indexing" if progress >= 60 else "parsing"
-            if saved.status != next_status:
+            if not keep_published_snapshot_ready and saved.status != next_status:
                 saved = self.store.save_source(saved.model_copy(update={"status": next_status}))
             if event.id not in activity_by_id:
                 activity_order.append(event.id)
@@ -1507,19 +1819,6 @@ class SourceIngestionService:
                 agent_activity=current_activity,
             )
 
-        use_directory_catalog = (
-            saved.metadata.get("catalog_pipeline") == CATALOG_SCHEMA_VERSION
-            and supports_directory_catalog(saved)
-        )
-        previous_structure = (
-            self.structure_store.get_structure(
-                owner_user_id=saved.owner_user_id,
-                package_id=saved.package_id,
-                source_id=saved.id,
-            )
-            if use_directory_catalog
-            else None
-        )
         try:
             if use_directory_catalog:
                 local_path = source_local_path(saved)
@@ -1531,12 +1830,17 @@ class SourceIngestionService:
                     catalog_model = AIModelSelection.model_validate(raw_catalog_model)
                 except Exception as exc:
                     raise SourceIngestionError("The selected catalog model is invalid.") from exc
+                processor_kwargs = {
+                    "record": saved,
+                    "path": local_path,
+                    "catalog_model": catalog_model,
+                    "progress_callback": report_progress,
+                    "activity_callback": report_codex_activity,
+                }
+                if resume_catalog:
+                    processor_kwargs["resume_catalog"] = True
                 structure = self.directory_processor.process(
-                    record=saved,
-                    path=local_path,
-                    catalog_model=catalog_model,
-                    progress_callback=report_progress,
-                    activity_callback=report_codex_activity,
+                    **processor_kwargs,
                 )
             else:
                 structure = (
@@ -1544,7 +1848,29 @@ class SourceIngestionService:
                     if rebuild
                     else self.structure_indexer.ensure_structure(saved, progress_callback=report_progress)
                 )
+            if self.store.get_source(
+                owner_user_id=saved.owner_user_id,
+                package_id=saved.package_id,
+                source_id=saved.id,
+            ) is None:
+                raise SourceIngestionError("Source was removed during processing.")
         except Exception as exc:
+            if self.store.get_source(
+                owner_user_id=saved.owner_user_id,
+                package_id=saved.package_id,
+                source_id=saved.id,
+            ) is None:
+                self.structure_store.delete_for_source(
+                    owner_user_id=saved.owner_user_id,
+                    package_id=saved.package_id,
+                    source_id=saved.id,
+                )
+                self.job_store.delete_for_source(
+                    owner_user_id=saved.owner_user_id,
+                    package_id=saved.package_id,
+                    source_id=saved.id,
+                )
+                raise SourceIngestionError("Source was removed during processing.") from exc
             preserve_previous_catalog = (
                 previous_structure is not None
                 and previous_structure.status in {"ready", "linear_only"}
@@ -1621,13 +1947,19 @@ class SourceIngestionService:
                 }
             )
         )
+        background_refine_active = bool(
+            use_directory_catalog
+            and final_status == "ready"
+            and structure.metadata.get("work_state") == "working"
+            and not structure.metadata.get("pause_requested")
+        )
         self._update_job(
             indexing_job,
             record=final_record,
-            status=final_status,
-            progress=100,
+            status="indexing" if background_refine_active else final_status,
+            progress=max(45, min(indexing_job.progress, 95)) if background_refine_active else 100,
             error=error,
-            phase=final_status,
+            phase="background_catalog_refine" if background_refine_active else final_status,
         )
         return self._attach_job(self.structure_store.attach_summary(final_record))
 
@@ -1932,7 +2264,12 @@ def _detach_open_notebook_state(record: SourceIngestionRecord) -> SourceIngestio
 
 def _uses_directory_catalog(record: SourceIngestionRecord) -> bool:
     return (
-        record.metadata.get("catalog_pipeline") == CATALOG_SCHEMA_VERSION
+        record.metadata.get("catalog_pipeline")
+        in {
+            CATALOG_SCHEMA_VERSION,
+            PREVIOUS_CATALOG_SCHEMA_VERSION,
+            LEGACY_CATALOG_SCHEMA_VERSION,
+        }
         and supports_directory_catalog(record)
     )
 
@@ -1943,7 +2280,7 @@ def _as_directory_catalog_record(record: SourceIngestionRecord) -> SourceIngesti
         update={
             "metadata": {
                 **detached.metadata,
-                "adapter": "codex_directory_v1",
+                "adapter": CATALOG_SCHEMA_VERSION,
                 "catalog_pipeline": CATALOG_SCHEMA_VERSION,
             }
         }

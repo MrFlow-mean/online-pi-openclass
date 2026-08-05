@@ -19,8 +19,8 @@ export function sourceRangeDisplayLabel(sourceRange?: SourceRange | null): strin
     const displayStart = numericStart + displayOffset;
     const displayEnd = Math.max(displayStart, (numericEnd ?? numericStart) + displayOffset);
     return displayStart === displayEnd
-      ? `EPUB 位置 ${displayStart}`
-      : `EPUB 位置 ${displayStart}-${displayEnd}`;
+      ? `EPUB location ${displayStart}`
+      : `EPUB locations ${displayStart}-${displayEnd}`;
   }
 
   const storedSpineMatch = EPUB_SPINE_LABEL_RE.exec(storedLabel);
@@ -29,12 +29,12 @@ export function sourceRangeDisplayLabel(sourceRange?: SourceRange | null): strin
     const displayStart = Number(storedSpineMatch[1]) + displayOffset;
     const displayEnd = Number(storedSpineMatch[2] ?? storedSpineMatch[1]) + displayOffset;
     return displayStart === displayEnd
-      ? `EPUB 位置 ${displayStart}`
-      : `EPUB 位置 ${displayStart}-${displayEnd}`;
+      ? `EPUB location ${displayStart}`
+      : `EPUB locations ${displayStart}-${displayEnd}`;
   }
   return storedLabel && !looksLikeEpubArchiveMember(storedLabel)
     ? storedLabel
-    : "EPUB 位置";
+    : "EPUB location";
 }
 
 export function sourceReferenceRangeDisplayLabel({
@@ -61,8 +61,8 @@ export function sourceReferenceRangeDisplayLabel({
   const displayStart = Number(storedSpineMatch[1]) + 1;
   const displayEnd = Number(storedSpineMatch[2] ?? storedSpineMatch[1]) + 1;
   return displayStart === displayEnd
-    ? `EPUB 位置 ${displayStart}`
-    : `EPUB 位置 ${displayStart}-${displayEnd}`;
+    ? `EPUB location ${displayStart}`
+    : `EPUB locations ${displayStart}-${displayEnd}`;
 }
 
 function numericEndpoint(value: SourceRange["start"]): number | null {

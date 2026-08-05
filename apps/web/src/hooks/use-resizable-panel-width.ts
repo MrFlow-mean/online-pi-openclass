@@ -21,7 +21,7 @@ export function useResizablePanelWidth({
   maxWidth,
   dragDirection = "grow-right",
   keyboardStep = 24,
-  label = "调整面板宽度",
+  label = "Adjust panel width",
 }: ResizablePanelWidthOptions) {
   const [width, setWidth] = useState(() => {
     const fallbackWidth = clampPanelWidth(defaultWidth, minWidth, maxWidth);

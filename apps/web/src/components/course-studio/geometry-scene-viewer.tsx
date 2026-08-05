@@ -223,16 +223,16 @@ export function GeometrySceneViewer({ scene }: { scene: GeometryScene }) {
     <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-inner" data-geometry-scene>
       <div className="flex items-center justify-between border-b border-white/10 px-3 py-2 text-white">
         <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-300">
-          {scene.dimension === "3d" ? "3D · 拖动旋转" : "2D · 滚轮缩放"}
+          {scene.dimension === "3d" ? "3D · Drag to rotate" : "2D · Wheel zoom"}
         </span>
         <div className="flex items-center gap-1">
-          <button type="button" onClick={() => setZoom((value) => Math.min(2.5, value * 1.15))} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="放大图形">
+          <button type="button" onClick={() => setZoom((value) => Math.min(2.5, value * 1.15))} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="Enlarge the graph">
             <ZoomIn className="h-3.5 w-3.5" />
           </button>
-          <button type="button" onClick={() => setZoom((value) => Math.max(0.55, value / 1.15))} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="缩小图形">
+          <button type="button" onClick={() => setZoom((value) => Math.max(0.55, value / 1.15))} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="Shrink graphics">
             <ZoomOut className="h-3.5 w-3.5" />
           </button>
-          <button type="button" onClick={() => { setZoom(1); setYaw(32); setPitch(-20); }} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="重置图形视角">
+          <button type="button" onClick={() => { setZoom(1); setYaw(32); setPitch(-20); }} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 hover:text-white" aria-label="Reset graphics perspective">
             <RotateCcw className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -241,7 +241,7 @@ export function GeometrySceneViewer({ scene }: { scene: GeometryScene }) {
         viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
         className="block aspect-[16/10] w-full touch-none select-none bg-[radial-gradient(circle_at_top,#1e293b,#020617_70%)]"
         role="img"
-        aria-label={`${scene.title}交互图形`}
+        aria-label={`${scene.title} interactive graphic`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

@@ -50,8 +50,8 @@ function PublicLessonArticle({
       </div>
       <div className="mt-8 flex flex-col gap-4 border-t border-stone-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
         <p className="max-w-2xl text-sm leading-6 text-stone-500">
-          下载后会成为你的私有可编辑课程。后续提问、修改和回滚只进入个人版本；完成改进后可从
-          Studio 提交 PR，交由原作者审阅、讨论和合并。
+
+          After downloading, it will become your private editable course. Subsequent questions, modifications, and rollbacks will only enter the personal version; after completing improvements, you can submit a PR from Studio and submit it to the original author for review, discussion, and merging.
         </p>
         <button
           type="button"
@@ -60,7 +60,7 @@ function PublicLessonArticle({
           className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:opacity-60"
         >
           {isRetaining ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
-          {isRetaining ? "正在下载…" : "下载并进入编辑"}
+          {isRetaining ? "Downloading…" : "Download and edit"}
         </button>
       </div>
     </article>
@@ -94,7 +94,7 @@ export default function SharedCoursePage() {
         }
         throw new Error("Unknown public project type");
       } catch {
-        if (active) setError("这个项目不存在，或者所有者已将它设为 private。");
+        if (active) setError("This project does not exist, or the owner has made it private.");
       }
     };
     void load();
@@ -119,7 +119,7 @@ export default function SharedCoursePage() {
         router.push(`/login?next=${encodeURIComponent(next)}`);
         return;
       }
-      setRetainError(retainFailure instanceof Error ? retainFailure.message : "暂时无法保留这节课程");
+      setRetainError(retainFailure instanceof Error ? retainFailure.message : "This course cannot be reserved at the moment");
       setRetainingLessonId(null);
     }
   }
@@ -130,7 +130,7 @@ export default function SharedCoursePage() {
     try {
       const retained = await forkPublicPackage(coursePackage.id);
       if (!retained.active_lesson_id) {
-        throw new Error("下载后的课程包中没有可编辑课程。");
+        throw new Error("There are no editable courses in the downloaded course package.");
       }
       router.push(`/studio?lesson=${encodeURIComponent(retained.active_lesson_id)}`);
     } catch (retainFailure) {
@@ -139,7 +139,7 @@ export default function SharedCoursePage() {
         router.push(`/login?next=${encodeURIComponent(next)}`);
         return;
       }
-      setRetainError(retainFailure instanceof Error ? retainFailure.message : "暂时无法下载课程包");
+      setRetainError(retainFailure instanceof Error ? retainFailure.message : "Unable to download course package at the moment");
       setIsRetainingPackage(false);
     }
   }
@@ -149,7 +149,7 @@ export default function SharedCoursePage() {
       ? project.lesson.title
       : project?.kind === "package"
         ? project.coursePackage.title
-        : "公开课程";
+        : "Open courses";
   const summary = project?.kind === "package" ? project.coursePackage.summary : "";
 
   return (
@@ -158,11 +158,13 @@ export default function SharedCoursePage() {
         <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <Link href="/" className="inline-flex items-center gap-2 text-sm font-semibold text-stone-600 hover:text-stone-950">
             <ArrowLeft className="h-4 w-4" />
-            返回开放课堂
+
+            Return to OpenClass
           </Link>
           <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
             <Globe2 className="h-3.5 w-3.5" />
-            Public · 只读
+
+            Public · Read only
           </div>
         </header>
 
@@ -183,10 +185,10 @@ export default function SharedCoursePage() {
                   <GitPullRequest className="h-5 w-5" />
                 </span>
                 <div>
-                  <h2 className="font-semibold text-stone-950">像 GitHub 一样协作改进课程</h2>
+                  <h2 className="font-semibold text-stone-950">Collaborate to improve courses like GitHub</h2>
                   <p className="mt-1 max-w-2xl text-sm leading-6 text-stone-600">
-                    下载会创建你的私有项目副本并保留来源版本。你可以在 Studio 编辑、查看 commits、
-                    建立分支与回滚，再提交 PR；原作者可比较 revision、评论、要求修改或合并。
+
+                    Downloading creates a private copy of your project and preserves the source version. You can edit, view commits, create branches and rollbacks, and then submit a PR in Studio; the original author can compare revisions, comment, request modifications, or merge.
                   </p>
                 </div>
               </div>
@@ -202,7 +204,7 @@ export default function SharedCoursePage() {
                   ) : (
                     <Download className="h-4 w-4" />
                   )}
-                  {isRetainingPackage ? "正在下载…" : "下载整个课程包"}
+                  {isRetainingPackage ? "Downloading…" : "Download the entire course package"}
                 </button>
               ) : null}
             </div>
@@ -211,14 +213,16 @@ export default function SharedCoursePage() {
 
         {project?.kind === "lesson" && historyNodeId ? (
           <div className="mb-5 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
-            当前展示的是该课程被引用的历史节点。
+
+            Currently displayed are the historical nodes where the course is referenced.
           </div>
         ) : null}
 
         {!project && !error ? (
           <div className="flex items-center justify-center gap-3 rounded-[28px] border border-stone-200 bg-white py-16 text-sm text-stone-500">
             <LoaderCircle className="h-5 w-5 animate-spin" />
-            正在载入公开课程…
+
+            Loading public courses…
           </div>
         ) : null}
 
@@ -254,7 +258,8 @@ export default function SharedCoursePage() {
               ))
             ) : (
               <div className="rounded-[28px] border border-dashed border-stone-300 bg-white/70 px-6 py-14 text-center text-sm text-stone-500">
-                这个公开课程包目前还没有课程。
+
+                There are currently no courses in this public course package.
               </div>
             )}
           </div>

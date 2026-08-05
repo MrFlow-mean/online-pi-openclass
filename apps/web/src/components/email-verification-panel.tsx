@@ -25,7 +25,7 @@ export function EmailVerificationPanel() {
       setMessage(result.message);
       setResetKey((value) => value + 1);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "无法发送验证邮件");
+      setError(caught instanceof Error ? caught.message : "Unable to send verification email");
       setResetKey((value) => value + 1);
     } finally {
       setBusy(false);
@@ -41,11 +41,11 @@ export function EmailVerificationPanel() {
     setError(null);
     try {
       await api.confirmEmailVerification(challengeId, code, token);
-      setMessage("邮箱验证完成。");
+      setMessage("Email verification completed.");
       setChallengeId(null);
       setCode("");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "邮箱验证失败");
+      setError(caught instanceof Error ? caught.message : "Email verification failed");
       setResetKey((value) => value + 1);
     } finally {
       setBusy(false);
@@ -53,15 +53,17 @@ export function EmailVerificationPanel() {
   }
 
   return (
-    <AuthFormShell title="验证邮箱" description="验证主邮箱后，可用于找回密码和接收账户安全通知。">
+    <AuthFormShell title="Verify email" description="After verifying your primary email address, it can be used to retrieve your password and receive account security notifications.">
       <form className="space-y-5" onSubmit={(event) => void confirm(event)}>
         <div className="flex items-start gap-3 rounded-lg border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-stone-600">
           <MailCheck className="mt-0.5 h-5 w-5 shrink-0 text-stone-800" />
-          验证码只发送到当前登录账号的主邮箱，并会在短时间后失效。
+
+          The verification code is only sent to the primary email address of the currently logged in account and will expire after a short period of time.
         </div>
         {challengeId ? (
           <label className="block text-sm font-semibold text-stone-800">
-            6 位验证码
+
+            6 digit verification code
             <input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} className="mt-2 w-full rounded-lg border border-stone-300 px-3 py-2.5 outline-none focus:border-stone-700" />
           </label>
         ) : null}
@@ -70,11 +72,11 @@ export function EmailVerificationPanel() {
         {error ? <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
         {challengeId ? (
           <button disabled={busy || !turnstileSubmissionReady(token)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-stone-950 text-sm font-semibold text-white disabled:opacity-50">
-            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}确认邮箱
+            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}Confirm email
           </button>
         ) : (
           <button type="button" onClick={() => void requestCode()} disabled={busy || !turnstileSubmissionReady(token)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-stone-950 text-sm font-semibold text-white disabled:opacity-50">
-            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}发送验证码
+            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}Send verification code
           </button>
         )}
       </form>

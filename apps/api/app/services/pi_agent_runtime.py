@@ -50,6 +50,7 @@ PI_MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
 PI_MAX_TOTAL_IMAGE_INPUT_BYTES = 40 * 1024 * 1024
 PI_PROCESS_POLL_SECONDS = 0.1
 PI_PROCESS_TERMINATE_GRACE_SECONDS = 1.0
+PI_PROCESS_FINAL_EVENT_GRACE_SECONDS = 0.5
 PI_OPENAI_CODEX_PROVIDER = "openai-codex"
 PI_CODEX_AUTH_FINGERPRINT_FILE = ".openclass-codex-auth.sha256"
 PI_PERSONAL_API_PROVIDERS = frozenset({"deepseek"})
@@ -198,10 +199,10 @@ class _PiActivityRecorder:
             )
             self._publish(
                 event_id=runtime_id,
-                label="OpenClass 已连接模型",
+                label="OpenClass connected to the model",
                 status="running",
                 kind="model_runtime",
-                detail=f"正在使用 {self.provider} / {self.model} 处理当前步骤。",
+                detail=f"Using {self.provider} / {self.model} to process the current step.",
             )
             return
         if event_type == "agent_end":
@@ -220,10 +221,10 @@ class _PiActivityRecorder:
             )
             self._publish(
                 event_id=runtime_id,
-                label="OpenClass 已完成模型运行",
+                label="OpenClass completed the model run",
                 status="completed",
                 kind="model_runtime",
-                detail=f"{self.provider} / {self.model} 已返回本步骤结果。",
+                detail=f"{self.provider} / {self.model} returned the result for this step.",
             )
             return
         if event_type != "message_update":
@@ -239,9 +240,9 @@ class _PiActivityRecorder:
                 update_type=update_type,
                 event_id=self._event_id("reasoning", content_index),
                 kind="reasoning",
-                running_label="OpenClass 正在推理",
-                completed_label="OpenClass 已完成推理",
-                noun="推理",
+                running_label="OpenClass is reasoning",
+                completed_label="OpenClass completed reasoning",
+                noun="reasoning",
             )
         elif update_type.startswith("text_"):
             self._observe_content_update(
@@ -249,9 +250,9 @@ class _PiActivityRecorder:
                 update_type=update_type,
                 event_id=self._event_id("output", content_index),
                 kind="model_output",
-                running_label="OpenClass 正在生成结果",
-                completed_label="OpenClass 已生成模型结果",
-                noun="结果",
+                running_label="OpenClass is generating the result",
+                completed_label="OpenClass generated the model result",
+                noun="output",
             )
 
     def _observe_usage(self, payload: dict[str, Any]) -> None:
@@ -339,38 +340,38 @@ class _PiActivityRecorder:
                         self.on_text_delta(delta)
         character_count = self._character_counts.get(event_id, 0)
         if update_type.endswith("_end"):
-            detail = f"模型{noun}阶段已完成"
+            detail = f"Model {noun} completed"
             if character_count:
-                detail += f"，共接收 {character_count} 个字符"
+                detail += f"; received {character_count} characters"
             self._publish(
                 event_id=event_id,
                 label=completed_label,
                 status="completed",
                 kind=kind,
-                detail=f"{detail}。",
+                detail=f"{detail}.",
             )
             return
         privacy_note = (
-            "；逐字私有思维不写入聊天记录"
+            "; private chain-of-thought is not recorded in chat history"
             if kind == "reasoning"
             else ""
         )
-        detail = f"模型正在生成{noun}"
+        detail = f"The model is generating {noun}"
         if character_count:
-            detail += f"，已接收 {character_count} 个字符"
+            detail += f"; received {character_count} characters"
         self._publish(
             event_id=event_id,
             label=running_label,
             status="running",
             kind=kind,
-            detail=f"{detail}{privacy_note}。",
+            detail=f"{detail}{privacy_note}.",
             force=not update_type.endswith("_delta"),
         )
 
     def fail(self, detail: str) -> None:
         self._publish(
             event_id=self._event_id("runtime"),
-            label="OpenClass 模型运行未完成",
+            label="OpenClass model run did not complete",
             status="failed",
             kind="model_runtime",
             detail=detail,
@@ -466,12 +467,20 @@ def _run_streaming_pi_process(
     )
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
+    terminal_assistant_event = threading.Event()
 
     def read_stdout() -> None:
         assert process.stdout is not None
         for line in process.stdout:
             stdout_lines.append(line)
             recorder.observe_line(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            message = event.get("message") if event.get("type") == "message_end" else None
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                terminal_assistant_event.set()
 
     def read_stderr() -> None:
         assert process.stderr is not None
@@ -488,30 +497,52 @@ def _run_streaming_pi_process(
     except BrokenPipeError:
         pass
     deadline = time.monotonic() + timeout
+    terminal_received_at: float | None = None
+    completed_from_terminal_event = False
     while process.poll() is None:
         if is_cancelled is not None and is_cancelled():
             _terminate_process(process)
             stdout_thread.join()
             stderr_thread.join()
-            recorder.fail("用户已停止当前模型请求。")
+            recorder.fail("The user stopped the current model request.")
             raise CodexTurnCancelledError("Pi turn was cancelled")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             _terminate_process(process)
             stdout_thread.join()
             stderr_thread.join()
-            recorder.fail(f"模型请求在 {timeout} 秒后超时。")
+            recorder.fail(f"The model request timed out after {timeout} seconds.")
             raise subprocess.TimeoutExpired(
                 command,
                 timeout,
                 output="".join(stdout_lines),
                 stderr="".join(stderr_lines),
             )
+        if terminal_assistant_event.is_set():
+            if terminal_received_at is None:
+                terminal_received_at = time.monotonic()
+            elif time.monotonic() - terminal_received_at >= PI_PROCESS_FINAL_EVENT_GRACE_SECONDS:
+                # Pi is used here as a one-shot, no-tools model process.  The
+                # assistant message_end event is therefore authoritative. Some
+                # Pi/provider combinations keep the CLI event loop alive after
+                # emitting that final answer; waiting for the global request
+                # timeout would prevent the already-validated result from being
+                # persisted. Give stdout a short drain window, then close only
+                # that completed child process.
+                # Do not send SIGTERM here. The real Pi CLI installs signal
+                # handlers, and a graceful termination after its final event
+                # can propagate termination to the hosting API process. SIGKILL
+                # is scoped to this already-completed child and cannot run those
+                # handlers.
+                process.kill()
+                process.wait()
+                completed_from_terminal_event = True
+                break
         try:
             process.wait(timeout=min(PI_PROCESS_POLL_SECONDS, remaining))
         except subprocess.TimeoutExpired:
             continue
-    returncode = int(process.returncode or 0)
+    returncode = 0 if completed_from_terminal_event else int(process.returncode or 0)
     stdout_thread.join()
     stderr_thread.join()
     return subprocess.CompletedProcess(
@@ -1183,7 +1214,7 @@ class PiTextClient:
                     )
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
-            recorder.fail("模型进程返回失败状态。")
+            recorder.fail("The model process returned a failure status.")
             ai_usage_logger.log_model_run_event(
                 "failed",
                 run_id=request_id,
@@ -1203,7 +1234,7 @@ class PiTextClient:
         try:
             output_text = _assistant_text(result.stdout)
         except RuntimeError as exc:
-            recorder.fail("模型没有返回可用的助手结果。")
+            recorder.fail("The model did not return a usable assistant result.")
             ai_usage_logger.log_model_run_event(
                 "failed",
                 run_id=request_id,
@@ -1275,12 +1306,12 @@ class PiTextClient:
                         AgentActivityEvent(
                             turn_id=turn_id,
                             stage="execute_role",
-                            label="模型连接中断，正在重试",
+                            label="Model connection interrupted; retrying",
                             status="running",
                             role="OpenClass",
                             metadata={
                                 "kind": "model_retry",
-                                "detail": f"正在进行第 {attempt + 2} 次模型请求。",
+                                "detail": f"Starting model request attempt {attempt + 2}.",
                                 "agent_backend": "pi",
                                 "provider": self.provider,
                                 "model": self.model,
@@ -1343,12 +1374,12 @@ class PiTextClient:
         validation_event = AgentActivityEvent(
             turn_id=turn_id,
             stage="verify",
-            label="OpenClass 正在校验模型结果",
+            label="OpenClass is validating the model result",
             status="running",
             role="OpenClass",
             metadata={
                 "kind": "structured_validation",
-                "detail": f"正在按照 {schema.__name__} 的结构要求检查结果。",
+                "detail": f"Checking the result against the {schema.__name__} schema.",
                 "agent_backend": "pi",
                 "provider": self.provider,
                 "model": self.model,
@@ -1361,11 +1392,11 @@ class PiTextClient:
             record_activity(
                 validation_event.model_copy(
                     update={
-                        "label": "模型结果需要结构修复",
+                        "label": "Model result needs structural repair",
                         "status": "blocked",
                         "metadata": {
                             **validation_event.metadata,
-                            "detail": "首次结果未满足结构要求，正在请求模型修复。",
+                            "detail": "The first result did not match the required structure; requesting a repaired result.",
                         },
                     }
                 )
@@ -1406,11 +1437,11 @@ class PiTextClient:
         record_activity(
             validation_event.model_copy(
                 update={
-                    "label": "OpenClass 已校验模型结果",
+                    "label": "OpenClass validated the model result",
                     "status": "completed",
                     "metadata": {
                         **validation_event.metadata,
-                        "detail": "模型结果已通过结构校验。",
+                        "detail": "The model result passed schema validation.",
                     },
                 }
             )

@@ -1,6 +1,10 @@
 import type { CourseChatMessageView } from "@/components/chatbot";
 import { normalizePageSettings } from "@/components/course-studio/page-settings";
 import { sameSelection } from "@/components/course-studio/selection-utils";
+import {
+  sourceCitationsFromMetadata,
+  sourceSelectionsFromCommit,
+} from "@/components/course-studio/chat-source-references";
 import type {
   AgentActivityEvent,
   BoardDocument,
@@ -13,7 +17,6 @@ import type {
   Lesson,
   SelectionRef,
   SectionTeachingProgress,
-  SourceCitation,
   SourceRange,
 } from "@/types";
 
@@ -75,6 +78,7 @@ export function createChatMessage(
       | "agentActivity"
       | "guidedRequirementDiscovery"
       | "followUpSuggestions"
+      | "sourceSelections"
       | "sourceCitations"
     >
   >
@@ -100,7 +104,7 @@ export function createLessonComposerState(): LessonComposerState {
 }
 
 export function formatDate(value: string) {
-  return new Date(value).toLocaleString("zh-CN", {
+  return new Date(value).toLocaleString("en-US", {
     hour12: false,
     month: "2-digit",
     day: "2-digit",
@@ -122,47 +126,6 @@ function metadataStringList(commit: CommitRecord, key: string): string[] {
   return value.flatMap((item) => typeof item === "string" && item.trim() ? [item.trim()] : []).slice(0, 4);
 }
 
-function sourceCitationsFromMetadata(value: unknown): SourceCitation[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((item) => {
-    if (!item || typeof item !== "object") {
-      return [];
-    }
-    const citation = item as Partial<SourceCitation>;
-    if (
-      typeof citation.evidence_id !== "string" ||
-      typeof citation.source_id !== "string" ||
-      typeof citation.source_title !== "string" ||
-      typeof citation.excerpt !== "string" ||
-      typeof citation.source_content_hash !== "string" ||
-      typeof citation.parser_run_id !== "string"
-    ) {
-      return [];
-    }
-    return [{
-      evidence_id: citation.evidence_id,
-      source_id: citation.source_id,
-      source_title: citation.source_title,
-      section_path: Array.isArray(citation.section_path)
-        ? citation.section_path.filter((part): part is string => typeof part === "string")
-        : [],
-      page_start: typeof citation.page_start === "number" ? citation.page_start : null,
-      page_end: typeof citation.page_end === "number" ? citation.page_end : null,
-      excerpt: citation.excerpt,
-      chunk_ids: Array.isArray(citation.chunk_ids)
-        ? citation.chunk_ids.filter((chunk): chunk is string => typeof chunk === "string")
-        : [],
-      bbox: Array.isArray(citation.bbox)
-        ? citation.bbox.filter((coordinate): coordinate is number => typeof coordinate === "number")
-        : [],
-      source_content_hash: citation.source_content_hash,
-      parser_run_id: citation.parser_run_id,
-    }];
-  });
-}
-
 export function metadataBool(commit: CommitRecord, key: string): boolean {
   return commit.metadata?.[key] === true;
 }
@@ -173,13 +136,13 @@ function metadataLearningClarificationForcedStart(commit: CommitRecord): boolean
 }
 
 const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
-  "给我一个关键词",
-  "从那里开讲",
-  "我们先找一个小入口",
-  "这次没有拿到可用的临场讲解内容",
-  "没有写入板书",
-  "模型没有返回可用",
-  "请求已发出，生成讲义可能需要",
+  "give me a keyword",
+  "Start from there",
+  "Let's find a small entrance first",
+  "There is no available on-site explanation content this time.",
+  "No writing on the board",
+  "Model not returned available",
+  "Request has been sent, generating lesson documents may be required",
 ] as const;
 
 const LEGACY_DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
@@ -508,10 +471,10 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
   }
 
   if (metadataText(commit, "board_generation_action") === "start") {
-    return "开始生成板书";
+    return "Start generating board content";
   }
 
-  return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
+  return metadataText(commit, "interaction_mode") === "direct_edit" ? `Direct lesson edit: ${userMessage}` : userMessage;
 }
 
 function chatInteractionModeFromCommit(commit: CommitRecord): ChatInteractionMode {
@@ -560,13 +523,14 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
 
     const userContent = chatUserContentFromCommit(commit);
     if (userContent) {
+      const persistedSelection = selectionFromMetadata(commit.metadata?.selection);
       messages.push(
         createChatMessage(
           "user",
           userContent,
           "ready",
           `${commit.id}:user`,
-          selectionFromMetadata(commit.metadata?.selection),
+          persistedSelection,
           null,
           {
             commitId: commit.id,
@@ -574,6 +538,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
             editableContent: metadataText(commit, "user_message") ?? userContent,
             interactionMode: chatInteractionModeFromCommit(commit),
             editedFromCommitId: metadataText(commit, "chat_edit_source_commit_id"),
+            sourceSelections: persistedSelection?.kind === "source" ? [] : sourceSelectionsFromCommit(commit),
           }
         )
       );

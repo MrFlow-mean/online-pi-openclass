@@ -6,6 +6,7 @@ from typing import Iterable
 from app.models import (
     EvidenceBundle,
     RetrievalEvidence,
+    SelectionRef,
     SourceCitation,
     SourceIngestionRecord,
     SourceQueryRef,
@@ -13,6 +14,11 @@ from app.models import (
     now_iso,
 )
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
+from app.services.source_range_reader import (
+    SourceRangeReadError,
+    is_codex_directory_catalog,
+    read_verified_source_range,
+)
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 
@@ -69,17 +75,24 @@ class SourceRetrievalService:
             for ref in refs
             if ref.page_start is not None and ref.page_end is not None
         }
-        evidence = self.structure_store.chunk_evidence_search(
+        evidence = self._read_selected_on_demand_chapter(
             owner_user_id=owner_user_id,
             package_id=package_id,
-            query=normalized_query,
-            limit=SOURCE_QA_EVIDENCE_LIMIT,
-            token_budget=SOURCE_QA_TOKEN_BUDGET,
-            source_ingestion_ids=source_ids,
-            chapter_ids=chapter_ids,
-            page_ranges=page_ranges,
-            search_mode="hybrid",
+            scope=scope,
+            sources=sources,
         )
+        if evidence is None:
+            evidence = self.structure_store.chunk_evidence_search(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                query=normalized_query,
+                limit=SOURCE_QA_EVIDENCE_LIMIT,
+                token_budget=SOURCE_QA_TOKEN_BUDGET,
+                source_ingestion_ids=source_ids,
+                chapter_ids=chapter_ids,
+                page_ranges=page_ranges,
+                search_mode="hybrid",
+            )
         source_by_id = {source.id: source for source in sources}
         evidence = self._with_source_provenance(evidence, source_by_id)
         context_text = _evidence_context(evidence)
@@ -110,6 +123,66 @@ class SourceRetrievalService:
             prompt_context=_prompt_context(bundle, citations),
         )
 
+    def _read_selected_on_demand_chapter(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        scope: SourceQueryScope,
+        sources: list[SourceIngestionRecord],
+    ) -> list[RetrievalEvidence] | None:
+        """Read a selected catalog chapter when its body is intentionally not pre-indexed."""
+
+        if scope.mode != "chapter" or len(scope.refs) != 1:
+            return None
+        ref = scope.refs[0]
+        source = next(
+            (candidate for candidate in sources if candidate.id == ref.source_ingestion_id),
+            None,
+        )
+        if source is None or not ref.source_chapter_id:
+            return None
+        pair = self.structure_store.get_catalog_chapter(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source.id,
+            chapter_id=ref.source_chapter_id,
+        )
+        if pair is None:
+            return None
+        structure, chapter = pair
+        if not is_codex_directory_catalog(structure):
+            return None
+        selection = SelectionRef(
+            kind="source",
+            excerpt=" · ".join(part for part in (source.title, chapter.title) if part),
+            heading_path=chapter.path,
+            source_ingestion_id=source.id,
+            source_title=source.title,
+            source_uri=source.source_uri,
+            source_chapter_id=chapter.id,
+            source_chapter_number=chapter.number,
+            source_chapter_title=chapter.title,
+            source_page_start=ref.page_start,
+            source_page_end=ref.page_end,
+            source_range=chapter.range,
+            catalog_version=chapter.catalog_version or structure.catalog_version,
+            source_content_hash=ref.source_content_hash,
+            source_scope_kind="chapter",
+        )
+        try:
+            range_read = read_verified_source_range(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source=source,
+                structure=structure,
+                chapter=chapter,
+                selection=selection,
+            )
+        except SourceRangeReadError as exc:
+            raise SourceRetrievalError(str(exc)) from exc
+        return _bounded_evidence(range_read.evidence_items)
+
     def _resolve_scope(
         self,
         *,
@@ -125,6 +198,11 @@ class SourceRetrievalService:
                     package_id=package_id,
                 )
                 if source.status == "ready"
+                and self._whole_source_scope_available(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source=source,
+                )
             ]
             if not sources:
                 raise SourceRetrievalError("当前课程没有已完成索引的资料。")
@@ -156,8 +234,32 @@ class SourceRetrievalService:
                 _structure, chapter = pair
                 if chapter.anchor_status != "verified" and chapter.mapping_status != "verified":
                     raise SourceRetrievalError(f"资料“{source.title}”中的章节范围尚未验证。")
+            elif not self._whole_source_scope_available(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source=source,
+            ):
+                raise SourceRetrievalError(
+                    f"资料“{source.title}”的目录仍在完善，请先引用已验证章节。"
+                )
             sources.append(source)
         return _dedupe_sources(sources), list(scope.refs)
+
+    def _whole_source_scope_available(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source: SourceIngestionRecord,
+    ) -> bool:
+        structure = self.structure_store.get_structure(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source.id,
+        )
+        if structure is None or not is_codex_directory_catalog(structure):
+            return True
+        return structure.metadata.get("directory_status") == "complete"
 
     @staticmethod
     def _with_source_provenance(
@@ -181,6 +283,20 @@ def _dedupe_sources(sources: Iterable[SourceIngestionRecord]) -> list[SourceInge
     for source in sources:
         by_id.setdefault(source.id, source)
     return list(by_id.values())
+
+
+def _bounded_evidence(evidence: Iterable[RetrievalEvidence]) -> list[RetrievalEvidence]:
+    bounded: list[RetrievalEvidence] = []
+    used_tokens = 0
+    for item in evidence:
+        if len(bounded) >= SOURCE_QA_EVIDENCE_LIMIT:
+            break
+        item_tokens = max(1, item.token_count)
+        if bounded and used_tokens + item_tokens > SOURCE_QA_TOKEN_BUDGET:
+            break
+        bounded.append(item)
+        used_tokens += item_tokens
+    return bounded
 
 
 def _citation_from_evidence(evidence: RetrievalEvidence) -> SourceCitation:

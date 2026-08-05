@@ -18,7 +18,6 @@ import {
   FolderClosed,
   GitFork,
   Globe2,
-  Languages,
   LoaderCircle,
   LockKeyhole,
   Mail,
@@ -67,13 +66,8 @@ import {
 } from "@/lib/project-visibility";
 import { homeRelativeFormat, type HomeUiBundle } from "@/lib/i18n/product-ui";
 import { downloadRidoc, RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
+import { applyLessonWorkspaceDeltaToWorkspace } from "@/lib/workspace-delta";
 import { useHomeLessonBatch } from "@/hooks/use-home-lesson-batch";
-import {
-  PROFILE_SETTINGS_CHANGED_EVENT,
-  PROFILE_SETTINGS_STORAGE_KEY,
-  readStoredProfileSettings,
-  type InterfaceLanguage,
-} from "@/lib/profile-settings-state";
 import {
   FOLLOWED_UPDATE_KIND_LABELS,
   buildFollowedCourseUpdateItems,
@@ -235,6 +229,7 @@ export function LearningHome() {
   const [contactSubmitState, setContactSubmitState] = useState<ContactSubmitState>("idle");
   const [contactError, setContactError] = useState<string | null>(null);
   const ridocFileInputRef = useRef<HTMLInputElement | null>(null);
+  const lessonMutationInFlightRef = useRef(false);
 
   useEffect(() => {
     let isDisposed = false;
@@ -388,11 +383,11 @@ export function LearningHome() {
   const followingUnreadCount = followedProjectUpdates.length;
   const followingBadge = followingUnreadCount > 99 ? "99+" : followingUnreadCount.toString();
   const notificationUpdates = followedProjectUpdates.slice(0, 4);
-  const quickLinksLabel = language === "en" ? "Project links" : "项目链接";
-  const githubLinkLabel = language === "en" ? "Open GitHub repository" : "打开 GitHub 仓库";
-  const projectDocsLinkLabel = language === "en" ? "Open project documentation" : "打开项目文档";
+  const quickLinksLabel = language === "en" ? "Project links" : "Project link";
+  const githubLinkLabel = language === "en" ? "Open GitHub repository" : "Open the GitHub repository";
+  const projectDocsLinkLabel = language === "en" ? "Open project documentation" : "Open project document";
   const contactLinkLabel =
-    language === "en" ? `Contact OpenClass at ${PLATFORM_CONTACT_EMAIL}` : `联系 OpenClass，消息发送至 ${PLATFORM_CONTACT_EMAIL}`;
+    language === "en" ? `Contact OpenClass at ${PLATFORM_CONTACT_EMAIL}` : `Contact OpenClass at ${PLATFORM_CONTACT_EMAIL}`;
 
   function openContactDialog() {
     if (contactSubmitState === "sent") {
@@ -430,7 +425,7 @@ export function LearningHome() {
           ? submitError.message
           : language === "en"
             ? "Could not send your message. Please try again."
-            : "联系消息发送失败，请重试。",
+            : "The contact message failed to be sent, please try again.",
       );
     }
   }
@@ -461,7 +456,7 @@ export function LearningHome() {
 
     const packageItem = coursePackages.find((item) => item.id === course.id);
     if (!packageItem) {
-      setError(language === "en" ? "This course package is no longer available." : "这个课程包已不存在。");
+      setError(language === "en" ? "This course package is no longer available." : "This course package no longer exists.");
       return;
     }
     setSelectedPackageId(packageItem.id);
@@ -485,7 +480,7 @@ export function LearningHome() {
         ? await forkPublicLesson(course.id)
         : await forkPublicPackage(course.id);
     if (!retained.active_lesson_id) {
-      throw new Error(language === "en" ? "The downloaded course has no lesson to open." : "下载的课程中没有可打开的课节。");
+      throw new Error(language === "en" ? "The downloaded course has no lesson to open." : "There are no sections available to open in the downloaded course.");
     }
 
     const payload = await api.getWorkspace();
@@ -509,6 +504,9 @@ export function LearningHome() {
   }
 
   async function handleOpenStandaloneWorkspace() {
+    if (lessonMutationInFlightRef.current) {
+      return;
+    }
     setStandaloneCreateMenuOpen(false);
     if (!standalonePackage) {
       router.push("/studio");
@@ -521,21 +519,23 @@ export function LearningHome() {
     setPackageLessonsExpanded(false);
     setLessonMenuState(null);
     setLessonMoveMenuState(null);
+    lessonMutationInFlightRef.current = true;
     try {
-      await api.openPackage(standalonePackage.id);
-      const createdPackage = await api.generateLesson({
+      const delta = await api.generateLesson({
         targetPackageId: standalonePackage.id,
         startBlank: true,
       });
-      const payload = await api.getWorkspace();
-      setWorkspaceState(payload);
-      setSelectedLessonId(createdPackage.active_lesson_id ?? null);
+      setWorkspaceState((current) =>
+        current ? applyLessonWorkspaceDeltaToWorkspace(current, delta) : current
+      );
+      setSelectedLessonId(delta.created_lesson?.id ?? delta.active_lesson_id ?? null);
       setError(null);
       router.push("/studio");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : errMsgs.current.openStandaloneFail);
     } finally {
       setBusyKey(null);
+      lessonMutationInFlightRef.current = false;
     }
   }
 
@@ -579,21 +579,28 @@ export function LearningHome() {
   }
 
   async function handleDeleteLesson(lesson: Lesson) {
-    if (typeof window !== "undefined" && !window.confirm(`确定删除《${lesson.title}》吗？`)) {
+    if (lessonMutationInFlightRef.current) {
+      return;
+    }
+    if (typeof window !== "undefined" && !window.confirm(`Delete “${lesson.title}”?`)) {
       return;
     }
 
     setBusyKey(`delete:${lesson.id}`);
     setLessonMenuState(null);
     setLessonMoveMenuState(null);
+    lessonMutationInFlightRef.current = true;
     try {
-      const payload = await api.deleteLesson(lesson.id);
-      setWorkspaceState(payload);
+      const delta = await api.deleteLesson(lesson.id);
+      setWorkspaceState((current) =>
+        current ? applyLessonWorkspaceDeltaToWorkspace(current, delta) : current
+      );
       setError(null);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : errMsgs.current.deleteLessonFail);
     } finally {
       setBusyKey(null);
+      lessonMutationInFlightRef.current = false;
     }
   }
 
@@ -637,11 +644,11 @@ export function LearningHome() {
         .find((item) => item.id === lesson.id);
       setError(
         visibility === "public" && updatedLesson?.visibility !== "public"
-          ? updatedLesson?.publication_review.message || "资料发布审查未通过，课程保持 Private。"
+          ? updatedLesson?.publication_review.message || "The source review did not pass, so the course remains private."
           : null
       );
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "更新课程可见权限失败");
+      setError(actionError instanceof Error ? actionError.message : "Failed to update course visibility permissions");
     } finally {
       setPublicationReviewProgress(null);
       setBusyKey(null);
@@ -655,10 +662,10 @@ export function LearningHome() {
     const url = new URL(publicProjectHref("lesson", lesson.id), window.location.origin).toString();
     try {
       if (typeof navigator.share === "function") {
-        await navigator.share({ title: lesson.title, text: `分享课程：${lesson.title}`, url });
+        await navigator.share({ title: lesson.title, text: `Share course: ${lesson.title}`, url });
         return;
       }
-      window.prompt("复制公开课程链接", url);
+      window.prompt("Copy public course link", url);
     } catch (shareError) {
       if (!(shareError instanceof DOMException && shareError.name === "AbortError")) {
         setError(shareError instanceof Error ? shareError.message : errMsgs.current.sharePackageFail);
@@ -743,7 +750,7 @@ export function LearningHome() {
       return;
     }
 
-    const nextTitle = window.prompt("请输入新的课程包名称", selectedCoursePackage.title);
+    const nextTitle = window.prompt("Please enter a new course package name", selectedCoursePackage.title);
     if (!nextTitle?.trim() || nextTitle.trim() === selectedCoursePackage.title) {
       return;
     }
@@ -767,8 +774,8 @@ export function LearningHome() {
 
     const lessonCount = selectedCoursePackage.lessons.length;
     const message = lessonCount
-      ? `确定删除《${selectedCoursePackage.title}》吗？包内 ${lessonCount} 节单课也会一起删除。`
-      : `确定删除《${selectedCoursePackage.title}》吗？`;
+      ? `Delete “${selectedCoursePackage.title}” and its ${lessonCount} standalone courses?`
+      : `Delete “${selectedCoursePackage.title}”?`;
     if (typeof window !== "undefined" && !window.confirm(message)) {
       return;
     }
@@ -799,11 +806,11 @@ export function LearningHome() {
       const updatedPackage = payload.packages.find((item) => item.id === selectedCoursePackage.id);
       setError(
         visibility === "public" && updatedPackage?.visibility !== "public"
-          ? updatedPackage?.publication_review.message || "资料发布审查未通过，课程包保持 Private。"
+          ? updatedPackage?.publication_review.message || "The source review did not pass, so the course package remains private."
           : null
       );
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "更新课程包可见权限失败");
+      setError(actionError instanceof Error ? actionError.message : "Failed to update course package visible permissions");
     } finally {
       setBusyKey(null);
     }
@@ -817,7 +824,7 @@ export function LearningHome() {
     const shareUrl = new URL(publicProjectHref("package", selectedCoursePackage.id), window.location.origin);
     const shareData = {
       title: selectedCoursePackage.title,
-      text: `分享课程包：${selectedCoursePackage.title}`,
+      text: `Share course package: ${selectedCoursePackage.title}`,
       url: shareUrl.toString(),
     };
 
@@ -826,31 +833,12 @@ export function LearningHome() {
         await navigator.share(shareData);
         return;
       }
-      window.prompt("复制课程包链接", shareData.url);
+      window.prompt("Copy course package link", shareData.url);
     } catch (shareError) {
       if (shareError instanceof DOMException && shareError.name === "AbortError") {
         return;
       }
       setError(shareError instanceof Error ? shareError.message : errMsgs.current.sharePackageFail);
-    }
-  }
-
-  function handleToggleInterfaceLanguage() {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const nextLanguage: InterfaceLanguage = language === "en" ? "zh-CN" : "en";
-    const nextSettings = {
-      ...readStoredProfileSettings(),
-      interfaceLanguage: nextLanguage,
-    };
-
-    try {
-      window.localStorage.setItem(PROFILE_SETTINGS_STORAGE_KEY, JSON.stringify(nextSettings));
-      window.dispatchEvent(new CustomEvent(PROFILE_SETTINGS_CHANGED_EVENT, { detail: nextSettings }));
-    } catch {
-      // Browser storage can be unavailable in private browsing contexts.
     }
   }
 
@@ -1241,9 +1229,9 @@ export function LearningHome() {
                                 <p className="truncate text-sm font-medium text-stone-950">{lesson.title}</p>
                                 <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-stone-400">
                                   {lesson.visibility === "public" ? (
-                                    <Globe2 className="h-3 w-3 text-emerald-600" aria-label="已上传" />
+                                    <Globe2 className="h-3 w-3 text-emerald-600" aria-label="Uploaded" />
                                   ) : (
-                                    <LockKeyhole className="h-3 w-3" aria-label="未上传" />
+                                    <LockKeyhole className="h-3 w-3" aria-label="Not uploaded" />
                                   )}
                                   {homeRelFmt(lesson.updated_at)}
                                 </span>
@@ -1317,8 +1305,8 @@ export function LearningHome() {
                         setSearchMode(false);
                       }}
                       className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-950"
-                      aria-label={language === "en" ? "Close search" : "退出搜索"}
-                      title={language === "en" ? "Close search" : "退出搜索"}
+                      aria-label={language === "en" ? "Close search" : "Exit search"}
+                      title={language === "en" ? "Close search" : "Exit search"}
                     >
                       <X className="h-4 w-4" />
                     </button>
@@ -1468,7 +1456,7 @@ export function LearningHome() {
               visibility={lessonMenuLesson.visibility}
               onChange={(visibility) => void handleSetLessonVisibility(lessonMenuLesson, visibility)}
               disabled={busyKey !== null}
-              label={language === "en" ? "Course upload" : "课程发布"}
+              label={language === "en" ? "Course upload" : "Course release"}
               review={
                 lessonMenuLesson.visibility === "public" ||
                 ["blocked", "error"].includes(lessonMenuLesson.publication_review.status)
@@ -1487,7 +1475,7 @@ export function LearningHome() {
               onClick={() => void handleShareLesson(lessonMenuLesson)}
               disabled={lessonMenuLesson.visibility !== "public" || busyKey !== null}
               className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:text-stone-300"
-              title={lessonMenuLesson.visibility === "public" ? h.sharePackageTitle : "上传课程后可分享"}
+              title={lessonMenuLesson.visibility === "public" ? h.sharePackageTitle : "You can share the course after uploading it"}
             >
               <Share2 className="h-4 w-4" />
               {h.share}
@@ -1635,19 +1623,19 @@ export function LearningHome() {
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">OpenClass</p>
                   <h2 id="contact-dialog-title" className="mt-2 text-xl font-bold text-stone-950">
-                    {language === "en" ? "Contact our team" : "联系开放课堂团队"}
+                    {language === "en" ? "Contact our team" : "Contact the OpenClass team"}
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-stone-500">
                     {language === "en"
                       ? `Your message will be delivered to ${PLATFORM_CONTACT_EMAIL}. We will reply to your account email.`
-                      : `消息会直接发送至 ${PLATFORM_CONTACT_EMAIL}，我们将通过你的账户邮箱回复。`}
+                      : `Your message will be sent to ${PLATFORM_CONTACT_EMAIL}; we will reply to your account email.`}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={closeContactDialog}
                   disabled={contactSubmitState === "sending"}
-                  aria-label={language === "en" ? "Close contact form" : "关闭联系表单"}
+                  aria-label={language === "en" ? "Close contact form" : "Close contact form"}
                   className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <X className="h-4 w-4" />
@@ -1660,23 +1648,23 @@ export function LearningHome() {
                     <Check className="h-6 w-6" />
                   </div>
                   <h3 className="mt-4 text-lg font-bold text-stone-950">
-                    {language === "en" ? "Message sent" : "消息已发送"}
+                    {language === "en" ? "Message sent" : "Message sent"}
                   </h3>
                   <p className="mt-2 text-sm text-stone-500">
-                    {language === "en" ? "We will reply to your account email." : "团队会通过你的账户邮箱回复。"}
+                    {language === "en" ? "We will reply to your account email." : "The team will reply via your account email."}
                   </p>
                   <button
                     type="button"
                     onClick={closeContactDialog}
                     className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-stone-950 px-6 text-sm font-semibold text-white transition hover:bg-stone-800"
                   >
-                    {language === "en" ? "Done" : "完成"}
+                    {language === "en" ? "Done" : "Finish"}
                   </button>
                 </div>
               ) : (
                 <form className="mt-6 space-y-4" onSubmit={handleContactSubmit}>
                   <label className="block">
-                    <span className="text-sm font-semibold text-stone-700">{language === "en" ? "Subject" : "主题"}</span>
+                    <span className="text-sm font-semibold text-stone-700">{language === "en" ? "Subject" : "theme"}</span>
                     <input
                       value={contactSubject}
                       onChange={(event) => setContactSubject(event.target.value)}
@@ -1684,12 +1672,12 @@ export function LearningHome() {
                       maxLength={120}
                       required
                       autoFocus
-                      placeholder={language === "en" ? "What would you like to discuss?" : "你想和我们讨论什么？"}
+                      placeholder={language === "en" ? "What would you like to discuss?" : "What do you want to discuss with us?"}
                       className="mt-2 h-11 w-full rounded-xl border border-stone-200 bg-stone-50 px-3.5 text-sm text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100"
                     />
                   </label>
                   <label className="block">
-                    <span className="text-sm font-semibold text-stone-700">{language === "en" ? "Message" : "联系内容"}</span>
+                    <span className="text-sm font-semibold text-stone-700">{language === "en" ? "Message" : "Contact content"}</span>
                     <textarea
                       value={contactMessage}
                       onChange={(event) => setContactMessage(event.target.value)}
@@ -1697,7 +1685,7 @@ export function LearningHome() {
                       maxLength={4000}
                       required
                       rows={6}
-                      placeholder={language === "en" ? "Share the details so we can help." : "请写下具体情况，便于我们回复。"}
+                      placeholder={language === "en" ? "Share the details so we can help." : "Please write down the specific situation so that we can respond."}
                       className="mt-2 w-full resize-y rounded-xl border border-stone-200 bg-stone-50 px-3.5 py-3 text-sm leading-6 text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100"
                     />
                     <span className="mt-1 block text-right text-xs text-stone-400">{contactMessage.length}/4000</span>
@@ -1714,7 +1702,7 @@ export function LearningHome() {
                       disabled={contactSubmitState === "sending"}
                       className="h-11 rounded-xl px-4 text-sm font-semibold text-stone-600 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {language === "en" ? "Cancel" : "取消"}
+                      {language === "en" ? "Cancel" : "Cancel"}
                     </button>
                     <button
                       type="submit"
@@ -1723,8 +1711,8 @@ export function LearningHome() {
                     >
                       {contactSubmitState === "sending" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
                       {contactSubmitState === "sending"
-                        ? language === "en" ? "Sending" : "发送中"
-                        : language === "en" ? "Send message" : "发送消息"}
+                        ? language === "en" ? "Sending" : "Sending"
+                        : language === "en" ? "Send message" : "Send message"}
                     </button>
                   </div>
                 </form>
@@ -1747,7 +1735,7 @@ export function LearningHome() {
           className="inline-flex h-10 items-center gap-2 rounded-md px-3 text-sm font-semibold text-stone-700 transition hover:bg-sky-50 hover:text-sky-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
         >
           <Mail className="h-4 w-4" />
-          <span>{language === "en" ? "Contact" : "联系"}</span>
+          <span>{language === "en" ? "Contact" : "connect"}</span>
         </button>
         <a
           href={GITHUB_REPOSITORY_URL}
@@ -1767,7 +1755,7 @@ export function LearningHome() {
           className="inline-flex h-10 items-center gap-2 rounded-md bg-stone-950 px-3 text-sm font-semibold text-white transition hover:bg-stone-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-950"
         >
           <BookText className="h-4 w-4" />
-          <span>{language === "en" ? "Docs" : "项目文档"}</span>
+          <span>{language === "en" ? "Docs" : "Project documentation"}</span>
         </Link>
         </nav>
       ) : null}
@@ -1798,7 +1786,7 @@ export function LearningHome() {
                 visibility={selectedCoursePackage.visibility}
                 onChange={(visibility) => void handleSetSelectedPackageVisibility(visibility)}
                 disabled={packageActionBusy}
-                ariaLabelPrefix="课程包"
+                ariaLabelPrefix="course package"
                 reviewing={isReviewingPublication}
               />
               <button
@@ -1816,7 +1804,7 @@ export function LearningHome() {
                 onClick={() => void handleShareSelectedPackage()}
                 disabled={packageActionBusy || selectedCoursePackage.visibility !== "public"}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title={selectedCoursePackage.visibility === "public" ? h.sharePackageTitle : "上传课程包后可分享"}
+                title={selectedCoursePackage.visibility === "public" ? h.sharePackageTitle : "You can share the course package after uploading it"}
               >
                 <Share2 className="h-2 w-2" />
                 {h.share}
@@ -1926,37 +1914,37 @@ export function LearningHome() {
           <Link
             href="/wallet"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(16,185,129,0.10)] transition hover:-translate-y-0.5 hover:bg-emerald-600 hover:text-white sm:flex"
-            aria-label="打开积分与充值"
+            aria-label="Open credits and top-up"
           >
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 transition group-hover:bg-white">
               <WalletCards className="h-4 w-4" />
             </span>
-            <span>充值</span>
+            <span>top up</span>
           </Link>
           <Link
             href="/community"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-sky-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(14,165,233,0.10)] transition hover:-translate-y-0.5 hover:bg-sky-500 hover:text-white hover:shadow-[0_14px_28px_rgba(14,165,233,0.18)] sm:flex"
-            aria-label="打开学习社区"
+            aria-label="Open learning community"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-sky-50 text-sky-500 transition group-hover:bg-white group-hover:text-sky-500">
               <MessageCircle className="h-4 w-4" />
             </span>
-            <span>社区</span>
+            <span>Community</span>
           </Link>
           <Link
             href="/trending"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
-            aria-label="打开热门项目"
+            aria-label="Open popular items"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-orange-50 text-orange-500 transition group-hover:bg-white group-hover:text-orange-500">
               <Flame className="h-4 w-4" />
             </span>
-            <span>热门</span>
+            <span>Popular</span>
           </Link>
           <Link
             href="/profile?tab=stars"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-amber-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(245,158,11,0.10)] transition hover:-translate-y-0.5 hover:bg-amber-500 hover:text-white hover:shadow-[0_14px_28px_rgba(245,158,11,0.18)] sm:flex"
-            aria-label="打开 Stars 收藏"
+            aria-label="Open the Stars collection"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-amber-500 transition group-hover:bg-white group-hover:text-amber-500">
               <Star className="h-4 w-4" />
@@ -1971,7 +1959,7 @@ export function LearningHome() {
           <Link
             href="/following"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)] sm:flex"
-            aria-label="打开关注动态"
+            aria-label="Open follow updates"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-rose-500 transition group-hover:bg-white group-hover:text-rose-500">
               <Activity className="h-4 w-4" />
@@ -1981,7 +1969,7 @@ export function LearningHome() {
                 </span>
               ) : null}
             </span>
-            <span>动态</span>
+            <span>dynamic</span>
           </Link>
           <div className="flex items-center gap-3">
             <button
@@ -1998,16 +1986,6 @@ export function LearningHome() {
                 </span>
               ) : null}
             </button>
-            <button
-              type="button"
-              onClick={handleToggleInterfaceLanguage}
-              className="group flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-[11px] font-semibold text-stone-600 shadow-[0_8px_18px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
-              aria-label={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
-              title={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
-            >
-              <Languages className="h-3.5 w-3.5" />
-              <span>{language === "en" ? "中" : "EN"}</span>
-            </button>
           </div>
           <AccountMenu
             ariaLabel={txt.profileHome.avatarAlt}
@@ -2019,9 +1997,9 @@ export function LearningHome() {
         {notificationOpen ? (
           <div className="w-full max-w-[27rem] rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
-              <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">消息推送</h4>
+              <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">Push message</h4>
               <span className="rounded-full bg-rose-500 px-2 py-1 text-[10px] font-semibold text-white">
-                {followingUnreadCount ? `${followingBadge} NEW` : "已同步"}
+                {followingUnreadCount ? `${followingBadge} NEW` : "Synced"}
               </span>
             </div>
 
@@ -2070,7 +2048,7 @@ export function LearningHome() {
                       >
                         {FOLLOWED_UPDATE_KIND_LABELS[item.update.updateKind]}
                       </span>
-                      <span className="text-[11px] text-stone-400">{item.update.lessonCount} 课</span>
+                      <span className="text-[11px] text-stone-400">{item.update.lessonCount}  class</span>
                     </div>
 
                     <div className="mt-3 rounded-md bg-[#f6f8fa] p-3">
@@ -2096,7 +2074,8 @@ export function LearningHome() {
                 ))
               ) : (
                 <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 px-4 py-5 text-sm text-stone-500">
-                  关注他人项目后，这里只显示这些项目的更新推送。
+
+                  Updates from projects you follow will appear here.
                 </div>
               )}
             </div>
@@ -2105,7 +2084,8 @@ export function LearningHome() {
               href="/following"
               className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
             >
-              查看全部动态
+
+              View all updates
               <ArrowUpRight className="h-4 w-4" />
             </Link>
           </div>

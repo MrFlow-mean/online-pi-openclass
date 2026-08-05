@@ -63,6 +63,47 @@ def test_pdf_tool_activity_advances_by_actual_scanned_pages(monkeypatch, tmp_pat
     assert "已渲染核对 5 页" in second_progress["detail"]
 
 
+def test_live_catalog_heartbeat_preserves_elapsed_detail(monkeypatch, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.pdf"
+    source_path.write_bytes(b"pdf")
+    monkeypatch.setattr(source_codex_progress, "_pdf_page_count", lambda _path: 120)
+    tracker = source_codex_progress.SourceCodexProgressTracker(source_path)
+    tracker.observe(
+        _event(
+            event_id="tool_1",
+            kind="dynamicToolCall",
+            command="pdf_navigation",
+        )
+    )
+    event = AgentActivityEvent(
+        id="progress_1",
+        turn_id="turn_1",
+        stage="execute_role",
+        label="资料 Agent 正在读取文件结构",
+        status="running",
+        role="pi",
+        metadata={
+            "kind": "sourceCatalogProgress",
+            "detail": "已运行 18 秒 · 已完成 1 次工具检查",
+            "source_progress": {
+                "phase": "source_agent_working",
+                "label": "资料 Agent 正在读取文件结构",
+                "detail": "已运行 18 秒 · 已完成 1 次工具检查",
+                "determinate": False,
+            },
+        },
+    )
+
+    observation = tracker.observe(event)
+
+    progress = observation.event.metadata["source_progress"]
+    assert progress["determinate"] is False
+    assert progress["progress"] == 30
+    assert progress["label"] == "资料 Agent 正在读取文件结构"
+    assert progress["completed_tool_actions"] == 1
+    assert progress["detail"] == "已运行 18 秒 · 已完成 1 次工具检查 · 文件共 120 页"
+
+
 def test_full_pdf_extraction_reports_all_pages_without_completing_catalog(
     monkeypatch,
     tmp_path: Path,

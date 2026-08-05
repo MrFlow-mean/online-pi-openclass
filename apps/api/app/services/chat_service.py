@@ -66,6 +66,7 @@ def process_chat_on_lesson(
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+    on_document_commit: Callable[[str, str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     commit_metadata: dict[str, object] | None = None,
     prepared_gate: TurnGateResult | None = None,
@@ -86,6 +87,7 @@ def process_chat_on_lesson(
             on_delta=on_delta,
             on_requirement_update=on_requirement_update,
             on_agent_activity=on_agent_activity,
+            on_document_commit=on_document_commit,
             is_cancelled=is_cancelled,
             commit_metadata=commit_metadata,
             prepared_gate=prepared_gate,
@@ -138,6 +140,7 @@ def process_chat_on_lesson(
             on_delta=on_delta,
             on_requirement_update=on_requirement_update,
             on_agent_activity=on_agent_activity,
+            on_document_commit=on_document_commit,
             is_cancelled=is_cancelled,
             commit_metadata={
                 **(commit_metadata or {}),
@@ -198,6 +201,7 @@ def _process_chat_on_lesson_once(
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+    on_document_commit: Callable[[str, str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     commit_metadata: dict[str, object] | None = None,
     prepared_gate: TurnGateResult | None = None,
@@ -256,6 +260,12 @@ def _process_chat_on_lesson_once(
                 on_agent_activity=on_agent_activity,
                 is_cancelled=is_cancelled,
             )
+        effective_request, gate = _apply_empty_board_source_learning_policy(
+            lesson_id,
+            effective_request,
+            gate,
+            user_id=user_id,
+        )
         downstream_request = _request_with_frozen_text_model(
             effective_request,
             gate.envelope.selected_model,
@@ -283,6 +293,7 @@ def _process_chat_on_lesson_once(
                     on_delta=on_delta,
                     on_requirement_update=on_requirement_update,
                     on_agent_activity=on_agent_activity,
+                    on_document_commit=on_document_commit,
                     is_cancelled=is_cancelled,
                     commit_metadata={
                         **(commit_metadata or {}),
@@ -297,6 +308,7 @@ def _process_chat_on_lesson_once(
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
                 on_agent_activity=on_agent_activity,
+                on_document_commit=on_document_commit,
                 is_cancelled=is_cancelled,
             )
     response.turn_decision = gate.decision
@@ -307,6 +319,63 @@ def _process_chat_on_lesson_once(
         downstream_request,
         response,
         user_id=user_id,
+    )
+
+
+def _apply_empty_board_source_learning_policy(
+    lesson_id: str,
+    request: ChatRequest,
+    gate: TurnGateResult,
+    *,
+    user_id: str,
+) -> tuple[ChatRequest, TurnGateResult]:
+    """Make source-grounded blank-board sequencing a server-owned policy."""
+
+    if request.source_query_scope is None or gate.decision.learning_flow == "none":
+        return request, gate
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    if lesson.board_document.content_text.strip():
+        return request, gate
+    post_generation_action = (
+        "auto_explain"
+        if gate.decision.learning_flow == "teach"
+        else "stop_after_generation"
+    )
+    updated_request = request.model_copy(
+        update={
+            "board_generation_action": "start",
+            "post_generation_action": post_generation_action,
+        }
+    )
+    updated_trace = gate.trace.model_copy(
+        update={
+            "intent_signals": [
+                *gate.trace.intent_signals,
+                f"source_learning_flow:{gate.decision.learning_flow}",
+            ],
+            "matched_rules": [
+                *gate.trace.matched_rules,
+                "empty_board_source_learning_requires_board",
+            ],
+            "target_resolver": "source_query_scope",
+            "sequence_mode": (
+                "board_generation_then_teaching"
+                if gate.decision.learning_flow == "teach"
+                else "board_generation_only"
+            ),
+            "reason": (
+                "An empty board and a verified source learning request require board "
+                "generation before any teaching response."
+            ),
+        }
+    )
+    return updated_request, TurnGateResult(
+        envelope=gate.envelope,
+        decision=gate.decision,
+        trace=updated_trace,
+        adapter=gate.adapter,
+        activity=gate.activity,
     )
 
 

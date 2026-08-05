@@ -2,9 +2,9 @@ import { expect, test } from "@playwright/test";
 
 test("legal and security routes remain public and publish crawler metadata", async ({ page, request }) => {
   for (const [path, heading] of [
-    ["/privacy", "隐私政策"],
-    ["/terms", "服务条款"],
-    ["/security", "安全说明"],
+    ["/privacy", "privacy policy"],
+    ["/terms", "Terms of Service"],
+    ["/security", "Safety instructions"],
   ] as const) {
     await page.goto(path);
     await expect(page).toHaveURL(new RegExp(`${path}$`));

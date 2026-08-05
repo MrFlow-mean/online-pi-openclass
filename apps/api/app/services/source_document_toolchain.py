@@ -58,7 +58,7 @@ def prepare_source_document_toolbox(
     cwd: Path,
     source_path: Path,
     scratch_path: Path,
-    inspection_scope: Literal["source", "directory_only"] = "source",
+    inspection_scope: Literal["source", "directory_only", "catalog_v3"] = "source",
 ) -> Path:
     toolbox = cwd / "toolbox"
     toolbox_bin = toolbox / "bin"
@@ -69,7 +69,7 @@ def prepare_source_document_toolbox(
     poppler_root = resolve_poppler_root()
     source_bin = poppler_root / "bin"
     for tool in REQUIRED_PDF_TOOLS:
-        if inspection_scope == "directory_only" and tool in {"pdftotext", "pdftoppm"}:
+        if inspection_scope in {"directory_only", "catalog_v3"} and tool in {"pdftotext", "pdftoppm"}:
             real_tool = toolbox / "libexec" / tool
             real_tool.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
             _link_or_copy_read_only(source_bin / tool, real_tool)

@@ -90,7 +90,7 @@
     var tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
     var endOffset = findSignature(tail, 0x06054b50);
     if (endOffset < 0 || endOffset + 22 > tail.length) {
-      throw new Error("文件不是有效的 RIDOC ZIP 归档");
+      throw new Error("File is not a valid RIDOC ZIP archive");
     }
     var end = new DataView(tail.buffer, tail.byteOffset + endOffset, tail.length - endOffset);
     var entryCount = end.getUint16(10, true);
@@ -102,7 +102,7 @@
       || centralSize > MAX_CENTRAL_DIRECTORY_BYTES
       || centralOffset + centralSize > file.size
     ) {
-      throw new Error("RIDOC 目录结构无效或过大");
+      throw new Error("The RIDOC directory is invalid or too large");
     }
     var centralBytes = new Uint8Array(
       await file.slice(centralOffset, centralOffset + centralSize).arrayBuffer()
@@ -113,7 +113,7 @@
     var cursor = 0;
     for (var entryIndex = 0; entryIndex < entryCount; entryIndex += 1) {
       if (cursor + 46 > centralBytes.length || view.getUint32(cursor, true) !== 0x02014b50) {
-        throw new Error("RIDOC 中央目录损坏");
+        throw new Error("The RIDOC central directory is corrupted");
       }
       var method = view.getUint16(cursor + 10, true);
       var compressedSize = view.getUint32(cursor + 20, true);
@@ -124,7 +124,7 @@
       var localOffset = view.getUint32(cursor + 42, true);
       var nextCursor = cursor + 46 + nameLength + extraLength + commentLength;
       if (nextCursor > centralBytes.length) {
-        throw new Error("RIDOC 文件条目越界");
+        throw new Error("A RIDOC file entry is out of bounds");
       }
       var name = decoder.decode(centralBytes.subarray(cursor + 46, cursor + 46 + nameLength));
       entries[name] = {
@@ -140,11 +140,11 @@
 
   async function readZipEntry(file, entry) {
     if (!entry || entry.uncompressedSize > MAX_MANIFEST_BYTES) {
-      throw new Error("RIDOC 课程清单缺失或过大");
+      throw new Error("The RIDOC course manifest is missing or too large");
     }
     var localHeader = new Uint8Array(await file.slice(entry.localOffset, entry.localOffset + 30).arrayBuffer());
     if (localHeader.length !== 30 || new DataView(localHeader.buffer).getUint32(0, true) !== 0x04034b50) {
-      throw new Error("RIDOC 课程清单入口无效");
+      throw new Error("The RIDOC course manifest entry is invalid");
     }
     var localView = new DataView(localHeader.buffer);
     var nameLength = localView.getUint16(26, true);
@@ -157,7 +157,7 @@
       return compressed;
     }
     if (entry.method !== 8 || typeof DecompressionStream === "undefined") {
-      throw new Error("当前浏览器无法读取这个 RIDOC 压缩方式");
+      throw new Error("This browser cannot read the RIDOC compression method");
     }
     var stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
     return new Uint8Array(await new Response(stream).arrayBuffer());
@@ -165,15 +165,15 @@
 
   async function readRidocMetadata(file) {
     if (!file || !/\.ridoc$/i.test(file.name || "")) {
-      throw new Error("请选择 .ridoc 课程文件");
+      throw new Error("Select a .ridoc course file");
     }
     if (!file.size || file.size > MAX_RIDOC_BYTES) {
-      throw new Error("RIDOC 文件大小必须在 256 MiB 以内");
+      throw new Error("RIDOC files must be no larger than 256 MiB");
     }
     var entries = await zipEntries(file);
     REQUIRED_PATHS.forEach(function requirePath(path) {
       if (!entries[path]) {
-        throw new Error("RIDOC 缺少必要文件：" + path);
+        throw new Error("RIDOC is missing a required file: " + path);
       }
     });
     var manifestBytes = await readZipEntry(file, entries["manifest.json"]);
@@ -181,7 +181,7 @@
     try {
       manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
     } catch (_error) {
-      throw new Error("RIDOC 课程清单不是有效 JSON");
+      throw new Error("The RIDOC course manifest is not valid JSON");
     }
     if (
       !manifest
@@ -189,20 +189,20 @@
       || manifest.profile !== "learning.lesson"
       || manifest.media_type !== RIDOC_MEDIA_TYPE
     ) {
-      throw new Error("RIDOC 课程格式或版本不受支持");
+      throw new Error("The RIDOC course format or version is not supported");
     }
     var lesson = manifest.lesson && typeof manifest.lesson === "object" ? manifest.lesson : {};
     var title = cleanText(lesson.title, 160);
     if (!title) {
-      throw new Error("RIDOC 课程清单缺少课程名称");
+      throw new Error("The RIDOC course manifest is missing a course title");
     }
     var capabilities = manifest.capabilities && typeof manifest.capabilities === "object"
       ? manifest.capabilities
       : {};
     var capabilityLabels = [];
-    if (capabilities.playback) capabilityLabels.push("可播放");
-    if (capabilities.continue) capabilityLabels.push("可继续");
-    if (capabilities.fork) capabilityLabels.push("可分叉");
+    if (capabilities.playback) capabilityLabels.push("Playable");
+    if (capabilities.continue) capabilityLabels.push("Continuable");
+    if (capabilities.fork) capabilityLabels.push("Forkable");
     return {
       version: 1,
       title: title,
@@ -216,14 +216,14 @@
   function attachmentUrl(value, metadata) {
     var destination = new URL(value, window.location.href);
     if (destination.protocol !== "http:" && destination.protocol !== "https:") {
-      throw new Error("附件地址无效");
+      throw new Error("The attachment URL is invalid");
     }
     destination.hash = RIDOC_MARKER + base64UrlFromText(JSON.stringify(metadata));
     return destination.toString();
   }
 
   function insertAttachmentMarkdown(textarea, destination) {
-    var markdown = "> [OpenClass RIDOC 课程文件](" + destination + ")";
+    var markdown = "> [OpenClass RIDOC course file](" + destination + ")";
     var current = textarea.value || "";
     var next = current + (current.trim() ? "\n\n" : "") + markdown;
     var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
@@ -239,12 +239,12 @@
     input.disabled = true;
     dropzone.dataset.busy = "true";
     status.dataset.error = "false";
-    status.textContent = "正在读取课程简介并上传…";
+    status.textContent = "Reading the course summary and uploading…";
     try {
       var metadata = await readRidocMetadata(file);
       var answerToken = window.localStorage.getItem("_a_ltk_");
       if (!answerToken) {
-        throw new Error("请先登录社区再添加课程文件");
+        throw new Error("Sign in to the community before adding a course file");
       }
       var payload = new FormData();
       payload.append("source", "post_attachment");
@@ -257,14 +257,14 @@
       var result = await response.json().catch(function emptyResult() { return null; });
       if (!response.ok || !result || typeof result.data !== "string" || !result.data) {
         var detail = result && (result.msg || result.message);
-        throw new Error(cleanText(detail, 180) || "课程文件上传失败");
+        throw new Error(cleanText(detail, 180) || "Course file upload failed");
       }
       insertAttachmentMarkdown(textarea, attachmentUrl(result.data, metadata));
-      status.textContent = "已添加：" + metadata.title;
+      status.textContent = "Added: " + metadata.title;
       input.value = "";
     } catch (error) {
       status.dataset.error = "true";
-      status.textContent = error instanceof Error ? error.message : "课程文件上传失败";
+      status.textContent = error instanceof Error ? error.message : "Course file upload failed";
     } finally {
       input.disabled = false;
       dropzone.dataset.busy = "false";
@@ -280,14 +280,14 @@
     dropzone.className = "openclass-ridoc-dropzone";
     dropzone.innerHTML = [
       '<span class="openclass-ridoc-dropzone-icon" aria-hidden="true">＋</span>',
-      '<span><span class="openclass-ridoc-dropzone-title">添加 RIDOC 课程文件</span>',
-      '<span class="openclass-ridoc-dropzone-help">点击选择或拖入 .ridoc；发布后显示课程简介卡片</span></span>',
+      '<span><span class="openclass-ridoc-dropzone-title">Add a RIDOC course file</span>',
+      '<span class="openclass-ridoc-dropzone-help">Choose or drop a .ridoc file; published posts show a course summary card</span></span>',
     ].join("");
     var input = document.createElement("input");
     input.type = "file";
     input.accept = ".ridoc," + RIDOC_MEDIA_TYPE;
     input.hidden = true;
-    input.setAttribute("aria-label", "添加 RIDOC 课程文件");
+    input.setAttribute("aria-label", "Add a RIDOC course file");
     dropzone.appendChild(input);
     var status = document.createElement("p");
     status.className = "openclass-ridoc-status";
@@ -399,9 +399,9 @@
     card.classList.add("openclass-ridoc-card");
     card.setAttribute("role", "link");
     card.setAttribute("tabindex", "0");
-    card.setAttribute("aria-label", "下载 RIDOC 课程：" + metadata.title);
+    card.setAttribute("aria-label", "Download RIDOC course: " + metadata.title);
     card.replaceChildren();
-    card.appendChild(cardText("openclass-ridoc-card-kicker", "OpenClass · RIDOC 课程"));
+    card.appendChild(cardText("openclass-ridoc-card-kicker", "OpenClass · RIDOC course"));
     card.appendChild(cardText("openclass-ridoc-card-title", metadata.title));
     if (metadata.summary) {
       card.appendChild(cardText("openclass-ridoc-card-summary", metadata.summary));
@@ -419,7 +419,7 @@
     action.className = "openclass-ridoc-card-action";
     action.href = metadata.destination.toString();
     action.setAttribute("download", metadata.fileName || "course.ridoc");
-    action.textContent = "下载课程文件 →";
+    action.textContent = "Download course file →";
     card.appendChild(action);
 
     function openAttachment(event) {

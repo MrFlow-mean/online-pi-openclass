@@ -67,6 +67,14 @@ def decide_board_teaching_turn(
     outline = board_heading_outline_payload(board_markdown)
     if not outline:
         return BoardTeachingDecisionResult()
+    if not has_selection and _explicit_first_section_start(user_message):
+        return BoardTeachingDecisionResult(
+            decision=BoardTeachingTurnDecision(
+                action="start",
+                target_heading="",
+                reason="The learner explicitly requested teaching from the first board section.",
+            )
+        )
     guide = lesson.board_teaching_guide
     progress = lesson.board_teaching_progress
     if adapter is None:
@@ -144,6 +152,21 @@ def _may_be_ordered_teaching_request(message: str) -> bool:
         or re.search(
             r"inorder|stepbystep|start(?:the)?teaching|continueteaching|"
             r"teach(?:the)?next(?:section|item)|restart(?:the)?teaching|teach|explain",
+            normalized,
+        )
+    )
+
+
+def _explicit_first_section_start(message: str) -> bool:
+    normalized = re.sub(r"\s+", "", message or "").casefold()
+    return bool(
+        re.search(
+            r"(?:从)?(?:第一(?:节|章|部分|项)|开头|头)(?:开始)?(?:为我|给我|帮我)?"
+            r"(?:讲|讲解|教学|解释|说明)",
+            normalized,
+        )
+        or re.search(
+            r"(?:start|teach|explain)(?:from|at)?(?:the)?(?:firstsection|beginning|start)",
             normalized,
         )
     )

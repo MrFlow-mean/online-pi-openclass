@@ -137,7 +137,7 @@ function historyNodeContent(commit: CommitRecord) {
   const assistantMessage = metadataText(commit, "assistant_message");
   if (historyNodeKind(commit) === "chat" && (userMessage || assistantMessage)) {
     return [
-      userMessage ? `学习者：${userMessage}` : "",
+      userMessage ? `Learner: ${userMessage}` : "",
       assistantMessage ? `OpenClass：${assistantMessage}` : "",
     ].filter(Boolean).join("\n\n");
   }
@@ -153,9 +153,9 @@ export function historyNodeSelection(lesson: Lesson, commit: CommitRecord): Sele
   const title = historyNodeTitle(commit);
   const excerpt = boundedText(
     [
-      `历史节点：${title}`,
-      `类型：${historyNodeKindLabel(historyNodeKind(commit))}`,
-      `分支：${commit.branch_name}`,
+      `History node: ${title}`,
+      `Type: ${historyNodeKindLabel(historyNodeKind(commit))}`,
+      `Branch: ${commit.branch_name}`,
       "",
       historyNodeContent(commit),
     ].join("\n"),
@@ -168,8 +168,8 @@ export function historyNodeSelection(lesson: Lesson, commit: CommitRecord): Sele
     document_id: commit.snapshot.id,
     segment_id: commit.id,
     heading_path: [lesson.title, title],
-    before_text: `历史节点 ${commit.id}`,
-    after_text: `创建于 ${commit.created_at}`,
+    before_text: `History node ${commit.id}`,
+    after_text: `Created at ${commit.created_at}`,
   };
 }
 
@@ -197,7 +197,7 @@ export function buildHistoryGraphRows(
     if (createdDelta !== 0) {
       return createdDelta;
     }
-    return left.name.localeCompare(right.name, "zh-CN", { numeric: true });
+    return left.name.localeCompare(right.name, "en-US", { numeric: true });
   });
   const currentBranchName = lesson.history_graph.current_branch;
   const lanes = branches.map((branch, index) => ({

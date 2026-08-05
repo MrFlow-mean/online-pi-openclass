@@ -341,20 +341,21 @@ def probe_pdf_toc_from_leading_pages(
             page_start=batch_start,
             page_end=batch_end,
         )
-        nodes_by_page: dict[int, list[PdfTocNode]] = {}
-        for node in extraction.nodes:
-            if node.printed_page < 1:
-                continue
-            nodes_by_page.setdefault(node.toc_page, []).append(node)
-        candidate_pages = sorted(
-            page_no
-            for page_no, nodes in nodes_by_page.items()
-            if len(nodes) >= 2
-            and sum(parse_structural_heading(node.title) is not None for node in nodes) >= 2
-        )
+        candidate_pages = _structural_toc_candidate_pages(extraction)
         if not candidate_pages:
             continue
         start_page = candidate_pages[0]
+        expanded_end = min(page_count, start_page + MAX_OCR_TOC_PAGES - 1)
+        if batch_start != start_page or batch_end != expanded_end:
+            extraction = extract_pdf_toc_from_range(
+                path,
+                page_start=start_page,
+                page_end=expanded_end,
+            )
+            candidate_pages = _structural_toc_candidate_pages(extraction)
+            if not candidate_pages:
+                continue
+            start_page = candidate_pages[0]
         retained_pages = [start_page]
         for page_no in candidate_pages[1:]:
             if page_no > retained_pages[-1] + 1:
@@ -368,6 +369,20 @@ def probe_pdf_toc_from_leading_pages(
             warnings=list(extraction.warnings),
         )
     return PdfTocExtraction()
+
+
+def _structural_toc_candidate_pages(extraction: PdfTocExtraction) -> list[int]:
+    nodes_by_page: dict[int, list[PdfTocNode]] = {}
+    for node in extraction.nodes:
+        if node.printed_page < 1:
+            continue
+        nodes_by_page.setdefault(node.toc_page, []).append(node)
+    return sorted(
+        page_no
+        for page_no, nodes in nodes_by_page.items()
+        if len(nodes) >= 2
+        and sum(parse_structural_heading(node.title) is not None for node in nodes) >= 2
+    )
 
 
 def _toc_page_range(outline: list[PdfOutlineAnchor], *, page_count: int) -> tuple[int, int] | None:

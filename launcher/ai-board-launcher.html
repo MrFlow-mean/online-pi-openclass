@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>开放课堂产品页面</title>
+    <title>OpenClass Product Page</title>
     <style>
       :root {
         color-scheme: light;
@@ -126,21 +126,21 @@
   <body>
     <div class="status" id="status">
       <div class="status__panel">
-        <h1 class="status__title">开放课堂产品页面</h1>
-        <p class="status__desc" id="statusText">正在连接本地前端服务…</p>
+        <h1 class="status__title">OpenClass Product Page</h1>
+        <p class="status__desc" id="statusText">Connecting to the local web service…</p>
         <div class="status__actions">
-          <button class="status__button" id="retryButton" type="button">重新检测</button>
-          <button class="status__button" id="openButton" type="button">直接打开产品页面</button>
+          <button class="status__button" id="retryButton" type="button">Try again</button>
+          <button class="status__button" id="openButton" type="button">Open product page</button>
         </div>
         <div class="status__hint">
-          这个页面本身只是本地启动页，会自动打开可免登录访问的产品课程页。<br />
-          需要进入个人主页或学习工作台时，再从对应入口登录。
+          This local launcher automatically opens the product course page available without signing in.<br />
+          Sign in from the relevant entry when you need your profile or learning workspace.
         </div>
         <div class="status__meta" id="statusMeta"></div>
       </div>
     </div>
 
-    <iframe id="appFrame" title="开放课堂产品页面" allow="microphone; autoplay"></iframe>
+    <iframe id="appFrame" title="OpenClass product page" allow="microphone; autoplay"></iframe>
 
     <script>
       const candidates = ["http://127.0.0.1:3000", "http://localhost:3000"];
@@ -214,7 +214,7 @@
 
       async function connect() {
         const currentToken = ++probeToken;
-        setStatus("正在连接本地前端服务，准备打开产品页面…", "优先检测 127.0.0.1:3000，其次 localhost:3000");
+        setStatus("Connecting to the local web service and preparing the product page…", "Checking 127.0.0.1:3000 first, then localhost:3000");
 
         for (const url of candidates) {
           const ok = await probe(url, 1200);
@@ -237,8 +237,8 @@
         activeUrl = candidates[0];
         ensureRetryLoop();
         setStatus(
-          "还没有检测到本地前端服务。",
-          "先双击 start-ai-board.command。这个启动页会继续自动重试。"
+          "The local web service is not available yet.",
+          "Double-click start-ai-board.command first. This launcher will keep retrying automatically."
         );
       }
 

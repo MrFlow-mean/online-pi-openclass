@@ -4,6 +4,7 @@ import json
 import shutil
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -17,6 +18,7 @@ from app.models import (
     CreateBranchRequest,
     DocumentAIEditRequest,
     DocumentSaveRequest,
+    DocumentSaveDelta,
     DocumentSegmentSearchResponse,
     ManualCommitRequest,
     RestoreCommitRequest,
@@ -48,6 +50,7 @@ from app.services.workspace_state import (
     load_workspace_for_user,
     load_workspace_for_user_with_revision,
     package_view_for_lesson,
+    get_course_store,
     save_workspace_for_user_if_revision,
     search_document_segments_for_user,
 )
@@ -127,20 +130,68 @@ def _board_asset_extension(mime_type: str) -> str:
     }.get(mime_type, ".bin")
 
 
-def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id: str) -> CoursePackageView:
-    workspace, revision = load_workspace_for_user_with_revision(user_id)
+def _document_save_delta(
+    *,
+    package_id: str,
+    lesson,
+    workspace_revision: int,
+    changed: bool,
+) -> DocumentSaveDelta:
+    head = current_head_commit(lesson)
+    return DocumentSaveDelta(
+        lesson_id=lesson.id,
+        package_id=package_id,
+        workspace_revision=workspace_revision,
+        document=lesson.board_document,
+        latest_commit=head,
+        current_branch=lesson.history_graph.current_branch,
+        branch_head_commit_id=head.id,
+        updated_at=lesson.updated_at,
+        changed=changed,
+    )
+
+
+def _legacy_document_package(user_id: str, lesson_id: str) -> CoursePackageView:
+    workspace = load_workspace_for_user(user_id)
     package, lesson = find_lesson_package(workspace, lesson_id)
-    package.active_lesson_id = lesson.id
+    return package_view_for_lesson(workspace, package, lesson.id)
+
+
+def _save_document_request(
+    lesson_id: str,
+    request: DocumentSaveRequest,
+    user_id: str,
+    *,
+    response_mode: Literal["full", "delta"] = "full",
+) -> CoursePackageView | DocumentSaveDelta:
+    context = get_course_store().load_lesson_document_context_for_user(user_id, lesson_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail=f"Unknown lesson {lesson_id}")
+    lesson = context.lesson
     current_head = current_head_commit(lesson)
     is_autosave = request.metadata.get("autosave") is True or request.metadata.get("kind") == "auto_document_save"
     allow_structure_removal = request.metadata.get("structure_removal_intent") is True
     guard_document: BoardDocument | None = None
     if request.base_commit_id and request.base_commit_id != current_head.id:
         if is_autosave:
-            return package_view_for_lesson(workspace, package, lesson.id)
+            if response_mode == "delta":
+                return _document_save_delta(
+                    package_id=context.package_id,
+                    lesson=lesson,
+                    workspace_revision=context.workspace_revision,
+                    changed=False,
+                )
+            return _legacy_document_package(user_id, lesson_id)
         raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
     if not document_changed(lesson.board_document, request.document):
-        return package_view_for_lesson(workspace, package, lesson.id)
+        if response_mode == "delta":
+            return _document_save_delta(
+                package_id=context.package_id,
+                lesson=lesson,
+                workspace_revision=context.workspace_revision,
+                changed=False,
+            )
+        return _legacy_document_package(user_id, lesson_id)
     if is_autosave:
         guard_document = _recent_structured_snapshot_for_autosave(lesson, current_head, request.document) or current_head.snapshot
         if would_flatten_rich_document(
@@ -148,7 +199,14 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
             new_document=request.document,
             allow_structure_removal=allow_structure_removal,
         ):
-            return package_view_for_lesson(workspace, package, lesson.id)
+            if response_mode == "delta":
+                return _document_save_delta(
+                    package_id=context.package_id,
+                    lesson=lesson,
+                    workspace_revision=context.workspace_revision,
+                    changed=False,
+                )
+            return _legacy_document_package(user_id, lesson_id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/document/save",
         lesson=lesson,
@@ -186,7 +244,14 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 restore_head=current_head,
                 updated_at=previous_updated_at,
             )
-            return package_view_for_lesson(workspace, package, lesson.id)
+            if response_mode == "delta":
+                return _document_save_delta(
+                    package_id=context.package_id,
+                    lesson=lesson,
+                    workspace_revision=context.workspace_revision,
+                    changed=False,
+                )
+            return _legacy_document_package(user_id, lesson_id)
         committed_head.metadata.update(
             _document_save_structure_metadata(
                 base_commit_id=request.base_commit_id or current_head.id,
@@ -196,8 +261,22 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 flatten_guard_evaluated=is_autosave,
             )
         )
-        save_workspace_for_user_if_revision(user_id, workspace, expected_revision=revision)
-    return package_view_for_lesson(workspace, package, lesson.id)
+        saved_revision = get_course_store().save_document_for_user_if_head(
+            user_id,
+            lesson,
+            expected_branch_name=lesson.history_graph.current_branch,
+            expected_head_commit_id=current_head.id,
+        )
+        if saved_revision is None:
+            raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
+    if response_mode == "delta":
+        return _document_save_delta(
+            package_id=context.package_id,
+            lesson=lesson,
+            workspace_revision=saved_revision,
+            changed=True,
+        )
+    return _legacy_document_package(user_id, lesson_id)
 
 def _visible_document_text(document: BoardDocument) -> str:
     return " ".join((document.content_text or "").split())
@@ -287,27 +366,40 @@ def manual_commit(
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
-@router.post("/api/lessons/{lesson_id}/document/save", response_model=CoursePackageView)
+@router.post(
+    "/api/lessons/{lesson_id}/document/save",
+    response_model=CoursePackageView | DocumentSaveDelta,
+)
 def save_document(
     lesson_id: str,
     request: DocumentSaveRequest,
+    response_mode: Literal["full", "delta"] = Query("full"),
     user: UserView = Depends(current_user),
-) -> CoursePackageView:
-    return _save_document_request(lesson_id, request, user.id)
+) -> CoursePackageView | DocumentSaveDelta:
+    return _save_document_request(lesson_id, request, user.id, response_mode=response_mode)
 
 
-@router.post("/api/lessons/{lesson_id}/document/save-beacon", response_model=CoursePackageView)
+@router.post(
+    "/api/lessons/{lesson_id}/document/save-beacon",
+    response_model=CoursePackageView | DocumentSaveDelta,
+)
 async def save_document_beacon(
     lesson_id: str,
     request: Request,
+    response_mode: Literal["full", "delta"] = Query("full"),
     user: UserView = Depends(current_user),
-) -> CoursePackageView:
+) -> CoursePackageView | DocumentSaveDelta:
     try:
         payload = json.loads((await request.body()).decode("utf-8"))
         save_request = DocumentSaveRequest.model_validate(payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid document save payload") from exc
-    return _save_document_request(lesson_id, save_request, user.id)
+    return _save_document_request(
+        lesson_id,
+        save_request,
+        user.id,
+        response_mode=response_mode,
+    )
 
 
 @router.post("/api/lessons/{lesson_id}/document/ai-edit", response_model=ChatResponse)

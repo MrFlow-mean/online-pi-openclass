@@ -234,6 +234,31 @@ def resolve_text_model_selection(
         )
 
 
+def text_model_supports_image_inputs(
+    selection: AIModelSelection,
+    *,
+    user_id: str,
+    catalog_builder: Callable[[str], AIModelCatalog] | None = None,
+) -> bool:
+    """Return the frozen catalog capability for the exact selected text model."""
+
+    try:
+        catalog = (catalog_builder or build_model_catalog)(user_id)
+    except Exception:
+        return False
+    matching = [
+        option
+        for option in catalog.text
+        if option.provider == selection.provider
+        and option.model == selection.model
+        and (
+            selection.access_method is None
+            or option.access_method == selection.access_method
+        )
+    ]
+    return bool(matching and all(option.supports_image_inputs for option in matching))
+
+
 def default_realtime_selection() -> AIModelSelection:
     return AIModelSelection(
         provider="openai",
@@ -510,6 +535,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             access_method="platform_credits",
             label=str(item["displayName"]),
             capability="text",
+            supports_image_inputs=True,
             enabled=codex_text_proxy_configured,
             configured=codex_text_proxy_configured,
             default=item["model"] == default_model_id,
@@ -532,6 +558,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
                 access_method="chatgpt_subscription",
                 label=str(item["displayName"]),
                 capability="text",
+                supports_image_inputs=True,
                 enabled=pi_openai_configured,
                 configured=pi_openai_configured,
                 default=item["model"] == default_model_id,

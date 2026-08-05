@@ -14,12 +14,14 @@ import type {
   CodexLoginStatusResponse,
   CodexProviderStatus,
   DocumentAIEditPayload,
+  DocumentSaveDelta,
   DocumentSavePayload,
   EmailCodeRequestResponse,
   EmailRegistrationRequest,
   GoogleRealtimeSessionPayload,
   GoogleRealtimeSessionResponse,
   LessonMergeResolution,
+  LessonWorkspaceDelta,
   LessonMergeSessionView,
   LessonContributionStatus,
   LessonContributionView,
@@ -235,7 +237,7 @@ export function userFacingApiErrorMessage(message: string, fallback: string) {
     return fallback;
   }
   if (MODEL_PROXY_FAILURE_PATTERN.test(normalized)) {
-    return "模型服务连接失败，请稍后重试。";
+    return "The model service connection failed, please try again later.";
   }
   if (GATEWAY_FAILURE_PATTERN.test(normalized)) {
     return fallback;
@@ -449,7 +451,7 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
   if (parsed.event === "error") {
     const message = userFacingApiErrorMessage(
       typeof payload.message === "string" ? payload.message : "",
-      "聊天失败"
+      "Chat failed"
     );
     throw new ChatStreamTransportError(message, "sse");
   }
@@ -477,16 +479,16 @@ async function streamRequest(
     });
   } catch (fetchError) {
     if (isAbortError(fetchError) || options?.signal?.aborted) {
-      throw new ChatStreamTransportError("聊天流已停止", "aborted");
+      throw new ChatStreamTransportError("Chat flow has stopped", "aborted");
     }
-    const message = fetchError instanceof Error ? fetchError.message : "聊天流连接失败";
+    const message = fetchError instanceof Error ? fetchError.message : "Chat stream connection failed";
     throw new ChatStreamTransportError(message, "missing_final");
   }
   if (!response.ok || !response.body) {
     const fallback =
       response.status >= 500
-        ? `聊天服务连接失败（HTTP ${response.status}），请稍后重试。`
-        : `聊天请求失败（HTTP ${response.status}）。`;
+        ? `Could not connect to the chat service (HTTP ${response.status}). Please retry later.`
+        : `Chat request failed (HTTP ${response.status}).`;
     const message = await responseErrorMessage(response, fallback);
     throw new ChatStreamTransportError(message, "http", response.status);
   }
@@ -525,9 +527,9 @@ async function streamRequest(
       throw streamError;
     }
     if (isAbortError(streamError) || options?.signal?.aborted) {
-      throw new ChatStreamTransportError("聊天流已停止", "aborted");
+      throw new ChatStreamTransportError("Chat flow has stopped", "aborted");
     }
-    const message = streamError instanceof Error ? streamError.message : "聊天流连接中断";
+    const message = streamError instanceof Error ? streamError.message : "Chat stream connection interrupted";
     throw new ChatStreamTransportError(message, "missing_final");
   }
   const rest = buffer.trim();
@@ -535,7 +537,7 @@ async function streamRequest(
     handleChatStreamBlock(rest, streamHandlers);
   }
   if (!finalResponse) {
-    throw new ChatStreamTransportError("聊天流没有返回最终结果", "missing_final");
+    throw new ChatStreamTransportError("Chat flow does not return final results", "missing_final");
   }
   return finalResponse;
 }
@@ -783,7 +785,7 @@ export const api = {
     });
   },
   deleteLesson(lessonId: string) {
-    return request<WorkspaceState>(`/api/lessons/${lessonId}/delete`, {
+    return request<LessonWorkspaceDelta>(`/api/lessons/${lessonId}/delete?response_mode=delta`, {
       method: "POST",
     });
   },
@@ -799,10 +801,20 @@ export const api = {
   listPackageSources(packageId: string) {
     return request<SourceIngestionRecord[]>(`/api/packages/${packageId}/sources`);
   },
-  deletePackageSource(packageId: string, sourceId: string) {
-    return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}`, {
+  async deletePackageSource(packageId: string, sourceId: string) {
+    const response = await fetch(`${getApiBase()}/api/packages/${packageId}/sources/${sourceId}`, {
       method: "DELETE",
+      headers: authHeaders(),
+      cache: "no-store",
+      credentials: "include",
     });
+    if (response.status === 404) {
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, `Source removal failed with ${response.status}`));
+    }
+    return response.json() as Promise<SourceIngestionRecord>;
   },
   renamePackageSource(packageId: string, sourceId: string, title: string) {
     return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}`, {
@@ -830,7 +842,7 @@ export const api = {
       cache: "no-store",
     });
     if (!response.ok) {
-      throw new Error(await responseErrorMessage(response, "资料下载失败"));
+      throw new Error(await responseErrorMessage(response, "Data download failed"));
     }
     return response.blob();
   },
@@ -845,7 +857,7 @@ export const api = {
       }
     );
     if (!response.ok) {
-      throw new Error(await responseErrorMessage(response, "板书图片读取失败"));
+      throw new Error(await responseErrorMessage(response, "Failed to read board picture"));
     }
     return response.blob();
   },
@@ -875,6 +887,16 @@ export const api = {
     return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog/rebuild`, {
       method: "POST",
       body: formData,
+    });
+  },
+  refinePackageSourceCatalog(packageId: string, sourceId: string) {
+    return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog/refine`, {
+      method: "POST",
+    });
+  },
+  pausePackageSourceCatalog(packageId: string, sourceId: string) {
+    return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog/pause`, {
+      method: "POST",
     });
   },
   getGitHubConnectionStatus() {
@@ -965,11 +987,11 @@ export const api = {
             options.onUploadProgress?.(100);
             resolve(JSON.parse(request.responseText) as SourceIngestionRecord);
           } catch {
-            reject(new Error("资料上传成功，但服务器返回了无效状态。"));
+            reject(new Error("The data was uploaded successfully, but the server returned an invalid status."));
           }
         });
-        request.addEventListener("error", () => reject(new Error("资料上传失败，请检查网络后重试。")));
-        request.addEventListener("abort", () => reject(new Error("资料上传已取消。")));
+        request.addEventListener("error", () => reject(new Error("Source upload failed. Check your connection and try again.")));
+        request.addEventListener("abort", () => reject(new Error("Source upload was canceled.")));
         request.send(formData);
       });
     }
@@ -993,7 +1015,7 @@ export const api = {
       targetPackageId?: string | null;
     } = {}
   ) {
-    return request<CoursePackage>("/api/lessons/generate", {
+    return request<LessonWorkspaceDelta>("/api/lessons/generate?response_mode=delta", {
       method: "POST",
       body: JSON.stringify({
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1004,7 +1026,7 @@ export const api = {
     });
   },
   saveDocument(lessonId: string, payload: DocumentSavePayload) {
-    return request<CoursePackage>(`/api/lessons/${lessonId}/document/save`, {
+    return request<DocumentSaveDelta>(`/api/lessons/${lessonId}/document/save?response_mode=delta`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -1015,12 +1037,12 @@ export const api = {
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "text/plain;charset=UTF-8" });
     return navigator.sendBeacon(
-      `${getApiBase()}/api/lessons/${lessonId}/document/save-beacon`,
+      `${getApiBase()}/api/lessons/${lessonId}/document/save-beacon?response_mode=delta`,
       blob
     );
   },
   saveDocumentKeepalive(lessonId: string, payload: DocumentSavePayload) {
-    return fetch(`${getApiBase()}/api/lessons/${lessonId}/document/save`, {
+    return fetch(`${getApiBase()}/api/lessons/${lessonId}/document/save?response_mode=delta`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
@@ -1352,7 +1374,7 @@ export const api = {
     });
   },
   closeLesson(lessonId: string) {
-    return request<CoursePackage>(`/api/lessons/${lessonId}/close`, {
+    return request<LessonWorkspaceDelta>(`/api/lessons/${lessonId}/close?response_mode=delta`, {
       method: "POST",
     });
   },
@@ -1369,6 +1391,27 @@ export const api = {
     options?: { signal?: AbortSignal }
   ) {
     return streamRequest(`/api/lessons/${lessonId}/chat/stream`, payload, handlers, options);
+  },
+  cancelChatOnLesson(
+    lessonId: string,
+    payload: { session_id: string; input_event_id: string }
+  ) {
+    return request<{ status: "cancel_requested"; active: boolean }>(
+      `/api/lessons/${encodeURIComponent(lessonId)}/chat/cancel`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+  getChatTurnStatus(
+    lessonId: string,
+    payload: { session_id: string; input_event_id: string }
+  ) {
+    const query = new URLSearchParams(payload);
+    return request<{ status: "running" | "finished" }>(
+      `/api/lessons/${encodeURIComponent(lessonId)}/chat/status?${query.toString()}`
+    );
   },
   connectRealtime(lessonId: string, payload: RealtimeConnectPayload) {
     return request<RealtimeConnectResponse>(`/api/lessons/${lessonId}/realtime/connect`, {

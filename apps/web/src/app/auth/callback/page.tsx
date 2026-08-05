@@ -3,8 +3,8 @@ import type { Metadata } from "next";
 import { AuthCallback } from "@/components/auth-callback";
 
 export const metadata: Metadata = {
-  title: "正在登录",
-  description: "完成开放课堂第三方账号登录。",
+  title: "Signing In",
+  description: "Complete sign-in with a connected account.",
 };
 
 type AuthCallbackPageProps = {

@@ -42,6 +42,15 @@ content.
 - unclear: the available message and recent conversation do not establish whether there is a
   learning or work goal.
 
+Set learning_flow independently from the broad intent:
+- teach: the learner asks to learn, practise, receive an explanation or answer, ask a question
+  about learning material, or research supplied material.
+- generate_only: the learner explicitly asks only to create the board and explicitly does not
+  want an explanation in this turn.
+- none: ordinary conversation, unclear intent, or a work/edit action that is not a teaching flow.
+An explicit request to generate only takes priority over the usual teaching default. Do not rely
+on the literal phrase "generate board" to identify teach; infer the semantic learning request.
+
 Set relation_to_active only from explicit conversational evidence: continue, supplement, replace,
 new_task, or unresolved. Use none when there is no active-task relationship. The backend controls
 board_access and continuation; do not request board access.
@@ -154,8 +163,16 @@ def evaluate_turn_gate(
     adapter = build_ai_execution_adapter(selection, owner_user_id=user_id)
     explicit_signals = _explicit_learning_signals(envelope)
     if explicit_signals:
+        learning_flow = (
+            "teach"
+            if envelope.explicit_action in {"teaching_continue", "teaching_restart"}
+            else "generate_only"
+            if envelope.explicit_action == "board_generation"
+            else "none"
+        )
         decision = TurnDecision(
             intent="learning_need",
+            learning_flow=learning_flow,
             board_access="state_check_only",
             reason="An explicit user control requests a learning or document action.",
         )
@@ -176,6 +193,11 @@ def evaluate_turn_gate(
         parsed_decision = TurnDecision.model_validate(response.output_parsed)
         decision = parsed_decision.model_copy(
             update={
+                "learning_flow": (
+                    parsed_decision.learning_flow
+                    if parsed_decision.intent == "learning_need"
+                    else "none"
+                ),
                 "continuation": "none",
                 "board_access": (
                     "state_check_only"

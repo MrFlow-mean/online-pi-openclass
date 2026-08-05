@@ -65,7 +65,7 @@ export function useLessonHistory({
       });
       setNewBranchName("");
     } catch (branchError) {
-      setError(branchError instanceof Error ? branchError.message : "创建分支失败");
+      setError(branchError instanceof Error ? branchError.message : "Failed to create branch");
     } finally {
       setBusyAction(null);
     }
@@ -114,7 +114,7 @@ export function useLessonHistory({
         rebuildMessageLessonIds: [activeLesson.id],
       });
     } catch (branchError) {
-      setError(branchError instanceof Error ? branchError.message : "切换分支失败");
+      setError(branchError instanceof Error ? branchError.message : "Failed to switch branches");
     } finally {
       setBusyAction(null);
     }
@@ -135,7 +135,7 @@ export function useLessonHistory({
         rebuildMessageLessonIds: [activeLesson.id],
       });
     } catch (restoreError) {
-      setError(restoreError instanceof Error ? restoreError.message : "恢复版本失败");
+      setError(restoreError instanceof Error ? restoreError.message : "Restore version failed");
     } finally {
       setBusyAction(null);
     }

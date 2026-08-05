@@ -19,6 +19,12 @@ from app.services import source_directory_processor as directory_processor_modul
 from app.services import source_codex_catalog as source_codex_catalog_module
 from app.services import source_codex_pdf_mapping as pdf_mapping_module
 from app.services.source_codex_catalog import (
+    AgentCatalogDirectoryEvidence,
+    AgentCatalogNode,
+    AgentCatalogPageRange,
+    AgentCatalogPaginationRegime,
+    AgentCatalogV3,
+    AgentCatalogV3Node,
     CodexDirectCatalog,
     CodexDirectCatalogEvidence,
     CodexDirectCatalogNode,
@@ -29,6 +35,7 @@ from app.services.source_codex_catalog import (
     SourcePdfDirectoryTask,
     SourcePdfPageOffsetAnchor,
     generate_codex_direct_catalog,
+    generate_agent_catalog_turn,
     generate_directory_only_catalog,
     materialize_stored_codex_catalog,
 )
@@ -82,6 +89,58 @@ def _catalog(*nodes: CodexDirectCatalogNode) -> CodexDirectCatalog:
     return CodexDirectCatalog(complete=True, nodes=list(nodes))
 
 
+def _agent_catalog(
+    *nodes: AgentCatalogNode,
+    work_state: str = "satisfied",
+    summary: str = "usable snapshot",
+    next_plan: str = "",
+    next_action: str | None = None,
+) -> AgentCatalogV3:
+    terminal = work_state in {"satisfied", "partial"}
+    return AgentCatalogV3(
+        schema_version="agent_catalog_v3",
+        phase="terminal" if terminal else "directory_discovery",
+        directory_status="complete" if terminal else "incomplete",
+        index_status="complete" if work_state == "satisfied" else "partial" if work_state == "partial" else "pending",
+        work_state=work_state,
+        summary=summary,
+        next_plan=next_plan,
+        next_action=(
+            next_action or "inspect one bounded directory gap"
+            if work_state == "working"
+            else ""
+        ),
+        stop_reason="Partial catalog." if work_state == "partial" else "",
+        completion_reason="Authored navigation exhausted." if terminal else "",
+        directory_evidence=(
+            [AgentCatalogDirectoryEvidence(kind="native_navigation_exhausted", detail="All authored items were traversed.")]
+            if terminal
+            else []
+        ),
+        nodes=[
+            node
+            if isinstance(node, AgentCatalogV3Node)
+            else AgentCatalogV3Node(
+                **node.model_dump(mode="python"),
+                locator_source=("legacy_range" if node.source_range else "unmapped"),
+            )
+            for node in nodes
+        ],
+    )
+
+
+def _complete_staged_catalog(*nodes: CodexDirectCatalogNode) -> AgentCatalogV3:
+    return _agent_catalog(
+        *[
+            AgentCatalogV3Node(
+                **node.model_dump(mode="python"),
+                locator_source="native_navigation",
+            )
+            for node in nodes
+        ]
+    )
+
+
 def _pdf_range(start: int, end: int) -> CodexDirectSourceRange:
     return CodexDirectSourceRange(
         kind="pdf_pages",
@@ -115,6 +174,7 @@ class FakeSourceCodexClient:
         raw_output: str | None = None,
         source_sha256: str = "a" * 64,
         source_turn_count: int = 1,
+        tool_activity: list[dict[str, object]] | None = None,
     ) -> None:
         self.output_parsed = output_parsed
         self.raw_output = (
@@ -124,6 +184,7 @@ class FakeSourceCodexClient:
         )
         self.source_sha256 = source_sha256
         self.source_turn_count = source_turn_count
+        self.tool_activity = tool_activity or []
         self.calls: list[dict[str, object]] = []
 
     def parse_source_file(self, **kwargs):
@@ -138,6 +199,7 @@ class FakeSourceCodexClient:
             activity=[],
             source_sha256=self.source_sha256,
             source_turn_count=self.source_turn_count,
+            tool_activity=self.tool_activity,
         )
 
 
@@ -495,7 +557,7 @@ def test_source_codex_materializes_exact_authored_pdf_ranges(tmp_path: Path) -> 
     assert all(chapter.metadata["source_range_authority"] == "source_pi" for chapter in result.chapters)
 
 
-def test_source_codex_validator_rejects_a_child_outside_its_authored_parent(
+def test_source_codex_rejects_child_range_outside_parent_before_completion(
     tmp_path: Path,
 ) -> None:
     import fitz
@@ -521,7 +583,7 @@ def test_source_codex_validator_rejects_a_child_outside_its_authored_parent(
         source_sha256=content_hash,
     )
 
-    with pytest.raises(SourceCodexCatalogError, match="outside.*parent"):
+    with pytest.raises(SourceCodexCatalogError, match="child range falls outside"):
         generate_codex_direct_catalog(
             record=_record(path),
             source_path=path,
@@ -529,6 +591,188 @@ def test_source_codex_validator_rejects_a_child_outside_its_authored_parent(
             selection=_model(),
             client_factory=lambda _user_id: client,
         )
+
+
+def test_source_codex_rejects_catalog_shorter_than_native_pdf_outline(
+    tmp_path: Path,
+) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "outlined.pdf"
+    writer = PdfWriter()
+    for _ in range(5):
+        writer.add_blank_page(width=500, height=700)
+    writer.add_outline_item("First", 0)
+    writer.add_outline_item("Second", 1)
+    writer.add_outline_item("Third", 2)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    client = FakeSourceCodexClient(
+        _catalog(
+            _node(
+                "first",
+                title="First",
+                source_range=_pdf_range(1, 5),
+                evidence=_pdf_evidence(1),
+            )
+        ),
+        source_sha256=content_hash,
+    )
+
+    with pytest.raises(SourceCodexCatalogError, match="contains 1 nodes.*at least 3"):
+        generate_codex_direct_catalog(
+            record=_record(path),
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: client,
+        )
+
+
+def test_pdf_completeness_witness_rejects_numeric_bookmarks_and_prefers_printed_toc(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from app.services import pdf_toc_parser
+    from pypdf import PdfWriter
+
+    path = tmp_path / "numeric-bookmarks.pdf"
+    writer = PdfWriter()
+    for _ in range(12):
+        writer.add_blank_page(width=500, height=700)
+    for page_index in range(8):
+        writer.add_outline_item(str(page_index + 1), page_index)
+    with path.open("wb") as stream:
+        writer.write(stream)
+
+    printed_nodes = [
+        pdf_toc_parser.PdfTocNode(
+            title=title,
+            printed_page=index + 1,
+            toc_page=2,
+            level=level,
+        )
+        for index, (title, level) in enumerate(
+            [
+                ("第一章 总论", 1),
+                ("第一节 基础", 2),
+                ("第二节 方法", 2),
+                ("第二章 应用", 1),
+            ]
+        )
+    ]
+    monkeypatch.setattr(
+        pdf_toc_parser,
+        "probe_pdf_toc_from_leading_pages",
+        lambda *_args, **_kwargs: pdf_toc_parser.PdfTocExtraction(
+            nodes=printed_nodes,
+            toc_page_start=2,
+            toc_page_end=3,
+        ),
+    )
+
+    witness = source_codex_catalog_module._catalog_completeness_witness(path)
+
+    assert witness.source == "PDF printed table of contents"
+    assert witness.expected_node_count == 4
+    assert witness.sample_titles[-1] == "第二章 应用"
+
+
+def test_complete_native_pdf_preflight_defers_to_a_richer_printed_toc(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "coarse-outline.pdf"
+    writer = PdfWriter()
+    for _ in range(20):
+        writer.add_blank_page(width=500, height=700)
+    writer.add_outline_item("Chapter One", 0)
+    writer.add_outline_item("Chapter Two", 10)
+    writer.add_outline_item("Appendix", 19)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    monkeypatch.setattr(
+        source_codex_catalog_module,
+        "_pdf_printed_toc_witness",
+        lambda _path: source_codex_catalog_module.SourceCatalogCompletenessWitness(
+            source="PDF printed table of contents",
+            expected_node_count=12,
+            sample_titles=("1.1 Scope", "Appendix A"),
+        ),
+    )
+
+    result = source_codex_catalog_module._generate_complete_native_pdf_catalog(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
+        on_activity=None,
+    )
+
+    assert result is None
+
+
+def test_native_pdf_ranges_expand_parents_to_contain_same_page_descendants(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "same-page-boundaries.pdf"
+    _write_pdf(path, page_count=12)
+    catalog = AgentCatalogV3(
+        schema_version="agent_catalog_v3",
+        phase="terminal",
+        directory_status="complete",
+        index_status="pending",
+        work_state="working",
+        nodes=[
+            AgentCatalogV3Node(
+                key="parent",
+                parent_key=None,
+                number="1",
+                title="Parent",
+                level=1,
+                native_pdf_page=1,
+                locator_source="native_navigation",
+            ),
+            AgentCatalogV3Node(
+                key="child.one",
+                parent_key="parent",
+                number="1.1",
+                title="First child",
+                level=2,
+                native_pdf_page=2,
+                locator_source="native_navigation",
+            ),
+            AgentCatalogV3Node(
+                key="child.two",
+                parent_key="parent",
+                number="1.2",
+                title="Last child",
+                level=2,
+                native_pdf_page=5,
+                locator_source="native_navigation",
+            ),
+            AgentCatalogV3Node(
+                key="next",
+                parent_key=None,
+                number="2",
+                title="Next root on the same page",
+                level=1,
+                native_pdf_page=5,
+                locator_source="native_navigation",
+            ),
+        ],
+    )
+
+    resolved = source_codex_catalog_module._resolve_agent_pdf_ranges(
+        catalog,
+        source_path=path,
+    )
+
+    assert (resolved["parent"][0].start, resolved["parent"][0].end) == (1, 5)
+    assert (resolved["child.two"][0].start, resolved["child.two"][0].end) == (5, 5)
+    assert (resolved["next"][0].start, resolved["next"][0].end) == (5, 12)
 
 
 def test_source_codex_validates_and_materializes_epub_spine_ranges(tmp_path: Path) -> None:
@@ -766,10 +1010,6 @@ def test_native_outline_matches_control_characters_split_numbers_and_reordering(
             ],
             "parent-consistent preorder",
         ),
-        (
-            [_node("root", title=" padded")],
-            "leading or trailing whitespace",
-        ),
     ],
 )
 def test_source_codex_rejects_invalid_directory_structure(
@@ -779,6 +1019,24 @@ def test_source_codex_rejects_invalid_directory_structure(
 ) -> None:
     with pytest.raises(SourceCodexCatalogError, match=message):
         _generate(tmp_path, _catalog(*nodes))
+
+
+def test_source_codex_rejects_text_padding_before_materialization(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SourceCodexCatalogError, match="leading or trailing whitespace"):
+        _generate(
+            tmp_path,
+            _catalog(
+                _node(
+                    "root",
+                    number=" 1 ",
+                    title=" Padded title ",
+                    source_locator=" printed-page:1 ",
+                    mapping_reason=" Located in the source. ",
+                )
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -907,7 +1165,7 @@ def test_source_codex_rejects_empty_complete_catalog(tmp_path: Path) -> None:
         _generate(tmp_path, _catalog())
 
 
-def test_source_codex_rejects_catalog_shorter_than_native_pdf_outline(
+def test_source_codex_rejects_catalog_below_native_outline_count(
     tmp_path: Path,
 ) -> None:
     from pypdf import PdfWriter
@@ -1001,6 +1259,725 @@ def test_source_codex_rejects_unsupported_or_mismatched_suffix(tmp_path: Path) -
         )
 
 
+def test_agent_catalog_v3_keeps_unmapped_nodes_only_while_a_bounded_gap_remains(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _agent_catalog(
+        AgentCatalogNode(
+            key="subject.contracts",
+            parent_key=None,
+            number="I",
+            title="Contracts",
+            level=1,
+        ),
+        AgentCatalogNode(
+            key="subject.contracts.offer",
+            parent_key="subject.contracts",
+            number="A",
+            title="Offer",
+            level=2,
+        ),
+        work_state="working",
+        next_plan="Inspect the next authored contents pages.",
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+
+    result = generate_agent_catalog_turn(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert result.work_state == "working"
+    assert [chapter.mapping_status for chapter in result.chapters] == ["unmapped", "unmapped"]
+    assert result.catalog_payload and result.catalog_payload["schema_version"] == "agent_catalog_v3"
+    assert client.calls[0]["inspection_scope"] == "catalog_v3"
+    prompt = str(client.calls[0]["system_prompt"])
+    assert "You own the investigation route" in prompt
+    assert "Publish useful directory nodes even before they are citable" in prompt
+    assert "Normally inspect native PDF navigation first" in prompt
+    assert "pdf_file_page - printed_page + 1 = P" in prompt
+    assert "Do not call source_range_preview for a mechanically covered node" in prompt
+
+
+def test_agent_catalog_v3_materializes_native_navigation_ranges(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _agent_catalog(
+        AgentCatalogV3Node(
+            key="chapter.1",
+            parent_key=None,
+            number="1",
+            title="First chapter",
+            level=1,
+            native_pdf_page=5,
+            locator_source="native_navigation",
+        ),
+        AgentCatalogV3Node(
+            key="chapter.1.section",
+            parent_key="chapter.1",
+            number="1.1",
+            title="First section",
+            level=2,
+            native_pdf_page=10,
+            locator_source="native_navigation",
+        ),
+        AgentCatalogV3Node(
+            key="chapter.2",
+            parent_key=None,
+            number="2",
+            title="Second chapter",
+            level=1,
+            native_pdf_page=20,
+            locator_source="native_navigation",
+        ),
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+
+    result = generate_agent_catalog_turn(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [
+        (5, 19),
+        (10, 19),
+        (20, 60),
+    ]
+    assert all(chapter.mapping_status == "verified" for chapter in result.chapters)
+    assert all(chapter.metadata["locator_source"] == "native_navigation" for chapter in result.chapters)
+    assert result.audit_metadata["host_pdf_range_count"] == 3
+
+
+def test_agent_catalog_v3_preserves_an_agent_authored_pdf_range(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _agent_catalog(
+        AgentCatalogV3Node(
+            key="chapter.1",
+            parent_key=None,
+            number="1",
+            title="First chapter",
+            level=1,
+            native_pdf_page=5,
+            locator_source="legacy_range",
+            mapping_status="verified",
+            mapping_reason="The Agent verified the authored range.",
+            source_range=_pdf_range(7, 12),
+            evidence=_pdf_evidence(7),
+        ),
+        AgentCatalogV3Node(
+            key="chapter.2",
+            parent_key=None,
+            number="2",
+            title="Second chapter",
+            level=1,
+            native_pdf_page=20,
+            locator_source="native_navigation",
+        ),
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+
+    result = generate_agent_catalog_turn(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [
+        (7, 12),
+        (20, 60),
+    ]
+    assert result.audit_metadata["host_pdf_range_count"] == 1
+
+
+def _segmented_p_catalog() -> AgentCatalogV3:
+    regimes = [
+        AgentCatalogPaginationRegime(
+            id="front",
+            printed_page_start=1,
+            printed_page_end=21,
+            page_offset_p=5,
+            anchors=[
+                SourcePdfPageOffsetAnchor(pdf_file_page=5, printed_page=1),
+                SourcePdfPageOffsetAnchor(pdf_file_page=15, printed_page=11),
+                SourcePdfPageOffsetAnchor(pdf_file_page=25, printed_page=21),
+            ],
+        ),
+        AgentCatalogPaginationRegime(
+            id="restart",
+            printed_page_start=1,
+            printed_page_end=21,
+            page_offset_p=55,
+            anchors=[
+                SourcePdfPageOffsetAnchor(pdf_file_page=55, printed_page=1),
+                SourcePdfPageOffsetAnchor(pdf_file_page=65, printed_page=11),
+                SourcePdfPageOffsetAnchor(pdf_file_page=75, printed_page=21),
+            ],
+        ),
+    ]
+    nodes = [
+        AgentCatalogV3Node(
+            key="first",
+            parent_key=None,
+            number="1",
+            title="First",
+            level=1,
+            directory_page=2,
+            printed_page=1,
+            pagination_regime_id="front",
+            locator_source="printed_directory",
+        ),
+        AgentCatalogV3Node(
+            key="second",
+            parent_key=None,
+            number="2",
+            title="Second",
+            level=1,
+            directory_page=3,
+            printed_page=21,
+            pagination_regime_id="front",
+            locator_source="printed_directory",
+        ),
+        AgentCatalogV3Node(
+            key="third",
+            parent_key=None,
+            number="3",
+            title="Third",
+            level=1,
+            directory_page=50,
+            printed_page=1,
+            pagination_regime_id="restart",
+            locator_source="printed_directory",
+        ),
+        AgentCatalogV3Node(
+            key="fourth",
+            parent_key=None,
+            number="4",
+            title="Fourth",
+            level=1,
+            directory_page=51,
+            printed_page=21,
+            pagination_regime_id="restart",
+            locator_source="printed_directory",
+        ),
+    ]
+    return AgentCatalogV3(
+        schema_version="agent_catalog_v3",
+        phase="terminal",
+        directory_status="complete",
+        index_status="complete",
+        work_state="satisfied",
+        summary="Complete printed directory.",
+        completion_reason="Both directory ranges end before body content.",
+        directory_evidence=[
+            AgentCatalogDirectoryEvidence(kind="printed_directory_start", detail="First directory page verified.", page_start=2, page_end=2),
+            AgentCatalogDirectoryEvidence(kind="directory_page_continuity", detail="Both directory ranges are continuous."),
+            AgentCatalogDirectoryEvidence(kind="printed_directory_end", detail="Last directory page verified.", page_start=51, page_end=51),
+        ],
+        directory_page_ranges=[AgentCatalogPageRange(start=2, end=3), AgentCatalogPageRange(start=50, end=51)],
+        pagination_regimes=regimes,
+        nodes=nodes,
+    )
+
+
+def test_agent_catalog_v3_materializes_verified_segmented_p_regimes(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path, page_count=100)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _segmented_p_catalog().model_copy(
+        update={
+            "phase": "range_mapping",
+            "index_status": "in_progress",
+            "work_state": "working",
+            "next_plan": "Preview every remaining body range.",
+            "next_action": "read the next body pages",
+            "completion_reason": "",
+        }
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+
+    result = generate_agent_catalog_turn(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [
+        (5, 24),
+        (25, 54),
+        (55, 74),
+        (75, 100),
+    ]
+    assert all(chapter.mapping_status == "verified" for chapter in result.chapters)
+    assert result.work_state == "satisfied"
+    assert result.audit_metadata["pdf_ranges_materialized_by_host"] is True
+    assert result.audit_metadata["host_pdf_range_count"] == 4
+    assert result.catalog_payload is not None
+    assert [item["page_offset_p"] for item in result.catalog_payload["pagination_regimes"]] == [5, 55]
+    assert all(node["mapping_status"] == "verified" for node in result.catalog_payload["nodes"])
+
+
+def test_agent_catalog_v3_assigns_one_unambiguous_p_regime_without_body_reads(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path, page_count=60)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = AgentCatalogV3(
+        schema_version="agent_catalog_v3",
+        phase="range_mapping",
+        directory_status="complete",
+        index_status="in_progress",
+        work_state="working",
+        summary="Printed directory and exact P are available.",
+        directory_evidence=[
+            AgentCatalogDirectoryEvidence(kind="printed_directory_start", detail="Start verified."),
+            AgentCatalogDirectoryEvidence(kind="directory_page_continuity", detail="Continuity verified."),
+            AgentCatalogDirectoryEvidence(kind="printed_directory_end", detail="End verified."),
+        ],
+        directory_page_ranges=[AgentCatalogPageRange(start=2, end=3)],
+        pagination_regimes=[
+            AgentCatalogPaginationRegime(
+                id="body",
+                printed_page_start=1,
+                printed_page_end=41,
+                page_offset_p=5,
+                anchors=[
+                    SourcePdfPageOffsetAnchor(pdf_file_page=5, printed_page=1),
+                    SourcePdfPageOffsetAnchor(pdf_file_page=25, printed_page=21),
+                    SourcePdfPageOffsetAnchor(pdf_file_page=45, printed_page=41),
+                ],
+            )
+        ],
+        nodes=[
+            AgentCatalogV3Node(
+                key="one",
+                parent_key=None,
+                number="1",
+                title="One",
+                level=1,
+                directory_page=2,
+                printed_page=1,
+                locator_source="printed_directory",
+            ),
+            AgentCatalogV3Node(
+                key="two",
+                parent_key=None,
+                number="2",
+                title="Two",
+                level=1,
+                directory_page=3,
+                printed_page=41,
+                locator_source="printed_directory",
+            ),
+        ],
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+
+    result = generate_agent_catalog_turn(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [(5, 44), (45, 60)]
+    assert result.work_state == "satisfied"
+    assert result.audit_metadata["host_pdf_range_count"] == 2
+    assert result.catalog_payload is not None
+    assert {node["pagination_regime_id"] for node in result.catalog_payload["nodes"]} == {"body"}
+    assert client.tool_activity == []
+
+
+def test_first_citable_partial_snapshot_is_published_with_typed_remaining_work(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _agent_catalog(
+        AgentCatalogV3Node(
+            key="verified",
+            parent_key=None,
+            number="1",
+            title="Verified",
+            level=1,
+            locator_source="legacy_range",
+            mapping_status="verified",
+            mapping_reason="Published exact range.",
+            source_range=_pdf_range(5, 10),
+            evidence=_pdf_evidence(5),
+        ),
+        AgentCatalogV3Node(
+            key="pending",
+            parent_key=None,
+            number="2",
+            title="Pending",
+            level=1,
+        ),
+        work_state="working",
+    )
+
+    result = generate_agent_catalog_turn(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: FakeSourceCodexClient(catalog, source_sha256=content_hash),
+    )
+
+    assert result.catalog_payload is not None
+    assert result.catalog_payload["snapshot_reason"] == "first_citable"
+    assert result.catalog_payload["work_state"] == "working"
+    assert result.catalog_payload["remaining_work"]
+    assert [chapter.mapping_status for chapter in result.chapters] == ["verified", "unmapped"]
+
+
+def test_two_unchanged_continuation_turns_pause_the_catalog(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    current = _agent_catalog(
+        AgentCatalogNode(key="pending", parent_key=None, number="1", title="Pending", level=1),
+        work_state="working",
+    )
+    checkpoint: dict[str, object] | None = None
+
+    for _turn in range(3):
+        result = generate_agent_catalog_turn(
+            record=_record(path),
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            initial_catalog=checkpoint,
+            client_factory=lambda _user_id, catalog=current: FakeSourceCodexClient(
+                catalog,
+                source_sha256=content_hash,
+            ),
+        )
+        assert result.catalog_payload is not None
+        checkpoint = result.catalog_payload
+        current = AgentCatalogV3.model_validate(checkpoint)
+
+    assert result.work_state == "paused"
+    assert result.catalog_payload["no_progress_turns"] == 2
+    assert "two consecutive turns" in result.stop_reason
+
+
+def test_agent_catalog_v3_rejects_inexact_or_overlapping_p_regimes(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path, page_count=100)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    inexact = _segmented_p_catalog()
+    inexact.pagination_regimes[1].anchors[2] = SourcePdfPageOffsetAnchor(pdf_file_page=76, printed_page=21)
+    with pytest.raises(SourceCodexCatalogError, match="exact P equation"):
+        generate_agent_catalog_turn(
+            record=_record(path),
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: FakeSourceCodexClient(inexact, source_sha256=content_hash),
+        )
+
+    overlapping = _segmented_p_catalog()
+    overlapping.pagination_regimes[1] = AgentCatalogPaginationRegime(
+        id="restart",
+        printed_page_start=1,
+        printed_page_end=21,
+        page_offset_p=20,
+        anchors=[
+            SourcePdfPageOffsetAnchor(pdf_file_page=20, printed_page=1),
+            SourcePdfPageOffsetAnchor(pdf_file_page=30, printed_page=11),
+            SourcePdfPageOffsetAnchor(pdf_file_page=40, printed_page=21),
+        ],
+    )
+    with pytest.raises(SourceCodexCatalogError, match="must not overlap"):
+        generate_agent_catalog_turn(
+            record=_record(path),
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: FakeSourceCodexClient(overlapping, source_sha256=content_hash),
+        )
+
+
+def test_agent_catalog_v2_rejects_only_invalid_located_range(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _agent_catalog(
+        AgentCatalogNode(
+            key="bad.range",
+            parent_key=None,
+            number="1",
+            title="Invalid located node",
+            level=1,
+            mapping_status="verified",
+            source_range=_pdf_range(1, 999),
+        )
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+
+    with pytest.raises(SourceCodexCatalogError, match="outside the physical PDF pages"):
+        generate_agent_catalog_turn(
+            record=_record(path),
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: client,
+        )
+
+
+def test_staged_processor_rebuilds_catalog_with_stable_chapter_ids(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _complete_staged_catalog(
+            _node(
+                "stable.root",
+                number="I",
+                title="Complete",
+                source_range=_pdf_range(5, 44),
+                evidence=_pdf_evidence(5),
+            ),
+        ),
+        source_sha256=content_hash,
+    )
+    result = generate_agent_catalog_turn(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    calls = 0
+
+    def run_complete_catalog(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return result
+
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_agent_catalog_turn",
+        run_complete_catalog,
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    published_ids: list[list[str]] = []
+    real_publish = store.publish_catalog
+
+    def capture_publish(**kwargs):
+        published_ids.append([chapter.id for chapter in kwargs["chapters"]])
+        return real_publish(**kwargs)
+
+    monkeypatch.setattr(store, "publish_catalog", capture_publish)
+
+    processor = SourceDirectoryProcessor(store=store)
+    first_structure = processor.process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    structure = processor.process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+        resume_catalog=True,
+    )
+
+    assert first_structure.catalog_version == 1
+    assert structure.catalog_version == 2
+    assert calls == 2
+    assert published_ids[0][0] == published_ids[1][0]
+    view = store.get_catalog_view(source=record)
+    assert view.work_state == "satisfied"
+    assert view.directory_status == "complete"
+    assert view.index_status == "complete"
+    assert view.unresolved_node_count == 0
+    assert view.remaining_work_count == 0
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+    assert {run.catalog_version for run in runs} == {1, 2}
+    assert all(run.status == "succeeded" for run in runs)
+    assert all(run.metadata.get("agent_catalog_payload") is not None for run in runs)
+
+
+def test_staged_processor_does_not_publish_until_directory_is_complete(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    incomplete_client = FakeSourceCodexClient(
+        _agent_catalog(
+            AgentCatalogNode(
+                key="chapter.1",
+                parent_key=None,
+                number="1",
+                title="First",
+                level=1,
+            ),
+            work_state="working",
+            next_action="inspect the remaining authored directory pages",
+        ),
+        source_sha256=content_hash,
+    )
+    complete_client = FakeSourceCodexClient(
+        _complete_staged_catalog(
+            _node(
+                "chapter.1",
+                number="1",
+                title="First",
+                source_range=_pdf_range(5, 44),
+                evidence=_pdf_evidence(5),
+            )
+        ),
+        source_sha256=content_hash,
+    )
+    results = [
+        generate_agent_catalog_turn(
+            record=record,
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: incomplete_client,
+        ),
+        generate_agent_catalog_turn(
+            record=record,
+            source_path=path,
+            source_content_hash=content_hash,
+            selection=_model(),
+            client_factory=lambda _user_id: complete_client,
+        ),
+    ]
+    calls = 0
+
+    def next_turn(**_kwargs):
+        nonlocal calls
+        result = results[calls]
+        calls += 1
+        return result
+
+    monkeypatch.setattr(directory_processor_module, "generate_agent_catalog_turn", next_turn)
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+
+    assert calls == 2
+    assert structure.catalog_version == 1
+    assert structure.metadata["directory_status"] == "complete"
+    assert store.get_catalog_view(source=record).chapters[0].title == "First"
+
+
+def test_complete_native_navigation_keeps_agent_nodes_and_materializes_their_ranges(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(60):
+        writer.add_blank_page(width=500, height=700)
+    first = writer.add_outline_item("第一章 Root", 4)
+    writer.add_outline_item("1.1 Child", 9, parent=first)
+    writer.add_outline_item("第二章 Next", 19)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _agent_catalog(
+            AgentCatalogV3Node(
+                key="model.truncated",
+                parent_key=None,
+                number="第一章",
+                title="Root",
+                level=1,
+                native_pdf_page=5,
+                locator_source="native_navigation",
+            ),
+        ),
+        source_sha256=content_hash,
+        tool_activity=[{"tool": "pdf_navigation", "item_count": 3}],
+    )
+    result = generate_agent_catalog_turn(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    assert result.work_state == "satisfied"
+    assert len(result.chapters) == 1
+    assert [chapter.title for chapter in result.chapters] == ["Root"]
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [(5, 60)]
+
+
+@pytest.mark.parametrize(
+    ("nodes", "next_action"),
+    [
+        ([], "inspect a different bounded directory candidate"),
+        (
+            [AgentCatalogNode(key="one", parent_key=None, number="1", title="One", level=1)],
+            "inspect authored navigation and bounded directory candidates",
+        ),
+    ],
+)
+def test_host_derives_structured_work_instead_of_trusting_agent_status_strings(
+    tmp_path: Path,
+    nodes: list[AgentCatalogNode],
+    next_action: str,
+) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _agent_catalog(
+            *nodes,
+            work_state="working",
+            next_action=next_action,
+        ),
+        source_sha256=content_hash,
+    )
+    result = generate_agent_catalog_turn(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    assert result.work_state == "working"
+    assert result.next_plan
+    assert result.catalog_payload is not None
+    assert result.catalog_payload["remaining_work"]
+    assert result.stop_reason == ""
+
+
 def test_production_processor_publishes_verified_catalog_without_indexes(
     monkeypatch,
     tmp_path: Path,
@@ -1012,7 +1989,7 @@ def test_production_processor_publishes_verified_catalog_without_indexes(
         update={"metadata": {"content_hash": content_hash}}
     )
     client = FakeSourceCodexClient(
-        _catalog(
+        _complete_staged_catalog(
             _node(
                 "n1",
                 title="First",
@@ -1030,7 +2007,7 @@ def test_production_processor_publishes_verified_catalog_without_indexes(
         ),
         source_sha256=content_hash,
     )
-    direct_result = generate_codex_direct_catalog(
+    direct_result = generate_agent_catalog_turn(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1039,7 +2016,7 @@ def test_production_processor_publishes_verified_catalog_without_indexes(
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_codex_direct_catalog",
+        "generate_agent_catalog_turn",
         lambda **_kwargs: direct_result,
     )
     monkeypatch.setattr(
@@ -1063,6 +2040,7 @@ def test_production_processor_publishes_verified_catalog_without_indexes(
     assert structure.catalog_version == 1
     assert structure.has_verified_toc is True
     assert structure.quality.level == "fully_verified"
+    assert structure.metadata["directory_status"] == "complete"
     assert structure.chapter_count == 2
     assert structure.chunk_count == 0
     assert structure.visual_count == 0
@@ -1078,8 +2056,8 @@ def test_production_processor_publishes_verified_catalog_without_indexes(
         source_id=record.id,
     )
     assert runs[-1].turn_count == 1
-    assert "directory_and_ranges_verified" in runs[-1].stage_history
-    assert "validating_directory_ranges" in runs[-1].stage_history
+    assert runs[-1].status == "succeeded"
+    assert "agent_snapshot_published" in runs[-1].stage_history
     with sqlite3.connect(database) as conn:
         assert conn.execute("SELECT COUNT(*) FROM source_chunks").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM source_visual_assets").fetchone()[0] == 0
@@ -1094,7 +2072,7 @@ def test_production_processor_persists_ranges_and_evidence(
     content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
     client = FakeSourceCodexClient(
-        _catalog(
+        _complete_staged_catalog(
             _node(
                 "chapter-1",
                 title="First",
@@ -1111,7 +2089,7 @@ def test_production_processor_persists_ranges_and_evidence(
         source_sha256=content_hash,
         source_turn_count=2,
     )
-    direct_result = generate_codex_direct_catalog(
+    direct_result = generate_agent_catalog_turn(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1120,7 +2098,7 @@ def test_production_processor_persists_ranges_and_evidence(
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_codex_direct_catalog",
+        "generate_agent_catalog_turn",
         lambda **_kwargs: direct_result,
     )
     store = SourceStructureStore(tmp_path / "openclass.sqlite3")
@@ -1142,9 +2120,8 @@ def test_production_processor_persists_ranges_and_evidence(
     assert all(chapter.catalog_evidence for chapter in view.chapters)
     assert structure.metadata["catalog_authority"] == "source_pi"
     assert runs[-1].turn_count == 2
-    assert "source_codex_investigation" in runs[-1].stage_history
-    assert "directory_and_ranges_verified" in runs[-1].stage_history
-    assert "validating_directory_ranges" in runs[-1].stage_history
+    assert runs[-1].status == "succeeded"
+    assert "agent_snapshot_published" in runs[-1].stage_history
 
 
 def test_source_pi_directory_tree_publishes_with_body_mapping(
@@ -1156,7 +2133,7 @@ def test_source_pi_directory_tree_publishes_with_body_mapping(
     content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
     client = FakeSourceCodexClient(
-        _catalog(
+        _complete_staged_catalog(
             _node(
                 "chapter-1",
                 title="First",
@@ -1172,7 +2149,7 @@ def test_source_pi_directory_tree_publishes_with_body_mapping(
         ),
         source_sha256=content_hash,
     )
-    direct_result = generate_codex_direct_catalog(
+    direct_result = generate_agent_catalog_turn(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1181,7 +2158,7 @@ def test_source_pi_directory_tree_publishes_with_body_mapping(
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_codex_direct_catalog",
+        "generate_agent_catalog_turn",
         lambda **_kwargs: direct_result,
     )
 
@@ -1202,9 +2179,10 @@ def test_source_pi_directory_tree_publishes_with_body_mapping(
     assert structure.status == "ready"
     assert structure.has_verified_toc is True
     assert all(chapter.mapping_status == "verified" for chapter in view.chapters)
-    assert all(chapter.metadata["source_range_mapped"] is True for chapter in view.chapters)
+    assert all(chapter.range is not None for chapter in view.chapters)
     assert runs[-1].turn_count == 1
-    assert "directory_and_ranges_verified" in runs[-1].stage_history
+    assert runs[-1].status == "succeeded"
+    assert "agent_snapshot_published" in runs[-1].stage_history
 
 
 def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) -> None:
@@ -1215,7 +2193,7 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
         update={"metadata": {"content_hash": content_hash}}
     )
     client = FakeSourceCodexClient(
-        _catalog(
+        _complete_staged_catalog(
             _node(
                 "n1",
                 title="Published",
@@ -1231,7 +2209,7 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
         ),
         source_sha256=content_hash,
     )
-    successful_result = generate_codex_direct_catalog(
+    successful_result = generate_agent_catalog_turn(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1240,7 +2218,7 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_codex_direct_catalog",
+        "generate_agent_catalog_turn",
         lambda **_kwargs: successful_result,
     )
     store = SourceStructureStore(tmp_path / "openclass.sqlite3")
@@ -1252,7 +2230,7 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
 
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_codex_direct_catalog",
+        "generate_agent_catalog_turn",
         fail_catalog,
     )
     with pytest.raises(SourceDirectoryProcessingError, match="single-turn"):

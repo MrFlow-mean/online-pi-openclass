@@ -117,7 +117,7 @@ export function sourceQuerySelectionLabel(selection: SelectionRef) {
     return selection.source_chapter_title || selection.excerpt;
   }
   if (selection.source_scope_kind === "page_range") {
-    return `${selection.source_title || "资料"} · ${selection.source_page_range || "指定页段"}`;
+    return `${selection.source_title || "material"} · ${selection.source_page_range || "Specify page segment"}`;
   }
   return selection.source_title || selection.excerpt;
 }

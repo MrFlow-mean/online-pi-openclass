@@ -12,10 +12,10 @@ export function userPublicEmail(user: UserView | null | undefined) {
 
 export function userAccountLabel(user: UserView | null | undefined) {
   if (!user) {
-    return "账号";
+    return "account";
   }
   if (user.role === "guest") {
-    return "游客模式";
+    return "guest mode";
   }
   if (user.phone) {
     return user.phone;
@@ -30,10 +30,10 @@ export function userAccountLabel(user: UserView | null | undefined) {
 
 export function userDisplayName(user: UserView | null | undefined) {
   if (!user) {
-    return "开放课堂用户";
+    return "OpenClass User";
   }
   if (user.role === "guest") {
-    return "游客";
+    return "tourists";
   }
   if (user.display_name?.trim()) {
     return user.display_name.trim();

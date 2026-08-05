@@ -16,6 +16,7 @@ from app.models import (
     AIModelSelection,
     ChatAttachmentRef,
     ChatRequest,
+    EvidenceBundle,
     GuidedRequirementDiscovery,
     GuidedRequirementEntryPoint,
     LearningSourceGrounding,
@@ -32,12 +33,14 @@ from app.models import (
 )
 from app.services import (
     ai_execution_adapter,
+    auto_board_teaching,
     blank_board_intake,
     board_visual_insertion,
     chat_attachments,
     codex_app_server,
     codex_chat,
     source_scope_ocr,
+    source_grounded_board,
     turn_intent,
     workspace_state,
 )
@@ -71,6 +74,80 @@ from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VE
 
 TEST_USER_ID = "user_codex_chat"
 PRODUCTION_TEXT_MODEL_SELECTION = codex_chat._text_model_selection
+
+
+def test_multi_source_scope_and_aggregate_keep_each_evidence_identity() -> None:
+    scope = SourceQueryScope(
+        mode="chapter",
+        refs=[
+            {
+                "source_ingestion_id": "source_a",
+                "source_content_hash": "a" * 64,
+                "source_chapter_id": "chapter_a",
+            },
+            {
+                "source_ingestion_id": "source_b",
+                "source_content_hash": "b" * 64,
+                "source_chapter_id": "chapter_b",
+            },
+        ],
+    )
+    assert len(scope.refs) == 2
+    evidence = [
+        RetrievalEvidence(
+            id="evidence_a",
+            source_ingestion_id="source_a",
+            source_title="Source A",
+            chapter_id="chapter_a",
+            expanded_text="Claim A",
+        ),
+        RetrievalEvidence(
+            id="evidence_b",
+            source_ingestion_id="source_b",
+            source_title="Source B",
+            chapter_id="chapter_b",
+            expanded_text="Claim B",
+        ),
+    ]
+    bundle = EvidenceBundle(package_id="package_1", evidence_items=evidence)
+    references = [
+        LearningSourceReference(
+            evidence_bundle_id=bundle.id,
+            source_ingestion_id="source_a",
+            source_title="Source A",
+            source_chapter_id="chapter_a",
+            chapter_title="Chapter A",
+            content_hash="a" * 64,
+        ),
+        LearningSourceReference(
+            evidence_bundle_id=bundle.id,
+            source_ingestion_id="source_b",
+            source_title="Source B",
+            source_chapter_id="chapter_b",
+            chapter_title="Chapter B",
+            content_hash="b" * 64,
+        ),
+    ]
+
+    plan = source_grounded_board._aggregated_plan(
+        query="Compare the claims",
+        bundle=bundle,
+        references=references,
+        evidence=source_grounded_board._dedupe_evidence([*evidence, evidence[0]]),
+        visuals=[],
+    )
+
+    grounding = plan.requirement.source_grounding
+    assert [item.source_ingestion_id for item in grounding.confirmed_references] == [
+        "source_a",
+        "source_b",
+    ]
+    assert [item.content_hash for item in grounding.confirmed_references] == [
+        "a" * 64,
+        "b" * 64,
+    ]
+    assert [item.id for item in grounding.frozen_evidence] == ["evidence_a", "evidence_b"]
+    assert "冲突" in plan.requirement.success_criteria
 
 
 def test_chat_attachments_are_verified_materialized_and_sent_as_images(
@@ -1623,10 +1700,12 @@ def test_blank_board_generation_payload_carries_article_extent(
     }
 
 
+@pytest.mark.parametrize("reference_transport", ["selection", "source_query_scope"])
 def test_source_chapter_selection_generates_blank_board_without_requirement_questions(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
     tmp_path: Path,
+    reference_transport: str,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="")
     package_id = codex_store.load_for_user(TEST_USER_ID).packages[0].id
@@ -1648,7 +1727,10 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         mime_type="text/markdown",
         size_bytes=source_path.stat().st_size,
         status="ready",
-        metadata={"local_source_path": str(source_path)},
+        metadata={
+            "local_source_path": str(source_path),
+            "content_hash": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        },
     )
     source_evidence_store.save_source(source)
     SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
@@ -1731,24 +1813,43 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         lambda: board_asset_store,
     )
 
+    selection = SelectionRef(
+        kind="source",
+        excerpt="Selected source · Chapter One",
+        source_ingestion_id=source.id,
+        source_title=source.title,
+        source_chapter_id=chapter.id,
+        source_chapter_number=chapter.number,
+        source_chapter_title=chapter.title,
+        source_locator=chapter.source_locator,
+        source_page_start=chapter.page_start,
+        source_page_end=chapter.page_end,
+        heading_path=chapter.path,
+    )
+    request = (
+        ChatRequest(message="为我讲解", selection=selection)
+        if reference_transport == "selection"
+            else ChatRequest(
+                message="为我讲解",
+                board_generation_action="start",
+                post_generation_action="stop_after_generation",
+                source_query_scope=SourceQueryScope(
+                mode="chapter",
+                refs=[
+                    {
+                        "source_ingestion_id": source.id,
+                        "source_content_hash": source.metadata["content_hash"],
+                        "source_chapter_id": chapter.id,
+                        "page_start": chapter.page_start,
+                        "page_end": chapter.page_end,
+                    }
+                ],
+            ),
+        )
+    )
     response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
-        ChatRequest(
-            message="为我讲解",
-            selection=SelectionRef(
-                kind="source",
-                excerpt="Selected source · Chapter One",
-                source_ingestion_id=source.id,
-                source_title=source.title,
-                source_chapter_id=chapter.id,
-                source_chapter_number=chapter.number,
-                source_chapter_title=chapter.title,
-                source_locator=chapter.source_locator,
-                source_page_start=chapter.page_start,
-                source_page_end=chapter.page_end,
-                heading_path=chapter.path,
-            ),
-        ),
+        request,
         user_id=TEST_USER_ID,
     )
 
@@ -1880,12 +1981,13 @@ def test_existing_board_source_selection_is_frozen_and_mandatory_for_codex(
     assert commit.metadata["verified_source_evidence_ids"]
 
 
-def test_generation_auto_explain_request_still_stops_before_teaching(
+def test_generation_auto_explain_teaches_first_saved_board_section(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="")
     requested_schemas: list[type[object]] = []
+    committed_documents: list[tuple[str, str]] = []
 
     def fake_parse(_self, **kwargs):
         schema = kwargs["schema"]
@@ -1903,19 +2005,7 @@ def test_generation_auto_explain_request_still_stops_before_teaching(
                 reason="The requirement is complete.",
             )
         else:
-            assert schema is blank_board_intake.BoardGenerationHandoffResponse
-            payload = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
-            assert payload["generation_status"] == "succeeded"
-            assert payload["content_extent"] == "article"
-            parsed = blank_board_intake.BoardGenerationHandoffResponse(
-                chatbot_message=(
-                    "The board is saved. Would you like to begin with its first section?"
-                ),
-                follow_up_suggestions=[
-                    "Yes, start from the beginning.",
-                    "No, leave it here for now.",
-                ],
-            )
+            raise AssertionError(f"Unexpected handoff schema: {schema}")
         return SimpleNamespace(output_parsed=parsed, activity=[])
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
@@ -1932,6 +2022,19 @@ def test_generation_auto_explain_request_still_stops_before_teaching(
 
     monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+    monkeypatch.setattr(
+        blank_board_intake,
+        "_start_auto_board_teaching",
+        lambda **_kwargs: (
+            auto_board_teaching.AutoTeachingResult(
+                status="succeeded",
+                chatbot_message="Teaching the persisted first section.",
+                follow_up_suggestions=["Continue"],
+            )
+            if committed_documents
+            else pytest.fail("The persisted board must be delivered before auto teaching starts")
+        ),
+    )
 
     generated = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
@@ -1940,31 +2043,26 @@ def test_generation_auto_explain_request_still_stops_before_teaching(
             post_generation_action="auto_explain",
         ),
         user_id=TEST_USER_ID,
+        on_document_commit=lambda document_text, commit_id: committed_documents.append(
+            (document_text, commit_id)
+        ),
     )
 
-    assert generated.chatbot_message == (
-        "The board is saved. Would you like to begin with its first section?"
-    )
-    assert generated.follow_up_suggestions == [
-        "Yes, start from the beginning.",
-        "No, leave it here for now.",
-    ]
+    assert generated.chatbot_message == "Teaching the persisted first section."
+    assert generated.follow_up_suggestions == ["Continue"]
     assert generated.board_document_operation_status == "succeeded"
-    assert generated.auto_teaching_operation_status == "none"
+    assert generated.auto_teaching_operation_status == "succeeded"
     assert generated.auto_teaching_operation_failure_reason is None
     assert generated.teaching_progress is None
     assert generated.board_task_sheet is None
     assert generated.board_task_run_id is None
     assert generated.board_task_version_id is None
-    assert requested_schemas == [
-        BlankBoardTurnDecision,
-        blank_board_intake.BoardGenerationHandoffResponse,
-    ]
+    assert requested_schemas == [BlankBoardTurnDecision]
 
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     commit_kinds = [commit.metadata.get("kind") for commit in saved_lesson.history_graph.commits]
     assert "board_document_generation" in commit_kinds
-    assert "board_generation_handoff" in commit_kinds
+    assert "board_generation_handoff" not in commit_kinds
     assert "board_task_requirement_ready" not in commit_kinds
     assert "board_directed_explanation" not in commit_kinds
     assert "auto_explain_failed" not in commit_kinds
@@ -1977,12 +2075,12 @@ def test_generation_auto_explain_request_still_stops_before_teaching(
         "auto_explain"
     )
     assert generation_commit.metadata["auto_teaching_started"] is False
-    handoff_commit = current_head_commit(saved_lesson)
-    assert handoff_commit.metadata["kind"] == "board_generation_handoff"
-    assert handoff_commit.metadata["post_generation_action_requested"] == (
-        "auto_explain"
-    )
-    assert handoff_commit.metadata["decision_trace"]["auto_teaching_started"] is False
+    assert committed_documents == [
+        (
+            "# Generated board\n\n## First\n\nFirst evidence.\n\n## Second\n\nSecond evidence.",
+            generation_commit.id,
+        )
+    ]
 
 
 def test_source_page_range_selection_generates_from_only_that_range(
@@ -2558,6 +2656,7 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
     restored = blank_board_intake.active_requirement_from_history(saved_lesson)
     assert saved_lesson.board_document.content_text == ""
     assert failure_commit.metadata["kind"] == "learning_requirement_generation_failed"
+    assert failure_commit.metadata["user_message"] == "Generate the focused board."
     assert failure_commit.metadata["requirement_phase"] == "frozen"
     assert restored is not None
     assert restored.learning_content == "A specific concept"

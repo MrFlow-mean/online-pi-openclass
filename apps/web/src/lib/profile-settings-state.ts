@@ -1,9 +1,8 @@
 export const INTERFACE_LANGUAGE_OPTIONS = [
-  { value: "zh-CN", label: "简体中文" },
   { value: "en", label: "English" },
 ] as const;
 
-export type InterfaceLanguage = (typeof INTERFACE_LANGUAGE_OPTIONS)[number]["value"];
+export type InterfaceLanguage = "en" | "zh-CN";
 
 export type ProfileSettings = {
   displayName: string;
@@ -53,23 +52,23 @@ export const PROFILE_SETTINGS_CHANGED_EVENT = "openclass.profile.settings.change
 
 export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   displayName: "Flow-mean",
-  handle: "blackboard-student",
+  handle: "board-student",
   profileVisibility: "workspace",
   publicEmail: "",
   showPublicEmail: false,
   showSocialLinks: true,
   showRepositoriesOnProfile: true,
   showStarsOnProfile: true,
-  bio: "管理自己的课程项目，Stars 收藏值得继续学习的他人开源课程。",
+  bio: "Manage your course projects and star open courses worth revisiting.",
   website: "",
   company: "",
   location: "",
-  learningFocus: "概念解释、资料扩讲、练习训练",
+  learningFocus: "Concept explanations, source-based expansion, and practice",
   socialLinks: ["", "", "", ""],
   theme: "system",
   density: "comfortable",
   startPage: "home",
-  interfaceLanguage: "zh-CN",
+  interfaceLanguage: "en",
   reduceMotion: false,
   highContrast: false,
   largeText: false,
@@ -94,7 +93,8 @@ export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
 };
 
 function parseInterfaceLanguage(value: unknown): InterfaceLanguage {
-  return value === "en" ? "en" : "zh-CN";
+  void value;
+  return "en";
 }
 
 export function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): ProfileSettings {

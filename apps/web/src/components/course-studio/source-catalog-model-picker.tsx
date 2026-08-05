@@ -35,7 +35,8 @@ export function SourceCatalogModelPicker({
   return (
     <div className="mt-3" data-testid="source-catalog-model-picker">
       <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
-        目录提取模型
+
+        Directory extraction model
       </p>
       <div className="mt-2">
         <CodexModelSettingsPicker
@@ -47,15 +48,15 @@ export function SourceCatalogModelPicker({
           options={options}
           onChange={onChange}
           disabled={disabled || options.length === 0}
-          contextLabel="目录提取模型设置"
+          contextLabel="Catalog Extraction Model Settings"
           testIdPrefix="source-catalog-model"
           preferredPlacement="below"
           preferredSubmenuSide="left"
-          allowSpeedSelection={false}
         />
         {!enabledOption ? (
           <p className="mt-1.5 text-[11px] leading-5 text-amber-700">
-            暂无已配置的目录提取模型；可以展开查看模型状态。
+
+            There is no configured directory to extract the model; you can expand it to view the model status.
           </p>
         ) : null}
       </div>

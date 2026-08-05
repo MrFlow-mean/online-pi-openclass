@@ -83,6 +83,40 @@ def test_docx_quality_check_accepts_native_export(tmp_path) -> None:
     assert report.display_omml_count > 0
 
 
+def test_docx_export_converts_explicit_inline_tuple_and_logical_negation(tmp_path) -> None:
+    document = build_document(
+        title="Logic notes",
+        content_html=(
+            r"<p>对项 \(s,t\)：</p>"
+            r'<p>归结消去 <span data-type="inline-math" data-latex="L"></span> '
+            r"与 \(\neg L\)，得到新子句。</p>"
+        ),
+        content_text=(
+            "对项 \\(s,t\\)：\n\n"
+            "归结消去 \\(L\\) 与 \\(\\neg L\\)，得到新子句。"
+        ),
+    )
+    export_path = tmp_path / "logic.docx"
+
+    export_docx(document, export_path)
+    report = inspect_docx_export(export_path)
+    math_text = _math_text(_document_root(export_path))
+
+    assert report.passed
+    assert report.omml_count >= 3
+    assert "s,t" in math_text
+    assert "¬ L" in math_text
+
+
+def test_inline_math_detection_keeps_plain_word_lists_as_text() -> None:
+    assert rich_document_core._auto_math_fragments(r"\(hello world\)") == [
+        ("text", r"\(hello world\)"),
+    ]
+    assert rich_document_core._auto_math_fragments(r"\(Alice,Bob\)") == [
+        ("text", r"\(Alice,Bob\)"),
+    ]
+
+
 def test_docx_styles_create_textbook_styles() -> None:
     document = Document()
 

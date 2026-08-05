@@ -102,6 +102,13 @@ class SourceEvidenceStore:
                 CREATE INDEX IF NOT EXISTS idx_source_ingestions_owner_package
                     ON source_ingestions(owner_user_id, package_id, updated_at);
 
+                CREATE TABLE IF NOT EXISTS source_ingestion_tombstones (
+                    id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    package_id TEXT NOT NULL,
+                    deleted_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS evidence_bundles (
                     id TEXT PRIMARY KEY,
                     owner_user_id TEXT NOT NULL,
@@ -181,6 +188,15 @@ class SourceEvidenceStore:
 
         def save_record() -> SourceIngestionRecord:
             with self._lock, self._connect() as conn, conn:
+                deleted = conn.execute(
+                    """
+                    SELECT 1 FROM source_ingestion_tombstones
+                    WHERE id = ? AND owner_user_id = ? AND package_id = ?
+                    """,
+                    (record.id, record.owner_user_id, record.package_id),
+                ).fetchone()
+                if deleted is not None:
+                    return record
                 conn.execute(
                     """
                     INSERT INTO source_ingestions(
@@ -299,6 +315,17 @@ class SourceEvidenceStore:
 
         def delete_record() -> None:
             with self._lock, self._connect() as conn, conn:
+                conn.execute(
+                    """
+                    INSERT INTO source_ingestion_tombstones(id, owner_user_id, package_id, deleted_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        owner_user_id = excluded.owner_user_id,
+                        package_id = excluded.package_id,
+                        deleted_at = excluded.deleted_at
+                    """,
+                    (source_id, owner_user_id, package_id, now_iso()),
+                )
                 conn.execute(
                     """
                     DELETE FROM source_ingestions

@@ -297,9 +297,13 @@ export function useSourceCatalogCache(): SourceCatalogCacheController {
 
   const ensureCurrentSource = useCallback(
     async (packageId: string, source: SourceIngestionRecord) => {
+      const hasPublishedSnapshot = Boolean(
+        source.structure_updated_at &&
+          (source.structure_status === "ready" || source.structure_status === "linear_only")
+      );
       if (
         !prefetchedPackageIdsRef.current.has(packageId) ||
-        source.status !== "ready" ||
+        (source.status !== "ready" && !hasPublishedSnapshot) ||
         source.structure_status === "pending" ||
         source.structure_status === "building"
       ) {

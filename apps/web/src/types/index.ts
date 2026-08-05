@@ -632,6 +632,7 @@ export interface SourceStructureQuality {
 
 export interface SourceIngestionJob {
   id: string;
+  run_id: string;
   resource_id?: string | null;
   source_type: ResourceSourceType;
   source_uri?: string | null;
@@ -641,6 +642,8 @@ export interface SourceIngestionJob {
   error: string;
   phase_history: string[];
   agent_activity: AgentActivityEvent[];
+  cancel_requested: boolean;
+  heartbeat_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -811,6 +814,19 @@ export interface SourceCatalogSourceSummary {
   structure_status: SourceStructureStatus;
 }
 
+export interface SourceCatalogWorkItem {
+  id: string;
+  kind:
+    | "directory_discovery"
+    | "directory_page_attribution"
+    | "pagination_calibration"
+    | "range_mapping"
+    | "conflict_resolution";
+  node_keys: string[];
+  page_ranges: Array<{ start: number; end: number }>;
+  reason: string;
+}
+
 export interface SourceCatalogView {
   source: SourceCatalogSourceSummary;
   structure_id: string | null;
@@ -823,6 +839,32 @@ export interface SourceCatalogView {
   catalog_schema_version: string;
   catalog_model: string;
   task_contract: string;
+  work_state: "working" | "paused" | "satisfied" | "partial";
+  phase: "directory_discovery" | "page_calibration" | "range_mapping" | "validation" | "terminal";
+  directory_status: "incomplete" | "uncertain" | "complete";
+  index_status: "pending" | "in_progress" | "complete" | "partial";
+  summary: string;
+  next_plan: string;
+  stop_reason: string;
+  completion_reason: string;
+  directory_gaps: string[];
+  remaining_work: SourceCatalogWorkItem[];
+  remaining_work_count: number;
+  snapshot_reason:
+    | "first_citable"
+    | "top_level_subtree"
+    | "batch"
+    | "budget_increment"
+    | "correction"
+    | "pause"
+    | "final";
+  background_refine_active: boolean;
+  pagination_regime_count: number;
+  unresolved_node_count: number;
+  locator_method: string;
+  revision: number;
+  can_refine: boolean;
+  recent_tool_activity: Array<Record<string, unknown>>;
   chapter_count: number;
   verified_chapter_count: number;
   confidence: number;
@@ -1047,6 +1089,31 @@ export interface CoursePackage {
 export interface WorkspaceState {
   packages: CoursePackage[];
   active_package_id?: string | null;
+}
+
+export interface LessonWorkspaceDelta {
+  operation: "create" | "close" | "delete";
+  workspace_revision: number;
+  package_id: string;
+  active_package_id?: string | null;
+  active_lesson_id?: string | null;
+  open_lesson_ids: string[];
+  workspace_tab_order: string[];
+  created_lesson?: Lesson | null;
+  deleted_lesson_id?: string | null;
+  graph_edge?: CourseGraphEdge | null;
+}
+
+export interface DocumentSaveDelta {
+  lesson_id: string;
+  package_id: string;
+  workspace_revision: number;
+  document: BoardDocument;
+  latest_commit: CommitRecord;
+  current_branch: string;
+  branch_head_commit_id: string;
+  updated_at: string;
+  changed: boolean;
 }
 
 export interface BatchLessonActionRequest {
@@ -1529,6 +1596,7 @@ export interface ChatResponse {
 }
 
 export type TurnIntent = "ordinary_chat" | "learning_need" | "unclear";
+export type LearningFlow = "teach" | "generate_only" | "none";
 export type TurnContinuation =
   | "none"
   | "learning_requirement"
@@ -1546,6 +1614,7 @@ export type TurnRelationToActive =
 
 export interface TurnDecision {
   intent: TurnIntent;
+  learning_flow: LearningFlow;
   continuation: TurnContinuation;
   relation_to_active: TurnRelationToActive;
   board_access: "forbidden" | "state_check_only";

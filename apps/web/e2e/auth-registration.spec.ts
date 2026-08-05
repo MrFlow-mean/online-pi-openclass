@@ -7,7 +7,7 @@ test("email registration requires username, repeated password, and a verificatio
     route.fulfill({
       status: 401,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "未登录" }),
+      body: JSON.stringify({ detail: "Not logged in" }),
     })
   );
   await page.route("**/api/auth/providers", (route) =>
@@ -27,7 +27,7 @@ test("email registration requires username, repeated password, and a verificatio
       body: JSON.stringify({
         challenge_id: "email_challenge_registration",
         expires_in_seconds: 600,
-        message: "验证码已发送，请检查邮箱",
+        message: "Verification code has been sent, please check your email",
       }),
     });
   });
@@ -45,7 +45,7 @@ test("email registration requires username, repeated password, and a verificatio
           email: "student@example.com",
           phone: null,
           role: "user",
-          display_name: "学习者",
+          display_name: "learner",
           avatar_url: null,
           created_at: "2026-07-27T00:00:00+00:00",
           last_login_at: null,
@@ -56,25 +56,25 @@ test("email registration requires username, repeated password, and a verificatio
   });
 
   await page.goto("/login");
-  await page.getByRole("link", { name: "邮箱注册" }).click();
+  await page.locator('a[href="/register"]').first().click();
   await expect(page).toHaveURL(/\/register/);
 
-  await page.getByLabel("邮箱", { exact: true }).fill("student@example.com");
-  await page.getByLabel("用户名").fill("学习者");
-  await page.getByLabel("密码", { exact: true }).fill("correct-password");
-  await page.getByLabel("确认密码").fill("correct-password");
-  const sendCodeButton = page.getByRole("button", { name: "发送验证码" });
+  await page.getByLabel("Email", { exact: true }).fill("student@example.com");
+  await page.getByLabel("Username").fill("learner");
+  await page.getByLabel("Password", { exact: true }).fill("correct-password");
+  await page.getByLabel("Confirm Password").fill("correct-password");
+  const sendCodeButton = page.getByRole("button", { name: "Send verification code" });
   await expect(sendCodeButton).toBeEnabled();
   await sendCodeButton.click();
 
   await expect.poll(() => codeRequestBody).toEqual({ email: "student@example.com" });
-  await expect(page.getByText("验证码已发送，请检查邮箱")).toBeVisible();
-  await page.getByLabel("邮箱验证码").fill("123456");
-  await page.getByRole("button", { name: "注册", exact: true }).click();
+  await expect(page.getByText("Verification code has been sent, please check your email")).toBeVisible();
+  await page.getByLabel("Email verification code").fill("123456");
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
 
   await expect.poll(() => registrationRequestBody).toEqual({
     email: "student@example.com",
-    username: "学习者",
+    username: "learner",
     password: "correct-password",
     password_confirmation: "correct-password",
     challenge_id: "email_challenge_registration",
@@ -90,7 +90,7 @@ test("registration code action stays usable when Turnstile needs attention", asy
     route.fulfill({
       status: 401,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "未登录" }),
+      body: JSON.stringify({ detail: "Not logged in" }),
     })
   );
   await page.route("**/api/auth/providers", (route) =>
@@ -121,17 +121,17 @@ test("registration code action stays usable when Turnstile needs attention", asy
     return route.fulfill({
       status: 500,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "验证码请求不应在验证完成前发出" }),
+      body: JSON.stringify({ detail: "Captcha request should not be sent before verification is complete" }),
     });
   });
 
   await page.goto("/register");
-  await expect(page.getByLabel("Cloudflare Turnstile 人机验证")).toBeVisible();
+  await expect(page.getByLabel("Cloudflare Turnstile human verification")).toBeVisible();
 
-  const sendCodeButton = page.getByRole("button", { name: "发送验证码" });
+  const sendCodeButton = page.getByRole("button", { name: "Send verification code" });
   await expect(sendCodeButton).toBeEnabled();
   await sendCodeButton.click();
 
-  await expect(page.getByText("请先完成人机验证，再发送邮箱验证码")).toBeVisible();
+  await expect(page.getByText("Complete human verification before requesting an email code.")).toBeVisible();
   expect(codeRequestCount).toBe(0);
 });

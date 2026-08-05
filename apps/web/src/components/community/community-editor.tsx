@@ -17,12 +17,12 @@ type CommunityEditorProps = {
 };
 
 const toolbarItems = [
-  { label: "粗体", icon: Bold, before: "**", after: "**", sample: "重点" },
-  { label: "斜体", icon: Italic, before: "*", after: "*", sample: "强调" },
-  { label: "行内代码", icon: Code2, before: "`", after: "`", sample: "code" },
-  { label: "链接", icon: Link2, before: "[", after: "](https://)", sample: "链接文字" },
-  { label: "无序列表", icon: List, before: "- ", after: "", sample: "列表项" },
-  { label: "公式", icon: Sigma, before: "$$\n", after: "\n$$", sample: "x^2 + y^2 = r^2" },
+  { label: "Bold", icon: Bold, before: "**", after: "**", sample: "focus" },
+  { label: "italics", icon: Italic, before: "*", after: "*", sample: "emphasize" },
+  { label: "inline code", icon: Code2, before: "`", after: "`", sample: "code" },
+  { label: "Link", icon: Link2, before: "[", after: "](https://)", sample: "link text" },
+  { label: "unordered list", icon: List, before: "- ", after: "", sample: "list item" },
+  { label: "formula", icon: Sigma, before: "$$\n", after: "\n$$", sample: "x^2 + y^2 = r^2" },
 ] as const;
 
 
@@ -86,18 +86,18 @@ export function CommunityEditor({
           ))}
         </div>
         <div className="flex rounded-lg border border-stone-200 bg-white p-0.5 text-xs font-semibold">
-          <button type="button" onClick={() => setMode("write")} className={clsx("inline-flex items-center gap-1 rounded-md px-2 py-1", mode === "write" ? "bg-stone-950 text-white" : "text-stone-500")}><Text className="h-3.5 w-3.5" />编辑</button>
-          <button type="button" onClick={() => setMode("preview")} className={clsx("inline-flex items-center gap-1 rounded-md px-2 py-1", mode === "preview" ? "bg-stone-950 text-white" : "text-stone-500")}><Eye className="h-3.5 w-3.5" />预览</button>
+          <button type="button" onClick={() => setMode("write")} className={clsx("inline-flex items-center gap-1 rounded-md px-2 py-1", mode === "write" ? "bg-stone-950 text-white" : "text-stone-500")}><Text className="h-3.5 w-3.5" />edit</button>
+          <button type="button" onClick={() => setMode("preview")} className={clsx("inline-flex items-center gap-1 rounded-md px-2 py-1", mode === "preview" ? "bg-stone-950 text-white" : "text-stone-500")}><Eye className="h-3.5 w-3.5" />Preview</button>
         </div>
       </div>
       {mode === "write" ? (
         <textarea ref={textareaRef} aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} rows={rows} className="w-full resize-y bg-transparent px-4 py-3 text-sm leading-7 outline-none placeholder:text-stone-400" />
       ) : (
         <div className="min-h-36 px-4 py-3">
-          {value.trim() ? <CommunityMarkdown content={value} /> : <p className="text-sm text-stone-400">还没有可以预览的内容。</p>}
+          {value.trim() ? <CommunityMarkdown content={value} /> : <p className="text-sm text-stone-400">There is nothing to preview yet.</p>}
         </div>
       )}
-      <div className="border-t border-stone-100 px-3 py-2 text-[11px] text-stone-400">支持 Markdown、代码块、链接、表格和 LaTeX 公式；草稿保存在当前浏览器。</div>
+      <div className="border-t border-stone-100 px-3 py-2 text-[11px] text-stone-400">Supports Markdown, code blocks, links, tables and LaTeX formulas; drafts are saved in the current browser.</div>
     </div>
   );
 }

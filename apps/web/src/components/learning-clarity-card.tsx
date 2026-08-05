@@ -129,9 +129,9 @@ function DisplaySections({ display }: { display: LearningRequirementDisplay }) {
     <div className="mt-4 space-y-4">
       <section>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-blue-700">核心因素</p>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-blue-700">core factors</p>
           <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-            {display.coreFactors.every((factor) => factor.filled) ? "齐全" : "待完善"}
+            {display.coreFactors.every((factor) => factor.filled) ? "complete" : "To be improved"}
           </span>
         </div>
         <FactorRows factors={display.coreFactors} />
@@ -140,9 +140,9 @@ function DisplaySections({ display }: { display: LearningRequirementDisplay }) {
       {visibleAuxiliaryFactors.length ? (
         <section>
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] font-bold uppercase tracking-widest text-blue-500">辅助因素</p>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-blue-500">auxiliary factors</p>
             {hiddenAuxiliaryCount ? (
-              <span className="text-[10px] font-medium text-blue-500">另有 {hiddenAuxiliaryCount} 条在右侧详情</span>
+              <span className="text-[10px] font-medium text-blue-500">Also {hiddenAuxiliaryCount}  Details on the right</span>
             ) : null}
           </div>
           <FactorRows factors={visibleAuxiliaryFactors} />
@@ -159,6 +159,8 @@ interface LearningClarityCardProps {
   lesson?: Lesson | null;
   targetCommitId?: string | null;
   statusLabelOverride?: string;
+  statusMessageOverride?: string;
+  statusTone?: "default" | "success" | "error";
 }
 
 export function LearningClarityCard({
@@ -168,6 +170,8 @@ export function LearningClarityCard({
   lesson,
   targetCommitId,
   statusLabelOverride,
+  statusMessageOverride,
+  statusTone = "default",
 }: LearningClarityCardProps) {
   const display = buildLearningRequirementDisplay({
     requirementSheet: activeRequirementSheet,
@@ -192,19 +196,28 @@ export function LearningClarityCard({
 
       <div className="mt-4 flex items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-blue-500">教学类型</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-blue-500">Teaching type</p>
           <p className="mt-1 text-sm font-semibold text-blue-950">{display.teachingType}</p>
         </div>
         <span
           className={clsx(
             "rounded-full px-2.5 py-1 text-[11px] font-semibold",
-            statusLabelOverride || display.status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-white text-blue-700"
+            statusTone === "error"
+              ? "bg-red-50 text-red-700"
+              : statusTone === "success" || statusLabelOverride || display.status === "ready"
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-white text-blue-700"
           )}
         >
           {statusLabel}
         </span>
       </div>
 
+      {statusMessageOverride ? (
+        <p className="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
+          {statusMessageOverride}
+        </p>
+      ) : null}
       {display.summary ? <p className="mt-3 text-xs leading-6 text-blue-900/80">{compactText(display.summary)}</p> : null}
       <DisplaySections display={display} />
     </div>

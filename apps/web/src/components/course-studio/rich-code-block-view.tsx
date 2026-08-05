@@ -42,7 +42,7 @@ export function RichCodeBlockView({ node, editor }: NodeViewProps) {
         <button
           type="button"
           className="rich-code-block__copy"
-          aria-label={copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : "复制代码"}
+          aria-label={copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "Copy code"}
           onClick={() => void handleCopy()}
         >
           {copyStatus === "copied" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}

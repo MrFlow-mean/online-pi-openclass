@@ -32,6 +32,9 @@ responsive layout while matching the warm OpenClass visual system. Set
 New questions may be published without tags by default. Set
 `OPENCLASS_ANSWER_MIN_TAGS` to an integer from `0` to `5` to change the minimum;
 `0` keeps tags available while making them optional.
+The entrypoint grants tag creation to Answer's default user role. Every signed-in
+community member can therefore create a new tag without earning reputation;
+all other reputation-gated privileges keep their configured thresholds.
 The entrypoint also places an explicit theme stylesheet link in Answer's
 server-rendered document head so OAuth login and authenticated navigation keep
 the same appearance as the public community page.

@@ -15,32 +15,32 @@ test("gateway HTML is replaced with a concise transport error", async () => {
   );
 
   await expect(
-    responseErrorMessage(response, "聊天服务连接失败（HTTP 502），请稍后重试。")
-  ).resolves.toBe("聊天服务连接失败（HTTP 502），请稍后重试。");
+    responseErrorMessage(response, "Chat service connection failed (HTTP 502), please try again later.")
+  ).resolves.toBe("Chat service connection failed (HTTP 502), please try again later.");
   expect(
     userFacingApiErrorMessage(
       "Codex platform proxy request failed: Server error '502 Bad Gateway'",
-      "聊天失败"
+      "Chat failed"
     )
-  ).toBe("模型服务连接失败，请稍后重试。");
-  expect(userFacingApiErrorMessage("502 Bad Gateway", "请求失败")).toBe(
-    "请求失败"
+  ).toBe("The model service connection failed, please try again later.");
+  expect(userFacingApiErrorMessage("502 Bad Gateway", "Request failed")).toBe(
+    "Request failed"
   );
 });
 
 test("structured and plain business errors remain visible", async () => {
   const response = new Response(
-    JSON.stringify({ detail: "资料仍在处理中" }),
+    JSON.stringify({ detail: "Data is still being processed" }),
     {
       status: 409,
       headers: { "content-type": "application/json" },
     }
   );
 
-  await expect(responseErrorMessage(response, "请求失败")).resolves.toBe(
-    "资料仍在处理中"
+  await expect(responseErrorMessage(response, "Request failed")).resolves.toBe(
+    "Data is still being processed"
   );
-  expect(userFacingApiErrorMessage("当前课程不存在", "请求失败")).toBe(
-    "当前课程不存在"
+  expect(userFacingApiErrorMessage("The current course does not exist", "Request failed")).toBe(
+    "The current course does not exist"
   );
 });

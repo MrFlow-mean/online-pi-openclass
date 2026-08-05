@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import tempfile
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from app.models import (
     SourceChapter,
@@ -161,16 +162,126 @@ class SourceVisualExtractor:
             )
         return SourceVisualExtractionResult(visuals=visuals, warnings=warnings, status=status)
 
+    def extract_verified_scope(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        path: Path,
+        structure: SourceStructure,
+        chapter: SourceChapter,
+        source_range: dict[str, Any],
+        scope_cache_key: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> SourceVisualExtractionResult:
+        """Extract only visuals inside one authenticated, inclusive source range.
+
+        The caller has already authenticated the catalog, source identity and
+        file hash.  This method keeps those exact native coordinates through
+        extraction and marks only the strictly filtered results as verified.
+        It never creates global text chunks or scans unrelated PDF pages.
+        """
+
+        kind = str(source_range.get("kind") or "")
+        if kind in {"structured_path"} or _is_audio_or_video(record):
+            return SourceVisualExtractionResult(status="ready")
+        try:
+            adapter_result = self._adapter_result(
+                path=path,
+                record=record,
+                progress_callback=progress_callback,
+                source_range=source_range,
+            )
+        except Exception as exc:
+            raise SourceVisualExtractionFatalError(str(exc)) from exc
+        if adapter_result.status == "failed":
+            return SourceVisualExtractionResult(
+                status="failed",
+                warnings=list(dict.fromkeys(adapter_result.warnings)),
+            )
+        adapter_result.visuals = _raw_visuals_for_verified_scope(
+            adapter_result.visuals,
+            path=path,
+            source_range=source_range,
+        )
+        adapter_result.native_chart_anchors = _raw_visuals_for_verified_scope(
+            adapter_result.native_chart_anchors,
+            path=path,
+            source_range=source_range,
+        )
+        adapter_result.native_chart_count = len(adapter_result.native_chart_anchors)
+        if adapter_result.native_chart_count:
+            rendered = self._render_native_office_visuals(
+                source_path=path,
+                anchors=adapter_result.native_chart_anchors,
+            )
+            adapter_result.visuals.extend(rendered.visuals)
+            adapter_result.warnings.extend(rendered.warnings)
+            if rendered.status == "partial":
+                adapter_result.status = "partial"
+        try:
+            visuals, materialization_warnings = self._materialize(
+                record=record,
+                structure=structure,
+                raw_visuals=adapter_result.visuals,
+                chapters=[],
+                chunks=[],
+            )
+        except SourceVisualExtractionBudgetError as exc:
+            return SourceVisualExtractionResult(
+                status="failed",
+                warnings=[str(exc)],
+            )
+        scoped_visuals = [
+            visual.model_copy(
+                update={
+                    "chapter_id": chapter.id,
+                    "anchor_status": "verified",
+                    "metadata": {
+                        **visual.metadata,
+                        "verified_scope": True,
+                        "scope_cache_key": scope_cache_key,
+                        "scope_range": source_range,
+                    },
+                }
+            )
+            for visual in visuals
+        ]
+        warnings = list(
+            dict.fromkeys([*adapter_result.warnings, *materialization_warnings])
+        )
+        status: SourceVisualIndexStatus = adapter_result.status
+        if materialization_warnings and status == "ready":
+            status = "partial"
+        return SourceVisualExtractionResult(
+            visuals=scoped_visuals,
+            warnings=warnings,
+            status=status,
+        )
+
     def _adapter_result(
         self,
         *,
         path: Path,
         record: SourceIngestionRecord,
         progress_callback: Callable[[int, int], None] | None = None,
+        source_range: dict[str, Any] | None = None,
     ) -> SourceVisualAdapterResult:
         suffix = path.suffix.lower()
         if suffix == ".pdf" or record.mime_type == "application/pdf":
-            return extract_pdf_visuals(path, progress_callback=progress_callback)
+            return extract_pdf_visuals(
+                path,
+                progress_callback=progress_callback,
+                page_start=(
+                    int(source_range["start"])
+                    if source_range and source_range.get("kind") == "pdf_pages"
+                    else None
+                ),
+                page_end=(
+                    int(source_range["end"])
+                    if source_range and source_range.get("kind") == "pdf_pages"
+                    else None
+                ),
+            )
         office_format = _office_format(suffix=suffix, mime_type=record.mime_type)
         if office_format:
             return extract_office_visuals(path, office_format=office_format)
@@ -431,6 +542,135 @@ def _preflight_raw_visuals(
                 budget.reserve_ocr_objects()
         usable.append(raw)
     return usable, warnings
+
+
+def _raw_visuals_for_verified_scope(
+    visuals: Sequence[RawSourceVisual],
+    *,
+    path: Path,
+    source_range: dict[str, Any],
+) -> list[RawSourceVisual]:
+    """Return only native visual anchors that overlap the inclusive range."""
+
+    kind = str(source_range.get("kind") or "")
+    start = source_range.get("start")
+    end = source_range.get("end")
+    container = str(source_range.get("container") or "").strip()
+    if kind == "sheet_rows" and path.suffix.lower() == ".csv":
+        if not isinstance(start, int) or not isinstance(end, int):
+            return []
+        scoped: list[RawSourceVisual] = []
+        for visual in visuals:
+            if visual.kind != "table" or not visual.table_data:
+                continue
+            rows = visual.table_data[max(0, start - 1):end]
+            if not rows:
+                continue
+            visual.table_data = rows
+            visual.source_locator = f"{visual.source_locator}:rows:{start}-{end}"
+            visual.metadata = {
+                **visual.metadata,
+                "row_start": start,
+                "row_end": end,
+            }
+            scoped.append(visual)
+        return scoped
+    text_bounds = _text_offset_bounds(path, source_range)
+    selected: list[RawSourceVisual] = []
+    for visual in visuals:
+        include = False
+        if kind == "pdf_pages" and isinstance(start, int) and isinstance(end, int):
+            include = visual.page_no is not None and start <= visual.page_no <= end
+        elif kind == "ppt_slides" and isinstance(start, int) and isinstance(end, int):
+            coordinate = visual.slide_no or visual.page_no
+            include = coordinate is not None and start <= coordinate <= end
+        elif kind == "epub_spine":
+            coordinate = visual.metadata.get("epub_spine_index")
+            include = (
+                isinstance(coordinate, int)
+                and isinstance(start, int)
+                and isinstance(end, int)
+                and start <= coordinate <= end
+            )
+        elif kind == "docx_paragraphs" and isinstance(start, int) and isinstance(end, int):
+            visual_start = visual.metadata.get("paragraph_start_index", visual.paragraph_index)
+            visual_end = visual.metadata.get("paragraph_end_index", visual_start)
+            include = (
+                isinstance(visual_start, int)
+                and isinstance(visual_end, int)
+                and visual_start <= end
+                and visual_end >= start
+            )
+        elif kind == "sheet_rows" and isinstance(start, int) and isinstance(end, int):
+            same_sheet = not container or visual.sheet_name == container
+            max_row = visual.metadata.get("max_row")
+            if same_sheet and isinstance(max_row, int) and len(visual.bbox) >= 4:
+                visual_start = max(1, int(float(visual.bbox[1]) * max_row) + 1)
+                visual_end = max(visual_start, int(float(visual.bbox[3]) * max_row + 0.999999))
+                include = visual_start <= end and visual_end >= start
+                if include:
+                    visual.metadata = {
+                        **visual.metadata,
+                        "row_start": visual_start,
+                        "row_end": visual_end,
+                    }
+            elif same_sheet:
+                include = True
+        elif kind in {"text_lines", "dom_anchor"} and text_bounds is not None:
+            include = (
+                visual.text_offset is not None
+                and text_bounds[0] <= visual.text_offset < text_bounds[1]
+            )
+        elif kind == "dom_anchor" and dict(source_range.get("metadata") or {}).get("root"):
+            include = True
+        if include:
+            selected.append(visual)
+    return selected
+
+
+def _text_offset_bounds(
+    path: Path,
+    source_range: dict[str, Any],
+) -> tuple[int, int] | None:
+    kind = str(source_range.get("kind") or "")
+    if kind == "text_lines":
+        start = source_range.get("start")
+        end = source_range.get("end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines(keepends=True)
+        if not lines or start < 1 or end > len(lines):
+            return None
+        return sum(map(len, lines[: start - 1])), sum(map(len, lines[:end]))
+    if kind != "dom_anchor":
+        return None
+    html = path.read_text(encoding="utf-8", errors="replace")
+    start_anchor = str(source_range.get("start_anchor") or "").strip()
+    end_anchor = str(source_range.get("end_anchor") or "").strip()
+    start_raw = _html_anchor_raw_offset(html, start_anchor) if start_anchor else 0
+    end_raw = _html_anchor_raw_offset(html, end_anchor) if end_anchor else len(html)
+    if start_raw is None or end_raw is None or end_raw <= start_raw:
+        return None
+    # Use the same canonicalizer as the markup visual adapter so the offsets
+    # are directly comparable even though the source HTML contains tags.
+    from app.services.source_visual_extraction_markup import _MarkupVisualParser
+
+    prefix_parser = _MarkupVisualParser(html[:start_raw])
+    prefix_parser.feed(html[:start_raw])
+    end_parser = _MarkupVisualParser(html[:end_raw])
+    end_parser.feed(html[:end_raw])
+    return prefix_parser.text_length, end_parser.text_length
+
+
+def _html_anchor_raw_offset(html: str, anchor: str) -> int | None:
+    escaped = re.escape(anchor)
+    match = re.search(
+        rf"<[^>]+\b(?:id|name)\s*=\s*(['\"]){escaped}\1[^>]*>",
+        html,
+        flags=re.IGNORECASE,
+    )
+    return match.start() if match else None
 
 
 def _persist_raw_content(raw: RawSourceVisual) -> tuple[str, str]:

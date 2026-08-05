@@ -16,7 +16,7 @@ const registeredUser = {
   id: "user-author",
   email: "author@example.com",
   role: "user",
-  display_name: "学习者甲",
+  display_name: "Learner A",
   avatar_url: null,
   created_at: "2026-07-27T10:00:00+00:00",
   last_login_at: "2026-07-27T10:00:00+00:00",
@@ -97,7 +97,7 @@ test("sends a registered OpenClass user through Answer single sign-on", async ({
       id: "user-author",
       email: "author@example.com",
       role: "user",
-      display_name: "学习者甲",
+      display_name: "Learner A",
       avatar_url: null,
       created_at: now,
       last_login_at: now,
@@ -126,7 +126,7 @@ test("preserves a same-origin history-node draft through Answer single sign-on",
   if (!baseURL) throw new Error("Playwright baseURL is required");
   const publicUrl = `${baseURL}/community`;
   const entryUrl = `${publicUrl}/answer/api/v1/connector/login/basic`;
-  const referenceDraft = `> [课堂历史节点引用 · 点击打开](${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history)`;
+  const referenceDraft = `> [Course history reference · Open](${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history)`;
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -152,13 +152,13 @@ test("preserves a same-origin history-node draft through Answer single sign-on",
   expect(storedPrefill).toBeTruthy();
   expect(decodeURIComponent(storedPrefill!)).toBe(referenceDraft);
   expect(referenceDraft).not.toContain("title:");
-  expect(referenceDraft).not.toContain("课堂正文");
+  expect(referenceDraft).not.toContain("Class text");
 });
 
 
 test("sends a cross-origin history-node reference to the configured Answer site", async ({ page, baseURL }) => {
   if (!baseURL) throw new Error("Playwright baseURL is required");
-  const referenceDraft = `> [课堂历史节点引用 · 点击打开](${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history)`;
+  const referenceDraft = `> [Course history reference · Open](${baseURL}/courses/shared/lesson/lesson-history?history_node=commit-history)`;
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -190,7 +190,7 @@ test("sends an anonymous reader to the public Answer site", async ({ page }) => 
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 401,
     contentType: "application/json",
-    body: JSON.stringify({ detail: "未登录" }),
+    body: JSON.stringify({ detail: "Not logged in" }),
   }));
   await page.route("**/api/community/integration", (route) => route.fulfill({
     status: 200,
@@ -216,7 +216,7 @@ test("keeps a same-origin OpenClass entry separate from the public Answer mount"
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 401,
     contentType: "application/json",
-    body: JSON.stringify({ detail: "未登录" }),
+    body: JSON.stringify({ detail: "Not logged in" }),
   }));
   await page.route("**/api/community/integration", (route) => route.fulfill({
     status: 200,
@@ -297,7 +297,7 @@ test("renders a shared history-node link as a fully clickable reference card", a
   await page.route(/\/community\/$/, (route) => route.fulfill({
     status: 200,
     contentType: "text/html",
-    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerSsoBridge}</script><blockquote><p><a href="${targetUrl}">课堂历史节点引用 · 点击打开</a></p></blockquote>`,
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerSsoBridge}</script><blockquote><p><a href="${targetUrl}">Course history reference · Open</a></p></blockquote>`,
   }));
   await page.route(targetUrl, (route) => route.fulfill({
     status: 200,
@@ -324,7 +324,7 @@ test("adds a RIDOC course file to an Answer draft without filling the post title
       spec_version: "1.0",
       profile: "learning.lesson",
       media_type: "application/vnd.openclass.ridoc+zip",
-      lesson: { title: "可回放的学习课程", summary: "这是一份可继续学习和分叉的课程简介。" },
+      lesson: { title: "Replayable learning sessions", summary: "This is a course introduction that can be continued and branched off." },
       capabilities: { playback: true, continue: true, fork: true },
     }),
     "history/graph.json": "{}",
@@ -344,29 +344,29 @@ test("adds a RIDOC course file to an Answer draft without filling the post title
   await page.route(/\/community\/questions\/add$/, (route) => route.fulfill({
     status: 200,
     contentType: "text/html; charset=utf-8",
-    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><label>标题<input aria-label="标题"></label><div><textarea aria-label="内容"></textarea></div>`,
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><label>Title<input aria-label="Title"></label><div><textarea aria-label="Content"></textarea></div>`,
   }));
 
   await page.goto("/community/questions/add");
 
-  await expect(page.getByText("添加 RIDOC 课程文件")).toBeVisible();
+  await expect(page.getByText("Add a RIDOC course file")).toBeVisible();
   await page.locator('input[type="file"][accept*=".ridoc"]').setInputFiles({
     name: "shared-course.ridoc",
     mimeType: "application/vnd.openclass.ridoc+zip",
     buffer: ridoc,
   });
-  const body = page.getByLabel("内容");
-  await expect(body).toHaveValue(/OpenClass RIDOC 课程文件/);
-  await expect(page.getByLabel("标题")).toHaveValue("");
-  await expect(page.getByText("已添加：可回放的学习课程")).toBeVisible();
+  const body = page.getByLabel("content");
+  await expect(body).toHaveValue(/OpenClass RIDOC course file/);
+  await expect(page.getByLabel("title")).toHaveValue("");
+  await expect(page.getByText("Added: Replayable Learning Sessions")).toBeVisible();
   expect(uploadAuthorization).toBe("answer-token");
   const markdown = await body.inputValue();
   const encodedMetadata = markdown.match(/#openclass-ridoc=([^\)]+)/)?.[1];
   expect(encodedMetadata).toBeTruthy();
   const metadata = JSON.parse(Buffer.from(encodedMetadata!, "base64url").toString("utf8"));
   expect(metadata).toMatchObject({
-    title: "可回放的学习课程",
-    summary: "这是一份可继续学习和分叉的课程简介。",
+    title: "Replayable learning sessions",
+    summary: "This is a course introduction that can be continued and branched off.",
   });
 });
 
@@ -383,7 +383,7 @@ test("rejects a renamed non-RIDOC file before uploading it", async ({ page, base
   await page.route(/\/community\/questions\/add$/, (route) => route.fulfill({
     status: 200,
     contentType: "text/html; charset=utf-8",
-    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><label>标题<input aria-label="标题"></label><div><textarea aria-label="内容"></textarea></div>`,
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><label>Title<input aria-label="Title"></label><div><textarea aria-label="Content"></textarea></div>`,
   }));
 
   await page.goto("/community/questions/add");
@@ -393,9 +393,9 @@ test("rejects a renamed non-RIDOC file before uploading it", async ({ page, base
     buffer: Buffer.from("not a zip archive"),
   });
 
-  await expect(page.getByText("文件不是有效的 RIDOC ZIP 归档")).toBeVisible();
-  await expect(page.getByLabel("内容")).toHaveValue("");
-  await expect(page.getByLabel("标题")).toHaveValue("");
+  await expect(page.getByText("File is not a valid RIDOC ZIP archive")).toBeVisible();
+  await expect(page.getByLabel("content")).toHaveValue("");
+  await expect(page.getByLabel("title")).toHaveValue("");
   expect(uploadRequests).toBe(0);
 });
 
@@ -405,18 +405,18 @@ test("renders a RIDOC attachment as a clickable course introduction card", async
   const entryUrl = `${baseURL}/community`;
   const metadata = Buffer.from(JSON.stringify({
     version: 1,
-    title: "课程卡片标题",
-    summary: "课程卡片中的简介由 RIDOC 清单提供。",
+    title: "Course card title",
+    summary: "Introductions in course cards are provided by the RIDOC checklist.",
     fileName: "course.ridoc",
     sizeBytes: 2048,
-    capabilities: ["可播放", "可继续", "可分叉"],
+    capabilities: ["Playable", "Can continue", "bifurcatable"],
   })).toString("base64url");
   const attachmentUrl = `${baseURL}/uploads/course.ridoc#openclass-ridoc=${metadata}`;
   const downloadUrl = `${baseURL}/uploads/course.ridoc`;
   await page.route(/\/community\/questions\/course-card$/, (route) => route.fulfill({
     status: 200,
     contentType: "text/html; charset=utf-8",
-    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><blockquote><p><a href="${attachmentUrl}">OpenClass RIDOC 课程文件</a></p></blockquote>`,
+    body: `<script>window.__OPENCLASS_COMMUNITY_BRIDGE__={entryUrl:${JSON.stringify(entryUrl)}};</script><script>${answerRidocBridge}</script><blockquote><p><a href="${attachmentUrl}">OpenClass RIDOC course file</a></p></blockquote>`,
   }));
   await page.route(downloadUrl, (route) => route.fulfill({
     status: 200,
@@ -429,10 +429,10 @@ test("renders a RIDOC attachment as a clickable course introduction card", async
 
   const card = page.locator("blockquote.openclass-ridoc-card");
   await expect(card).toHaveAttribute("role", "link");
-  await expect(card).toContainText("课程卡片标题");
-  await expect(card).toContainText("课程卡片中的简介由 RIDOC 清单提供。");
+  await expect(card).toContainText("Course card title");
+  await expect(card).toContainText("Introductions in course cards are provided by the RIDOC checklist.");
   await expect(card).toContainText("2 KB");
-  await expect(card).toContainText("可播放");
+  await expect(card).toContainText("Playable");
   const downloadPromise = page.waitForEvent("download");
   await card.click({ position: { x: 8, y: 8 } });
   const download = await downloadPromise;
@@ -482,7 +482,7 @@ test("reports an unavailable Answer service without exposing a second forum", as
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 401,
     contentType: "application/json",
-    body: JSON.stringify({ detail: "未登录" }),
+    body: JSON.stringify({ detail: "Not logged in" }),
   }));
   await page.route("**/api/community/integration", (route) => route.fulfill({
     status: 200,
@@ -499,7 +499,7 @@ test("reports an unavailable Answer service without exposing a second forum", as
 
   await page.goto("/community");
 
-  await expect(page.getByRole("heading", { name: "学习社区暂时不可用" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "重新检查" })).toBeVisible();
-  await expect(page.getByText("继续使用内置社区")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Learning community is temporarily unavailable" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "recheck" })).toBeVisible();
+  await expect(page.getByText("Keep using the built-in community")).toHaveCount(0);
 });

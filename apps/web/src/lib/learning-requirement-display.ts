@@ -9,7 +9,7 @@ import type {
 import { sourceReferenceRangeDisplayLabel } from "@/lib/source-range-display";
 
 export type LearningRequirementDisplayStatus = "collecting" | "ready" | "unknown";
-export type LearningRequirementTeachingType = "新知识点教学" | "练习" | "未确定";
+export type LearningRequirementTeachingType = "Teaching new knowledge points" | "practise" | "Undetermined";
 
 export interface LearningRequirementDisplayFactor {
   key: string;
@@ -35,9 +35,9 @@ type BuildLearningRequirementDisplayInput = {
 };
 
 const STATUS_LABELS: Record<LearningRequirementDisplayStatus, string> = {
-  collecting: "收集中",
-  ready: "已齐全",
-  unknown: "未确定",
+  collecting: "Collecting",
+  ready: "Complete",
+  unknown: "Undetermined",
 };
 
 export function learningRequirementStatusLabel(status: LearningRequirementDisplayStatus) {
@@ -59,18 +59,18 @@ export function buildLearningRequirementDisplay({
   if (workMode === "knowledge_board") {
     const hasStructuredSourceScope = granularity === "source_chapter";
     const isSingleKnowledgePoint = granularity === "single_knowledge_point" || hasStructuredSourceScope;
-    const knowledgePoint = isSingleKnowledgePoint && learningGoal ? learningGoal : "待收敛到具体知识点";
+    const knowledgePoint = isSingleKnowledgePoint && learningGoal ? learningGoal : "To be converged to specific knowledge points";
     const coreFactors = [
       boardWorkflowFactor,
       factor({
         key: "knowledge_point",
-        label: hasStructuredSourceScope ? "资料章节" : "知识点",
+        label: hasStructuredSourceScope ? "Information section" : "Knowledge points",
         value: knowledgePoint,
         filled: Boolean(isSingleKnowledgePoint && learningGoal),
       }),
     ];
     return {
-      teachingType: "新知识点教学",
+      teachingType: "Teaching new knowledge points",
       status: displayStatus(coreFactors, clarification),
       progress: displayProgress(progress, coreFactors, clarification),
       summary: requirementSummary(
@@ -94,25 +94,25 @@ export function buildLearningRequirementDisplay({
       boardWorkflowFactor,
       factor({
         key: "practice_content",
-        label: "练习内容",
-        value: learningGoal || "待明确",
+        label: "Exercise content",
+        value: learningGoal || "To be clarified",
         filled: Boolean(learningGoal),
       }),
       factor({
         key: "current_level",
-        label: "当前水平",
-        value: currentLevel || "待明确",
+        label: "current level",
+        value: currentLevel || "To be clarified",
         filled: Boolean(currentLevel),
       }),
       factor({
         key: "target_scenario",
-        label: "目的场景",
-        value: targetScenario || "待明确",
+        label: "target scene",
+        value: targetScenario || "To be clarified",
         filled: Boolean(targetScenario),
       }),
     ];
     return {
-      teachingType: "练习",
+      teachingType: "practise",
       status: displayStatus(coreFactors, clarification),
       progress: displayProgress(progress, coreFactors, clarification),
       summary: requirementSummary(
@@ -132,13 +132,13 @@ export function buildLearningRequirementDisplay({
     boardWorkflowFactor,
     factor({
       key: "learning_type",
-      label: "学习类型",
-      value: "待判断",
+      label: "learning type",
+      value: "To be judged",
       filled: false,
     }),
   ];
   return {
-    teachingType: "未确定",
+    teachingType: "Undetermined",
     status: "unknown",
     progress,
     summary: requirementSummary(
@@ -157,19 +157,19 @@ export function buildLearningRequirementDisplay({
 export function boardWorkflowLabel(value: BoardWorkflow | null | undefined) {
   const workflow = normalizeBoardWorkflow(value);
   if (workflow === "generate_from_scratch") {
-    return "从 0 生成板书";
+    return "Generate a new board";
   }
   if (workflow === "act_on_existing_board") {
-    return "对已有板书内容做动作";
+    return "Perform actions on existing board content";
   }
-  return "待判断";
+  return "To be judged";
 }
 
 function buildBoardWorkflowFactor(value: BoardWorkflow | null | undefined) {
   const workflow = normalizeBoardWorkflow(value);
   return factor({
     key: "board_workflow",
-    label: "板书链路",
+    label: "board link",
     value: boardWorkflowLabel(workflow),
     filled: workflow !== "unknown",
   });
@@ -256,11 +256,11 @@ function buildAuxiliaryFactors({
   const used = new Set(usedValues.map((value) => normalizeText(value ?? "")).filter(Boolean));
   const factors: LearningRequirementDisplayFactor[] = [];
 
-  pushAuxiliary(factors, used, "confirmed_source", "已确认资料", confirmedSourceLabel(requirementSheet));
-  pushAuxiliary(factors, used, "broad_topic", "当前方向", broadTopic);
-  pushAuxiliary(factors, used, "known_background", "已有背景", requirementSheet?.known_background);
-  pushAuxiliary(factors, used, "target_depth", "目标深度", requirementSheet?.target_depth);
-  pushAuxiliary(factors, used, "output_preference", "输出偏好", requirementSheet?.output_preference);
+  pushAuxiliary(factors, used, "confirmed_source", "Confirmed information", confirmedSourceLabel(requirementSheet));
+  pushAuxiliary(factors, used, "broad_topic", "current direction", broadTopic);
+  pushAuxiliary(factors, used, "known_background", "Already have background", requirementSheet?.known_background);
+  pushAuxiliary(factors, used, "target_depth", "target depth", requirementSheet?.target_depth);
+  pushAuxiliary(factors, used, "output_preference", "Output preferences", requirementSheet?.output_preference);
 
   for (const factItem of facts) {
     const label = auxiliaryLabelForFact(factItem);
@@ -290,7 +290,7 @@ function confirmedSourceLabel(requirementSheet?: LearningRequirementSheet | null
     .filter(Boolean)
     .join(" / ");
   const remaining = grounding.confirmed_references.length - 1;
-  return remaining > 0 ? `${location} 等 ${grounding.confirmed_references.length} 处` : location;
+  return remaining > 0 ? `${location} and ${grounding.confirmed_references.length - 1} more` : location;
 }
 
 function requirementSummary(
@@ -339,10 +339,10 @@ function pushAuxiliary(
 
 function auxiliaryLabelForFact(factItem: LearningRequirementKeyFact) {
   if (factItem.category === "vocabulary") {
-    return "词汇量";
+    return "Vocabulary";
   }
   if (factItem.category === "output") {
-    return "输出需求";
+    return "Output requirements";
   }
   if (factItem.category === "other") {
     return compactText(factItem.label);
@@ -362,19 +362,19 @@ function latestFactByCategory(facts: LearningRequirementKeyFact[], category: Non
 
 function legacyCategoryFromLabel(factItem: LearningRequirementKeyFact): LearningRequirementKeyFact["category"] {
   const label = normalizeText(factItem.label);
-  if (["学习内容", "学习主题", "学习目标", "学习方向", "想学", "具体内容", "知识点"].some((item) => label.includes(item))) {
+  if (["Learning content", "learning topics", "learning objectives", "learning direction", "Want to learn", "Specific content", "Knowledge points"].some((item) => label.includes(item))) {
     return "learning";
   }
-  if (["当前水平", "自己水平", "已有基础", "基础", "水平"].some((item) => label.includes(item))) {
+  if (["current level", "own level", "Already have a foundation", "Base", "level"].some((item) => label.includes(item))) {
     return "level";
   }
-  if (["面向场景", "使用场景", "应用场景", "目的场景", "场景"].some((item) => label.includes(item))) {
+  if (["Scenario oriented", "Usage scenarios", "Application scenarios", "target scene", "scene"].some((item) => label.includes(item))) {
     return "scenario";
   }
-  if (["词汇量", "词汇"].some((item) => label.includes(item))) {
+  if (["Vocabulary", "vocabulary"].some((item) => label.includes(item))) {
     return "vocabulary";
   }
-  if (["输出需求", "产出需求", "目标产出", "输出"].some((item) => label.includes(item))) {
+  if (["Output requirements", "output demand", "target output", "output"].some((item) => label.includes(item))) {
     return "output";
   }
   return "other";

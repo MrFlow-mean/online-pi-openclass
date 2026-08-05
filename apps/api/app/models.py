@@ -141,6 +141,7 @@ BoardTaskConfirmation = Literal["confirm", "decline"]
 ChatChannel = Literal["text", "realtime"]
 ChatInputKind = Literal["typed", "voice"]
 TurnIntent = Literal["ordinary_chat", "learning_need", "unclear"]
+LearningFlow = Literal["teach", "generate_only", "none"]
 TurnExplicitAction = Literal[
     "direct_edit",
     "board_generation",
@@ -1007,6 +1008,16 @@ SourceStructureStrategy = Literal[
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
 SourceChapterMappingStatus = Literal["verified", "partial", "unverified", "unmapped"]
+SourceCatalogWorkState = Literal["working", "paused", "satisfied", "partial"]
+SourceCatalogPhase = Literal[
+    "directory_discovery",
+    "page_calibration",
+    "range_mapping",
+    "validation",
+    "terminal",
+]
+SourceCatalogDirectoryStatus = Literal["incomplete", "uncertain", "complete"]
+SourceCatalogIndexStatus = Literal["pending", "in_progress", "complete", "partial"]
 SourceRangeKind = Literal[
     "file_lines",
     "pdf_pages",
@@ -1104,6 +1115,7 @@ class SourceStructureQuality(BaseModel):
 
 class SourceIngestionJob(BaseModel):
     id: str = Field(default_factory=lambda: new_id("ingest"))
+    run_id: str = ""
     resource_id: str | None = None
     source_type: ResourceSourceType = "local_file"
     source_uri: str | None = None
@@ -1113,6 +1125,8 @@ class SourceIngestionJob(BaseModel):
     error: str = ""
     phase_history: list[str] = Field(default_factory=list)
     agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
+    cancel_requested: bool = False
+    heartbeat_at: str | None = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -1553,6 +1567,25 @@ class SourceCatalogSourceSummary(BaseModel):
     structure_status: SourceStructureStatus = "pending"
 
 
+class SourceCatalogWorkPageRange(BaseModel):
+    start: int = Field(ge=1)
+    end: int = Field(ge=1)
+
+
+class SourceCatalogWorkItem(BaseModel):
+    id: str
+    kind: Literal[
+        "directory_discovery",
+        "directory_page_attribution",
+        "pagination_calibration",
+        "range_mapping",
+        "conflict_resolution",
+    ]
+    node_keys: list[str] = Field(default_factory=list)
+    page_ranges: list[SourceCatalogWorkPageRange] = Field(default_factory=list)
+    reason: str
+
+
 class SourceCatalogView(BaseModel):
     source: SourceCatalogSourceSummary
     structure_id: str | None = None
@@ -1565,6 +1598,33 @@ class SourceCatalogView(BaseModel):
     catalog_schema_version: str = "legacy"
     catalog_model: str = ""
     task_contract: str = ""
+    work_state: SourceCatalogWorkState = "satisfied"
+    phase: SourceCatalogPhase = "terminal"
+    directory_status: SourceCatalogDirectoryStatus = "complete"
+    index_status: SourceCatalogIndexStatus = "complete"
+    summary: str = ""
+    next_plan: str = ""
+    stop_reason: str = ""
+    completion_reason: str = ""
+    directory_gaps: list[str] = Field(default_factory=list)
+    remaining_work: list[SourceCatalogWorkItem] = Field(default_factory=list)
+    remaining_work_count: int = Field(default=0, ge=0)
+    snapshot_reason: Literal[
+        "first_citable",
+        "top_level_subtree",
+        "batch",
+        "budget_increment",
+        "correction",
+        "pause",
+        "final",
+    ] = "budget_increment"
+    background_refine_active: bool = False
+    pagination_regime_count: int = Field(default=0, ge=0)
+    unresolved_node_count: int = Field(default=0, ge=0)
+    locator_method: str = ""
+    revision: int = Field(default=0, ge=0)
+    can_refine: bool = False
+    recent_tool_activity: list[dict[str, Any]] = Field(default_factory=list)
     chapter_count: int = Field(default=0, ge=0)
     verified_chapter_count: int = Field(default=0, ge=0)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -1725,11 +1785,11 @@ class SourceQueryScope(BaseModel):
             return self
         if not self.refs:
             raise ValueError(f"{self.mode} requires at least one source ref.")
-        if self.mode in {"chapter", "page_range", "source"} and len(self.refs) != 1:
+        if self.mode == "source" and len(self.refs) != 1:
             raise ValueError(f"{self.mode} requires exactly one source ref.")
-        if self.mode == "chapter" and not self.refs[0].source_chapter_id:
+        if self.mode == "chapter" and any(not ref.source_chapter_id for ref in self.refs):
             raise ValueError("chapter scope requires source_chapter_id.")
-        if self.mode == "page_range" and self.refs[0].page_start is None:
+        if self.mode == "page_range" and any(ref.page_start is None for ref in self.refs):
             raise ValueError("page_range scope requires page_start and page_end.")
         if self.mode in {"source", "sources"} and any(
             ref.source_chapter_id or ref.page_start is not None for ref in self.refs
@@ -1813,6 +1873,7 @@ class AIModelOption(BaseModel):
     access_method: AIModelAccessMethod
     label: str
     capability: AIModelCapability
+    supports_image_inputs: bool = False
     enabled: bool = False
     configured: bool = False
     default: bool = False
@@ -1982,6 +2043,11 @@ class ChatRequest(BaseModel):
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
+class ChatCancellationRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=160)
+    input_event_id: str = Field(min_length=1, max_length=200)
+
+
 class TurnEnvelope(BaseModel):
     """Frozen transport contract for one user input event."""
 
@@ -2011,6 +2077,7 @@ class TurnEnvelope(BaseModel):
 
 class TurnDecision(BaseModel):
     intent: TurnIntent
+    learning_flow: LearningFlow = "none"
     continuation: TurnContinuationKind = "none"
     relation_to_active: TurnRelationToActive = "none"
     board_access: TurnDecisionBoardAccess = "forbidden"
@@ -2114,6 +2181,31 @@ class CourseSearchResponse(BaseModel):
 class WorkspaceStateView(BaseModel):
     packages: list[CoursePackageView] = Field(default_factory=list)
     active_package_id: str | None = None
+
+
+class LessonWorkspaceDelta(BaseModel):
+    operation: Literal["create", "close", "delete"]
+    workspace_revision: int
+    package_id: str
+    active_package_id: str | None = None
+    active_lesson_id: str | None = None
+    open_lesson_ids: list[str] = Field(default_factory=list)
+    workspace_tab_order: list[str] = Field(default_factory=list)
+    created_lesson: LessonView | None = None
+    deleted_lesson_id: str | None = None
+    graph_edge: CourseGraphEdge | None = None
+
+
+class DocumentSaveDelta(BaseModel):
+    lesson_id: str
+    package_id: str
+    workspace_revision: int
+    document: BoardDocument
+    latest_commit: CommitRecord
+    current_branch: str
+    branch_head_commit_id: str
+    updated_at: str
+    changed: bool
 
 
 class AuthIdentityView(BaseModel):

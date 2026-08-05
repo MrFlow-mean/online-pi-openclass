@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.models import (
@@ -9,12 +12,19 @@ from app.models import (
     CoursePackage,
     SourceIngestionJob,
     SourceIngestionRecord,
+    SourceChapter,
+    SourceRange,
     SourceStructure,
 )
 from app.services.open_notebook_adapter import OpenNotebookSourceResult
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
-from app.services.source_ingestion_jobs import SourceIngestionCoordinator, SourceIngestionJobStore
+from app.services.source_ingestion_jobs import (
+    SourceIngestionCoordinator,
+    SourceIngestionJobStore,
+    SourceIngestionTaskManager,
+    SourceTaskHandle,
+)
 from app.services.source_ingestion_service import SourceIngestionService
 from app.services import source_ingestion_service as ingestion_module
 from app.services import source_codex_progress
@@ -33,6 +43,49 @@ def test_source_ingestion_defaults_to_native_backend(tmp_path, monkeypatch) -> N
     )
 
     assert service.source_backend == "native"
+
+
+def test_concurrent_duplicate_directory_uploads_reuse_one_source_and_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    job_store = SourceIngestionJobStore(database)
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    service = SourceIngestionService(
+        source_backend="native",
+        store=source_store,
+        job_store=job_store,
+        structure_store=SourceStructureStore(database),
+    )
+    package = CoursePackage(id="course_dedupe", title="Dedupe", summary="", lessons=[])
+    start = threading.Barrier(3)
+
+    def upload(file_name: str) -> SourceIngestionRecord:
+        start.wait(timeout=5)
+        return service.queue_file_source(
+            owner_user_id="user_dedupe",
+            package=package,
+            file_name=file_name,
+            content=b"same-pdf-content",
+            mime_type="application/pdf",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(upload, "first.pdf")
+        second = executor.submit(upload, "renamed.pdf")
+        start.wait(timeout=5)
+        uploaded = [first.result(timeout=5), second.result(timeout=5)]
+
+    assert uploaded[0].id == uploaded[1].id
+    assert len(source_store.list_sources(owner_user_id="user_dedupe", package_id=package.id)) == 1
+    with sqlite3.connect(database) as conn:
+        source_count = conn.execute("SELECT COUNT(*) FROM source_ingestions").fetchone()[0]
+        job_count = conn.execute("SELECT COUNT(*) FROM source_ingestion_jobs").fetchone()[0]
+    assert source_count == 1
+    assert job_count == 1
+    assert Path(str(uploaded[0].metadata["local_source_path"])).read_bytes() == b"same-pdf-content"
 
 
 def test_local_source_storage_does_not_truncate_the_original_file_name(
@@ -124,6 +177,47 @@ def test_source_ingestion_job_persists_live_codex_activity(tmp_path) -> None:
     assert restored is not None
     assert restored.id == saved.id
     assert restored.agent_activity == [event]
+
+
+def test_task_manager_cancel_terminates_registered_process_and_marks_job(tmp_path) -> None:
+    store = SourceIngestionJobStore(tmp_path / "openclass.sqlite3")
+    key = ("user_cancel", "course_cancel", "source_cancel")
+    job = store.save(
+        SourceIngestionJob(
+            run_id="run_cancel",
+            resource_id=key[2],
+            status="indexing",
+        ),
+        owner_user_id=key[0],
+        package_id=key[1],
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    manager = SourceIngestionTaskManager(job_store=store)
+    handle = SourceTaskHandle(
+        cancel_event=threading.Event(),
+        key=key,
+        run_id=job.run_id,
+        process=process,
+    )
+    manager._active[key] = handle
+
+    try:
+        assert manager.cancel(key, timeout_seconds=1) is True
+        assert process.poll() is not None
+        cancelled = store.latest_for_source(
+            owner_user_id=key[0],
+            package_id=key[1],
+            source_id=key[2],
+        )
+        assert cancelled is not None
+        assert cancelled.cancel_requested is True
+        assert cancelled.run_id == "run_cancel"
+    finally:
+        if process.poll() is None:
+            process.kill()
 
 
 def test_native_retry_detaches_failed_open_notebook_source(tmp_path, monkeypatch) -> None:
@@ -247,6 +341,44 @@ def test_source_ingestion_coordinator_allows_bounded_parallel_work() -> None:
         worker.join(timeout=5)
         assert not worker.is_alive()
     assert max_active_workers == 2
+
+
+def test_source_ingestion_coordinator_is_unbounded_by_default() -> None:
+    coordinator = SourceIngestionCoordinator()
+    worker_count = 12
+    release_workers = threading.Event()
+    all_workers_entered = threading.Event()
+    state_lock = threading.Lock()
+    active_workers = 0
+
+    def run_worker() -> None:
+        nonlocal active_workers
+        with coordinator.processing_slot():
+            with state_lock:
+                active_workers += 1
+                if active_workers == worker_count:
+                    all_workers_entered.set()
+            assert release_workers.wait(timeout=5)
+            with state_lock:
+                active_workers -= 1
+
+    workers = [threading.Thread(target=run_worker) for _ in range(worker_count)]
+    for worker in workers:
+        worker.start()
+
+    assert all_workers_entered.wait(timeout=5)
+    with state_lock:
+        assert active_workers == worker_count
+    assert coordinator.processing_capacity is None
+    assert coordinator.processing_weight(
+        size_bytes=1024 * 1024 * 1024,
+        source_type="video_file",
+    ) == 1
+
+    release_workers.set()
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
 
 
 def test_source_structure_write_retries_transient_database_lock(tmp_path, monkeypatch) -> None:
@@ -524,6 +656,107 @@ def test_directory_ingestion_persists_real_codex_work_progress(tmp_path, monkeyp
     assert completed.status == "ready"
     assert completed.ingestion_job is not None
     assert completed.ingestion_job.progress == 100
+
+
+def test_background_catalog_continuation_keeps_published_source_ready(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    job_store = SourceIngestionJobStore(database)
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    package = CoursePackage(id="course_incremental", title="Incremental", summary="", lessons=[])
+
+    class ContinuingDirectoryProcessor:
+        def process(self, *, record, progress_callback=None, **_kwargs):
+            assert source_store.get_source(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            ).status == "ready"
+            assert progress_callback is not None
+            progress_callback("source_agent_working", 65)
+            assert source_store.get_source(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            ).status == "ready"
+            return structure_store.get_structure(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
+
+    service = SourceIngestionService(
+        source_backend="native",
+        store=source_store,
+        job_store=job_store,
+        structure_store=structure_store,
+        directory_processor=ContinuingDirectoryProcessor(),
+    )
+    queued = service.queue_file_source(
+        owner_user_id="user_incremental",
+        package=package,
+        file_name="source.pdf",
+        content=b"pdf",
+        mime_type="application/pdf",
+    )
+    content_hash = str(queued.metadata["content_hash"])
+    published = structure_store.publish_catalog(
+        structure=SourceStructure(
+            owner_user_id=queued.owner_user_id,
+            package_id=queued.package_id,
+            source_ingestion_id=queued.id,
+            status="ready",
+            strategy="codex_directory_v1",
+            has_verified_toc=True,
+            source_content_hash=content_hash,
+            catalog_schema_version="codex_directory_v1",
+            metadata={
+                "catalog_pipeline": "agent_catalog_v3",
+                "work_state": "working",
+                "directory_status": "incomplete",
+                "index_status": "in_progress",
+                "remaining_work": [
+                    {
+                        "id": "work_more",
+                        "kind": "directory_discovery",
+                        "node_keys": [],
+                        "page_ranges": [],
+                        "reason": "Continue the remaining directory pages.",
+                    }
+                ],
+            },
+        ),
+        chapters=[
+            SourceChapter(
+                owner_user_id=queued.owner_user_id,
+                package_id=queued.package_id,
+                source_ingestion_id=queued.id,
+                title="Published",
+                level=1,
+                path=["Published"],
+                order_index=0,
+                mapping_status="verified",
+                anchor_status="verified",
+                range=SourceRange(kind="pdf_pages", start=1, end=1),
+                source_content_hash=content_hash,
+            )
+        ],
+    )
+    assert published.catalog_version == 1
+    source_store.save_source(queued.model_copy(update={"status": "ready"}))
+
+    continued = service.continue_catalog_refine(
+        owner_user_id=queued.owner_user_id,
+        package_id=queued.package_id,
+        source_id=queued.id,
+    )
+
+    assert continued is not None
+    assert continued.status == "ready"
+    assert continued.ingestion_job is not None
+    assert continued.ingestion_job.status == "indexing"
+    assert continued.ingestion_job.progress < 100
 
 
 def test_open_notebook_mode_skips_local_structure_pipeline(tmp_path, monkeypatch) -> None:

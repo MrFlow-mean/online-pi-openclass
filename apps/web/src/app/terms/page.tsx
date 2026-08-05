@@ -2,18 +2,18 @@ import type { Metadata } from "next";
 
 import { LegalPage, LegalSection } from "@/components/legal-page";
 
-export const metadata: Metadata = { title: "服务条款", description: "使用开放课堂账号、AI、社区和付费功能的基本约定。" };
+export const metadata: Metadata = { title: "Terms of Service", description: "Basic conventions for using OpenClass accounts, AI, community and paid functions." };
 
 export default function TermsPage() {
-  return <LegalPage title="服务条款" summary="使用开放课堂即表示你同意遵守以下规则。若你代表学校或组织使用，应确保自己有权代表该组织接受条款。">
-    <LegalSection title="1. 账号与资格"><p>用户应提供可验证的账号信息、保护登录凭据，并对账号中的活动负责。不得冒用他人身份、共享受限账号、绕过访问控制或使用自动化方式批量注册。</p></LegalSection>
-    <LegalSection title="2. 用户内容"><p>用户保留对上传资料、课程和文档依法享有的权利，并授权开放课堂在提供、保护和改进用户所请求的服务所必需范围内处理这些内容。用户应确保自己有权上传和使用相关内容。</p></LegalSection>
-    <LegalSection title="3. AI 输出"><p>AI 输出可能不准确、不完整或不适合特定目的。用户应在教学、考试、医疗、法律、财务或其他重要决策前独立核验。开放课堂不会保证某次模型调用产生特定结果。</p></LegalSection>
-    <LegalSection title="4. 可接受使用"><p>不得利用平台侵害他人权利、传播违法内容、实施欺诈或骚扰、生成恶意软件、探测非本人数据、干扰服务稳定性，或规避配额、人机验证、安全控制和第三方服务限制。</p></LegalSection>
-    <LegalSection title="5. Credits、付款与退款"><p>页面显示的价格、Credits 数量和有效规则以结账时信息为准。只有支付服务确认成功后才会发放权益。重复扣款、未交付或法律要求的退款可联系客服核查；已实际消耗的模型与服务成本可能影响可退金额。拒付或欺诈调查期间，相关权益可能暂时冻结。</p></LegalSection>
-    <LegalSection title="6. 第三方服务"><p>模型、支付、邮件、社区和外部资料可能由第三方提供。第三方服务的可用性、区域、价格和规则可能变化；用户同时受相应第三方条款约束。</p></LegalSection>
-    <LegalSection title="7. 服务变更与终止"><p>我们可能为安全、合规、维护或产品调整而限制功能，并尽量减少影响。严重或重复违反条款、危害平台或他人安全时，账号可能被暂停或终止。用户可随时导出数据并注销账号。</p></LegalSection>
-    <LegalSection title="8. 责任边界"><p>在适用法律允许范围内，服务按现状提供。开放课堂不排除法律不得排除的责任；对于超出合理控制范围的间接损失或第三方故障，责任按适用法律处理。</p></LegalSection>
-    <LegalSection title="9. 争议与适用规则"><p>发生争议时，请先联系我们协商。任何强制性的消费者保护、数据保护和司法管辖规则仍然适用；本条款不减少用户依法享有且不可放弃的权利。</p></LegalSection>
+  return <LegalPage title="Terms of Service" summary="By using OpenClass, you agree to abide by the following rules. If you are using on behalf of a school or organization, you should ensure that you have the authority to accept the terms on behalf of that organization.">
+    <LegalSection title="1. Accounts and Eligibility"><p>Users are expected to provide verifiable account information, protect login credentials, and take responsibility for activity in their accounts. You may not assume another person’s identity, share restricted accounts, bypass access controls, or use automated methods to register in bulk.</p></LegalSection>
+    <LegalSection title="2. User Content"><p>Users retain their legal rights to uploaded materials, courses and documents, and authorize OpenClass to process these contents to the extent necessary to provide, protect and improve the services requested by users. Users should ensure that they have the right to upload and use relevant content.</p></LegalSection>
+    <LegalSection title="3. AI output"><p>AI output may be inaccurate, incomplete, or unfit for a particular purpose. Users should verify independently before making any teaching, examination, medical, legal, financial or other important decisions. OpenClass does not guarantee that a particular model call will produce a specific result.</p></LegalSection>
+    <LegalSection title="4. Acceptable use"><p>You may not use the platform to infringe on the rights of others, spread illegal content, commit fraud or harassment, generate malware, detect non-personal data, interfere with service stability, or circumvent quotas, human verification, security controls and third-party service restrictions.</p></LegalSection>
+    <LegalSection title="5. Credits, Payments and Refunds"><p>The price, number of Credits and valid rules displayed on the page are subject to the information at checkout. The rights will be released only after the payment service is confirmed successfully. For repeated deductions, non-delivery or refunds required by law, please contact customer service for verification; the actual consumed model and service costs may affect the refundable amount. Benefits may be temporarily frozen during a chargeback or fraud investigation.</p></LegalSection>
+    <LegalSection title="6. Third-party services"><p>Models, payments, emails, communities and external materials may be provided by third parties. The availability, region, price and rules of third-party services may change; users are also bound by the corresponding third-party terms.</p></LegalSection>
+    <LegalSection title="7. Service changes and terminations"><p>We may limit functionality for security, compliance, maintenance, or product adjustments and to minimize impact. Accounts may be suspended or terminated if you seriously or repeatedly violate the terms and endanger the safety of the platform or others. Users can export data and cancel their accounts at any time.</p></LegalSection>
+    <LegalSection title="8. Boundaries of responsibility"><p>TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE SERVICES ARE PROVIDED AS IS. OpenClass does not exclude liabilities that cannot be excluded by law; for indirect losses or third-party failures beyond reasonable control, liability shall be handled in accordance with applicable laws.</p></LegalSection>
+    <LegalSection title="9. Disputes and Applicable Rules"><p>In the event of a dispute, please contact us for negotiation first. Any mandatory consumer protection, data protection and jurisdictional rules still apply; this clause does not reduce the rights that users have by law and cannot be waived.</p></LegalSection>
   </LegalPage>;
 }

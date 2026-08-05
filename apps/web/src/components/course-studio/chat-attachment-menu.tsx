@@ -47,7 +47,7 @@ export function ChatAttachmentChips({
     return null;
   }
   return (
-    <div className="mx-2.5 mt-2.5 flex flex-wrap gap-2" aria-label="已添加附件">
+    <div className="mx-2.5 mt-2.5 flex flex-wrap gap-2" aria-label="Attachment added">
       {attachments.map((attachment) => (
         <div
           key={attachment.source_ingestion_id}
@@ -61,8 +61,8 @@ export function ChatAttachmentChips({
             <span className="block text-[10px] text-gray-500">
               {attachment.kind === "file" && attachment.status !== "ready"
                 ? attachment.status === "failed"
-                  ? "解析失败"
-                  : "正在解析"
+                  ? "Parsing failed"
+                  : "Parsing"
                 : readableSize(attachment.size_bytes)}
             </span>
           </span>
@@ -70,7 +70,7 @@ export function ChatAttachmentChips({
             type="button"
             onClick={() => onRemove(attachment.source_ingestion_id)}
             disabled={disabled}
-            aria-label={`移除附件 ${attachment.name}`}
+            aria-label={`Remove attachment ${attachment.name}`}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition hover:bg-white hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
           >
             <X className="h-3.5 w-3.5" />
@@ -86,7 +86,7 @@ export function ChatAttachmentMenu({
   attachments,
   disabled,
   menuAboveRef,
-  limitLabel = "每条消息",
+  limitLabel = "per message",
   testIdPrefix = "chat",
   triggerText = "",
   triggerHint = "",
@@ -220,12 +220,12 @@ export function ChatAttachmentMenu({
     }
     const availableSlots = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
     if (!availableSlots) {
-      onError(`${limitLabel}最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件。`);
+      onError(`${limitLabel} supports up to ${MAX_CHAT_ATTACHMENTS} attachments.`);
       return 0;
     }
     const selectedFiles = files.slice(0, availableSlots);
     if (selectedFiles.length < files.length) {
-      onError(`${limitLabel}最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件，已保留前 ${selectedFiles.length} 个。`);
+      onError(`${limitLabel} supports up to ${MAX_CHAT_ATTACHMENTS} attachments; the first ${selectedFiles.length} were kept.`);
     }
     setOpen(false);
     setIsUploading(true);
@@ -246,7 +246,7 @@ export function ChatAttachmentMenu({
           );
           imported.push(attachmentFromSource(source));
         } catch (error) {
-          failures.push(`${file.name}: ${error instanceof Error ? error.message : "上传失败"}`);
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "Upload failed"}`);
         }
       }
       if (imported.length) {
@@ -272,7 +272,7 @@ export function ChatAttachmentMenu({
   function dataUrlToBlob(dataUrl: string) {
     const separatorIndex = dataUrl.indexOf(",");
     if (!dataUrl.startsWith("data:") || separatorIndex < 0) {
-      throw new Error("手写内容不是有效的本地图像数据");
+      throw new Error("Handwriting is not valid local image data");
     }
     const metadata = dataUrl.slice(5, separatorIndex).split(";");
     const mimeType = metadata[0] || "application/octet-stream";
@@ -293,7 +293,7 @@ export function ChatAttachmentMenu({
       }
       return importedCount > 0;
     } catch (error) {
-      onError(error instanceof Error ? error.message : "手写内容添加失败");
+      onError(error instanceof Error ? error.message : "Failed to add handwritten content");
       return false;
     }
   }
@@ -304,7 +304,7 @@ export function ChatAttachmentMenu({
           <div
             ref={menuRef}
             role="menu"
-            aria-label="添加内容"
+            aria-label="Add content"
             style={menuPosition ?? { left: 0, top: 0, visibility: "hidden" }}
             className="fixed z-[100] w-48 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl"
           >
@@ -315,7 +315,8 @@ export function ChatAttachmentMenu({
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
             >
               <ImagePlus className="h-4 w-4 text-gray-500" />
-              添加图片
+
+              add picture
             </button>
             <button
               type="button"
@@ -324,7 +325,8 @@ export function ChatAttachmentMenu({
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
             >
               <FilePlus2 className="h-4 w-4 text-gray-500" />
-              添加文件
+
+              Add files
             </button>
             {showInkBoard ? (
               <button
@@ -338,7 +340,8 @@ export function ChatAttachmentMenu({
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
               >
                 <PenLine className="h-4 w-4 text-gray-500" />
-                展开手写板
+
+                Expand tablet
               </button>
             ) : null}
           </div>,
@@ -393,7 +396,7 @@ export function ChatAttachmentMenu({
             setOpen(!open);
           }}
           disabled={disabled || isUploading}
-          aria-label={isUploading ? "正在添加附件" : "添加附件"}
+          aria-label={isUploading ? "Adding attachment" : "Add attachment"}
           aria-expanded={open || inkBoardOpen}
           aria-haspopup="menu"
           className={clsx(
@@ -401,7 +404,7 @@ export function ChatAttachmentMenu({
             triggerText ? "w-auto gap-1.5 rounded-lg px-1.5" : "w-8 rounded-full",
             (open || inkBoardOpen) && "bg-gray-100 text-black"
           )}
-          title={isUploading ? `上传中 ${uploadProgress ?? 0}%` : "添加附件"}
+          title={isUploading ? `Uploading ${uploadProgress ?? 0}%` : "Add attachment"}
         >
           {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
           {triggerText ? <span className="text-[11px] font-medium">{triggerText}</span> : null}

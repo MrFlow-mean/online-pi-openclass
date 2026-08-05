@@ -245,8 +245,8 @@ function HistoryGraphRowItem({
           </button>
           <button
             type="button"
-            aria-label="引用到输入框"
-            title="引用到输入框"
+            aria-label="Reference to input box"
+            title="Reference to input box"
             onClick={(event) => {
               event.stopPropagation();
               onReferenceHistoryNode(historyNodeSelection(activeLesson, row.commit));
@@ -260,8 +260,8 @@ function HistoryGraphRowItem({
               href={historyNodeCommunityShareHref(activeLesson, row.commit)}
               target="_blank"
               rel="noreferrer"
-              aria-label="分享到社区"
-              title="分享到社区"
+              aria-label="Share to community"
+              title="Share to community"
               onClick={(event) => event.stopPropagation()}
               className="inline-flex h-6 w-6 items-center justify-center rounded border border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100"
             >
@@ -309,7 +309,7 @@ function HistoryGraphRowItem({
         </div>
         {row.nodeKind === "merge" && row.commit.parent_ids[1] ? (
           <details className="mt-2 rounded border border-violet-100 bg-violet-50/60 px-2 py-1.5 text-[10px] text-violet-700">
-            <summary className="cursor-pointer font-semibold">展开来源分支谱系</summary>
+            <summary className="cursor-pointer font-semibold">Expand source branch pedigree</summary>
             <p className="mt-1 font-mono">
               {String(row.commit.metadata?.merge_source_branch ?? "source")} · {row.commit.parent_ids[1].slice(0, 10)}
             </p>
@@ -352,7 +352,7 @@ export function VersionControlPanel({
       <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">历史分支图</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Version history graph</p>
             <p className="mt-1 text-xs font-semibold text-gray-900">
               {activeLesson.history_graph.commits.length} nodes · {lanes.length} branches
             </p>
@@ -364,7 +364,7 @@ export function VersionControlPanel({
           <input
             value={newBranchName}
             onChange={(event) => onNewBranchNameChange(event.target.value)}
-            placeholder="新分支名"
+            placeholder="new branch name"
             className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-black"
           />
           <button
@@ -373,7 +373,8 @@ export function VersionControlPanel({
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#1a1a1a] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white"
           >
             <GitBranch className="h-3.5 w-3.5" />
-            开分支
+
+            branch
           </button>
         </div>
 
@@ -400,7 +401,8 @@ export function VersionControlPanel({
                   className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700 hover:bg-violet-100"
                 >
                   <GitMerge className="h-3 w-3" />
-                  合并到当前分支
+
+                  Merge into current branch
                 </button>
               ) : null}
             </div>
@@ -409,7 +411,7 @@ export function VersionControlPanel({
       </section>
 
       <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Revision history</p>
         <div className="mt-4 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
           {rows.map((row) => (
             <HistoryGraphRowItem
@@ -437,7 +439,7 @@ export function VersionControlPanel({
       >
         <div className="flex items-center gap-2">
           <GitBranch className="h-4 w-4 text-gray-400" />
-          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前上下文</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">current context</p>
         </div>
         {previewCommit ? (
           <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
@@ -449,9 +451,9 @@ export function VersionControlPanel({
           <>
             <p className="mt-4 text-sm leading-7 text-gray-700">{activeBoardTask.question_or_topic}</p>
             <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
-              <p className="text-xs font-semibold text-gray-900">{activeBoardTask.requested_action ?? "暂无待执行任务"}</p>
+              <p className="text-xs font-semibold text-gray-900">{activeBoardTask.requested_action ?? "No tasks to be performed yet"}</p>
               <p className="mt-2 text-[11px] leading-6 text-gray-500">
-                {activeBoardTask.target_hint || "执行完成后，当前清单会归档到历史并清空。"}
+                {activeBoardTask.target_hint || "After execution is completed, the current list will be archived to history and cleared."}
               </p>
             </div>
           </>
@@ -460,7 +462,7 @@ export function VersionControlPanel({
             <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">教学类型</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Teaching type</p>
                   <p className="mt-1 text-sm font-semibold text-gray-900">{learningRequirementDisplay.teachingType}</p>
                 </div>
                 <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
@@ -471,17 +473,18 @@ export function VersionControlPanel({
                 <p className="mt-3 text-[11px] leading-6 text-gray-500">{learningRequirementDisplay.summary}</p>
               ) : null}
             </div>
-            <FactorList title="核心因素" factors={learningRequirementDisplay.coreFactors} />
-            <FactorList title="辅助因素" factors={learningRequirementDisplay.auxiliaryFactors} />
+            <FactorList title="core factors" factors={learningRequirementDisplay.coreFactors} />
+            <FactorList title="auxiliary factors" factors={learningRequirementDisplay.auxiliaryFactors} />
           </>
         ) : (
           <p className="mt-4 text-sm leading-7 text-gray-700">
-            等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。
+
+            Waiting for the next task requirement: describe the location to be operated, the type of action, and how you want it to be explained or written.
           </p>
         )}
         {latestBoardDecision ? (
           <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前讲义决策</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Current board decisions</p>
             <p className="mt-2 text-xs font-semibold text-gray-900">{latestBoardDecision.action}</p>
             <p className="mt-2 text-[11px] leading-6 text-gray-500">{latestBoardDecision.reason}</p>
           </div>

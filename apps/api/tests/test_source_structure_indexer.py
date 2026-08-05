@@ -432,6 +432,46 @@ def test_layout_toc_keeps_chapters_and_sections_at_distinct_levels() -> None:
     assert pdf_toc_parser._printed_page_number("⋯（12）") == 12
 
 
+def test_leading_pdf_toc_probe_extends_past_the_first_probe_batch(monkeypatch) -> None:
+    calls: list[tuple[int, int]] = []
+
+    def fake_extract(_path: Path, *, page_start: int, page_end: int):
+        calls.append((page_start, page_end))
+        last_page = 8 if page_start == 1 else 13
+        nodes = [
+            node
+            for page_no in range(6, last_page + 1)
+            for node in (
+                pdf_toc_parser.PdfTocNode(
+                    title=f"第{page_no}章 主题",
+                    printed_page=page_no,
+                    toc_page=page_no,
+                    level=1,
+                ),
+                pdf_toc_parser.PdfTocNode(
+                    title=f"第一节 子题 {page_no}",
+                    printed_page=page_no,
+                    toc_page=page_no,
+                    level=2,
+                ),
+            )
+        ]
+        return pdf_toc_parser.PdfTocExtraction(nodes=nodes)
+
+    monkeypatch.setattr(pdf_toc_parser, "extract_pdf_toc_from_range", fake_extract)
+
+    extraction = pdf_toc_parser.probe_pdf_toc_from_leading_pages(
+        Path("source.pdf"),
+        page_count=100,
+        max_probe_pages=48,
+    )
+
+    assert calls == [(1, 8), (6, 29)]
+    assert extraction.toc_page_start == 6
+    assert extraction.toc_page_end == 13
+    assert sorted({node.toc_page for node in extraction.nodes}) == list(range(6, 14))
+
+
 def test_layout_toc_nodes_are_verified_by_printed_page_offset() -> None:
     nodes = [
         pdf_toc_parser.PdfTocNode(title="第一章 总论", printed_page=1, toc_page=2, level=1),

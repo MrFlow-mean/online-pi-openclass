@@ -49,15 +49,15 @@ function truncateText(value: string, maxLength = 160) {
 function humanizeCommitLabel(label: string) {
   switch (label) {
     case "Initial document draft":
-      return "初始课程草稿";
+      return "Initial course draft";
     case "Manual document edit":
-      return "手动编辑已保存";
+      return "Manual edit saved";
     case "Restore snapshot":
-      return "恢复历史快照";
+      return "Restore historical snapshot";
     case "AI document edit":
-      return "AI 更新文稿";
+      return "AI update document";
     case "Cloned lesson snapshot":
-      return "克隆课程快照";
+      return "Clone course snapshot";
     default:
       return label;
   }
@@ -67,14 +67,14 @@ function humanizeCommitMessage(commit: CommitRecord, lesson: Lesson) {
   const normalized = commit.message.trim();
 
   if (!normalized) {
-    return `已更新《${lesson.title}》的课程内容，可以继续进入工作台完善讲义与分支。`;
+    return `Updated course content for “${lesson.title}”. Continue in Studio to refine the lesson and branches.`;
   }
 
   const rewritten = normalized
-    .replace(/^Generated starter rich document for\s+/i, "已生成课程初稿：")
-    .replace(/^Saved Word-like rich document changes from the editor$/i, "已保存 Word 风格编辑器中的文稿改动。")
-    .replace(/^Saved rich document changes from the editor$/i, "已保存编辑器中的文稿改动。")
-    .replace(/^Cloned lesson into an isolated workspace$/i, "已复制到独立工作区，方便继续扩展。");
+    .replace(/^Generated starter rich document for\s+/i, "The first draft of the course has been generated:")
+    .replace(/^Saved Word-like rich document changes from the editor$/i, "Document changes in the Word style editor have been saved.")
+    .replace(/^Saved rich document changes from the editor$/i, "Document changes in the editor have been saved.")
+    .replace(/^Cloned lesson into an isolated workspace$/i, "Copied to a separate workspace for continued expansion.");
 
   return truncateText(rewritten, 180);
 }
@@ -112,7 +112,7 @@ export function buildRecentFeed(lessons: RecentFeedLesson[]) {
         id: `commit:${commit.id}`,
         timestamp: commit.created_at,
         title: humanizeCommitLabel(commit.label),
-        detailTitle: commit.branch_name === "main" ? "主分支 main" : `分支 ${commit.branch_name}`,
+        detailTitle: commit.branch_name === "main" ? "main branch" : `Branch ${commit.branch_name}`,
         detailBody: humanizeCommitMessage(commit, lesson),
         lessonTitle: lesson.title,
       };
@@ -144,8 +144,8 @@ export function buildRecentFeed(lessons: RecentFeedLesson[]) {
       group.isStandalone && lessonCount === 1
         ? Array.from(group.lessonTitles)[0] ?? group.packageTitle
         : group.packageTitle;
-    const lessonPill = lessonCount > 1 ? `${lessonCount} 个课程页` : latestUpdate.lessonTitle ?? "课程内容";
-    const tagPill = Array.from(group.tags)[0] ?? "课程内容";
+    const lessonPill = lessonCount > 1 ? `${lessonCount} course pages` : latestUpdate.lessonTitle ?? "Course content";
+    const tagPill = Array.from(group.tags)[0] ?? "Course content";
 
     return [
       {
@@ -153,11 +153,11 @@ export function buildRecentFeed(lessons: RecentFeedLesson[]) {
         kind: "commit",
         timestamp: latestUpdate.timestamp,
         actor,
-        action: commitCount > 1 ? `有 ${commitCount} 次课程文稿更新` : "更新了课程文稿",
-        title: commitCount > 1 ? "近期更新记录" : latestUpdate.title,
+        action: commitCount > 1 ? `${commitCount} course document updates` : "Updated course documentation",
+        title: commitCount > 1 ? "Recent update history" : latestUpdate.title,
         detailTitle: latestUpdate.detailTitle,
         detailBody: latestUpdate.detailBody,
-        pills: [group.packageTitle, lessonPill, tagPill, `${commitCount} 次提交`],
+        pills: [group.packageTitle, lessonPill, tagPill, `${commitCount} commits`],
         lessonId: group.lessonIdsByUpdateId.get(latestUpdate.id),
         updates,
       } satisfies RecentFeedItem,

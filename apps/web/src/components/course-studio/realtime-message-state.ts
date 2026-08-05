@@ -23,7 +23,7 @@ export function applyRealtimeTranscriptUpdate(
             ...message,
             content: update.text,
             status,
-            statusLabel: status === "pending" ? message.statusLabel ?? "正在实时回复" : undefined,
+            statusLabel: status === "pending" ? message.statusLabel ?? "Replying in real time" : undefined,
           }
         : message
     );

@@ -428,6 +428,114 @@ def test_model_turn_gate_runs_without_workspace_or_selection_content(
     assert "broad topic" in str(routing_payload)
 
 
+@pytest.mark.parametrize(
+    ("learning_flow", "expected_board_action", "expected_post_action"),
+    [
+        ("teach", "start", "auto_explain"),
+        ("generate_only", "start", "stop_after_generation"),
+    ],
+)
+def test_empty_board_source_learning_flow_overrides_transport_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+    learning_flow: str,
+    expected_board_action: str,
+    expected_post_action: str,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    lesson.board_document = build_document(
+        title=lesson.board_document.title,
+        document_id=lesson.board_document.id,
+        content_text="",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    workspace = turn_gate_store.load_for_user(TEST_USER_ID)
+    workspace.packages[0].lessons[0] = lesson
+    turn_gate_store.save_for_user(TEST_USER_ID, workspace)
+    request = ChatRequest(
+        message="为我讲解这个章节" if learning_flow == "teach" else "只生成板书，不要讲解",
+        source_query_scope=SourceQueryScope(
+            mode="chapter",
+            refs=[
+                {
+                    "source_ingestion_id": "source_1",
+                    "source_content_hash": "a" * 64,
+                    "source_chapter_id": "chapter_1",
+                }
+            ],
+        ),
+    )
+    gate = _gate_result(request, "learning_need", "unused")
+    gate = chat_turn_gate.TurnGateResult(
+        envelope=gate.envelope,
+        decision=gate.decision.model_copy(update={"learning_flow": learning_flow}),
+        trace=gate.trace,
+        adapter=gate.adapter,
+        activity=gate.activity,
+    )
+    captured: list[ChatRequest] = []
+
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", lambda *_args, **_kwargs: gate)
+    monkeypatch.setattr(
+        chat_service,
+        "_should_use_bounded_existing_board_workflow",
+        lambda *_args, **_kwargs: False,
+    )
+
+    def fake_legacy_workflow(selected_lesson_id, downstream_request, **_kwargs):
+        captured.append(downstream_request)
+        return _workflow_response(selected_lesson_id)
+
+    monkeypatch.setattr(chat_service, "process_codex_chat_on_lesson", fake_legacy_workflow)
+    monkeypatch.setattr(
+        chat_service,
+        "maybe_generate_lesson_title",
+        lambda _lesson_id, _request, response, *, user_id: response,
+    )
+
+    chat_service.process_chat_on_lesson(lesson.id, request, user_id=TEST_USER_ID)
+
+    assert captured[0].board_generation_action == expected_board_action
+    assert captured[0].post_generation_action == expected_post_action
+
+
+def test_empty_board_source_scope_does_not_generate_for_non_learning_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_gate_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(turn_gate_store)
+    lesson.board_document = build_document(
+        title=lesson.board_document.title,
+        document_id=lesson.board_document.id,
+        content_text="",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    workspace = turn_gate_store.load_for_user(TEST_USER_ID)
+    workspace.packages[0].lessons[0] = lesson
+    turn_gate_store.save_for_user(TEST_USER_ID, workspace)
+    request = ChatRequest(
+        message="你好",
+        source_query_scope=SourceQueryScope(mode="all_ready_sources"),
+    )
+    gate = _gate_result(request, "ordinary_chat", "你好，有什么我可以帮你的？")
+    monkeypatch.setattr(chat_service, "evaluate_turn_gate", lambda *_args, **_kwargs: gate)
+    monkeypatch.setattr(
+        chat_service,
+        "process_codex_chat_on_lesson",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ordinary chat must not enter board generation")
+        ),
+    )
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        request,
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.chatbot_message == "你好，有什么我可以帮你的？"
+
+
 def test_text_realtime_and_codex_live_share_one_transport_neutral_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

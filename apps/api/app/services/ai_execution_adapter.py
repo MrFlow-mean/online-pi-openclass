@@ -310,12 +310,24 @@ class TextExecutionResult:
 
 
 @dataclass(frozen=True)
+class BoardGenerationSourceScope:
+    source_ingestion_id: str
+    source_content_hash: str
+    source_chapter_id: str = ""
+    source_title: str = ""
+    chapter_title: str = ""
+    physical_page_start: int | None = None
+    physical_page_end: int | None = None
+
+
+@dataclass(frozen=True)
 class BoardGenerationExecutionRequest:
     requirement: LearningRequirementSheet
     teaching_plan: str
     content_extent: BoardContentExtent = "article"
     image_inputs: list[str] = field(default_factory=list)
     visual_manifest: list[dict[str, Any]] = field(default_factory=list)
+    source_scope: BoardGenerationSourceScope | None = None
 
 
 class BoardGenerationExecutionResult(Protocol):
@@ -327,6 +339,8 @@ class BoardGenerationExecutionResult(Protocol):
 
 class AIExecutionAdapter(Protocol):
     """Provider-neutral execution boundary for OpenClass AI roles."""
+
+    supports_source_visual_tools: bool
 
     def parse_structured(
         self,
@@ -422,6 +436,7 @@ class CodexAIExecutionAdapter:
         self.service_tier = service_tier
         self._board_runner = board_runner
         self._image_analysis_runner = image_analysis_runner
+        self.supports_source_visual_tools = image_analysis_runner is not None
 
     def parse_structured(
         self,
@@ -531,6 +546,11 @@ verified editable table or single-direction linear flow whose essential content 
 the manifest, recreate it as editable Markdown and then place its `recreation_marker` once on a
 standalone line. Otherwise place its `marker` once on a standalone line after the paragraph that
 introduces it. Never write both markers for one item and never invent missing visual details.
+
+When `source_scope` is present, it identifies the authenticated PDF chapter range inspected by the
+Board Agent. The manifest contains only visuals already registered as useful for teaching. Place
+them near the knowledge they explain; if a precise position is uncertain, leave the marker for the
+backend to append under "本章教学图表". Never infer a server file path from the opaque source id.
 """.strip()
 
 PI_BOARD_GENERATION_INSTRUCTIONS = """
@@ -547,6 +567,11 @@ verified editable table or single-direction linear flow whose essential content 
 the manifest, recreate it as editable Markdown and then place its `recreation_marker` once on a
 standalone line. Otherwise place its `marker` once on a standalone line after the paragraph that
 introduces it. Never write both markers for one item and never invent missing visual details.
+
+When `source_scope` is present, it identifies the authenticated PDF chapter range inspected by the
+Board Agent. The manifest contains only visuals already registered as useful for teaching. Place
+them near the knowledge they explain; if a precise position is uncertain, leave the marker for the
+backend to append under "本章教学图表". Never infer a server file path from the opaque source id.
 """.strip()
 
 
@@ -555,6 +580,7 @@ class DeepSeekAIExecutionAdapter:
 
     runtime_label = "DeepSeek"
     turn_id_prefix = "deepseekturn"
+    supports_source_visual_tools = False
 
     def __init__(self, *, model: str) -> None:
         self.model = model
@@ -602,6 +628,9 @@ class DeepSeekAIExecutionAdapter:
                         "teaching_plan": request.teaching_plan,
                         "content_extent": request.content_extent,
                         "visual_manifest": request.visual_manifest,
+                        "source_scope": (
+                            request.source_scope.__dict__ if request.source_scope else None
+                        ),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -672,6 +701,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         access_method: str | None = None,
         reasoning_effort: str | None = None,
         service_tier: str | None = None,
+        supports_source_visual_tools: bool = False,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.provider = provider
@@ -679,6 +709,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         self.access_method = access_method
         self.reasoning_effort = reasoning_effort
         self.service_tier = service_tier
+        self.supports_source_visual_tools = supports_source_visual_tools
         self._client = PiTextClient(
             owner_user_id=owner_user_id,
             provider=provider,
@@ -716,9 +747,9 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
                 schema=schema,
                 image_inputs=image_inputs,
                 on_activity=on_activity,
-                running_label="OpenClass 正在处理当前步骤",
-                completed_label="OpenClass 已完成当前步骤",
-                failed_label="OpenClass 当前步骤未完成",
+                running_label="OpenClass is processing the current step",
+                completed_label="OpenClass completed the current step",
+                failed_label="OpenClass did not complete the current step",
                 activity_kind="structured_model_step",
             ),
             summarize=lambda result: {
@@ -874,6 +905,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
                 "content_extent",
                 "image_inputs",
                 "visual_manifest",
+                "source_scope",
             ],
             "learning_requirement_fields": sorted(
                 request.requirement.model_dump(mode="json")
@@ -882,6 +914,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
             "teaching_plan_sha256": _audit_digest(request.teaching_plan),
             "image_count": len(request.image_inputs),
             "visual_manifest_item_count": len(request.visual_manifest),
+            "has_source_scope": request.source_scope is not None,
         }
         return _run_audited_role(
             logical_role="board_writer",
@@ -922,6 +955,9 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
                         "teaching_plan": request.teaching_plan,
                         "content_extent": request.content_extent,
                         "visual_manifest": request.visual_manifest,
+                        "source_scope": (
+                            request.source_scope.__dict__ if request.source_scope else None
+                        ),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -973,6 +1009,7 @@ class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
         model: str,
         reasoning_effort: str | None = None,
         service_tier: str | None = None,
+        supports_source_visual_tools: bool = False,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.provider = "openai_codex"
@@ -980,6 +1017,7 @@ class CodexTextProxyAIExecutionAdapter(PiAIExecutionAdapter):
         self.access_method = "platform_credits"
         self.reasoning_effort = reasoning_effort
         self.service_tier = service_tier
+        self.supports_source_visual_tools = supports_source_visual_tools
         self._client = CodexTextProxyClient(
             owner_user_id=owner_user_id,
             model=model,
@@ -1001,6 +1039,7 @@ def build_ai_execution_adapter(
     owner_user_id: str,
     board_runner: BoardRunner | None = None,
     image_analysis_runner: ImageAnalysisRunner | None = None,
+    supports_source_visual_tools: bool = False,
 ) -> AIExecutionAdapter:
     del board_runner, image_analysis_runner
     if selection.provider not in {"openai_codex", "deepseek"}:
@@ -1027,6 +1066,7 @@ def build_ai_execution_adapter(
             model=selection.model,
             reasoning_effort=selection.reasoning_effort,
             service_tier=selection.service_tier,
+            supports_source_visual_tools=supports_source_visual_tools,
         )
     # Runtime selection is server-owned. Cached clients and stored records may
     # still carry agent_backend="codex", but no text task routes back to Codex.
@@ -1042,4 +1082,5 @@ def build_ai_execution_adapter(
         ),
         reasoning_effort=selection.reasoning_effort,
         service_tier=selection.service_tier,
+        supports_source_visual_tools=supports_source_visual_tools,
     )

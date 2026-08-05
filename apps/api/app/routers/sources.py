@@ -78,8 +78,8 @@ def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
 
 @router.get("/api/packages/{package_id}/sources", response_model=list[SourceIngestionRecord])
 def list_package_sources(package_id: str, user: UserView = Depends(current_user)) -> list[SourceIngestionRecord]:
-    workspace = workspace_state.load_workspace_for_user(user.id)
-    workspace_state.get_package(workspace, package_id)
+    if not workspace_state.get_course_store().package_belongs_to_user(user.id, package_id):
+        raise HTTPException(status_code=404, detail=f"Unknown course package {package_id}")
     return source_ingestion_service.list_sources(owner_user_id=user.id, package_id=package_id)
 
 
@@ -462,7 +462,8 @@ def rebuild_package_source_catalog(
         raise HTTPException(status_code=404, detail="Source not found.")
     if (
         source.metadata.get("source_processing_owner") == "open_notebook"
-        and source.metadata.get("catalog_pipeline") != "codex_directory_v1"
+        and source.metadata.get("catalog_pipeline")
+        not in {"codex_directory_v1", "agent_catalog_v2", "agent_catalog_v3"}
     ):
         raise HTTPException(
             status_code=409,
@@ -481,6 +482,65 @@ def rebuild_package_source_catalog(
     if rebuilt is None:
         raise HTTPException(status_code=404, detail="Source not found.")
     return source_structure_store.get_catalog_view(source=rebuilt)
+
+
+@router.post(
+    "/api/packages/{package_id}/sources/{source_id}/catalog/refine",
+    response_model=SourceCatalogView,
+)
+def refine_package_source_catalog(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceCatalogView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    try:
+        queued = source_ingestion_service.request_catalog_refine(
+            owner_user_id=user.id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+    except SourceIngestionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if queued is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    _invalidate_publication_for_source_change(owner_user_id=user.id, package_id=package_id)
+    source_ingestion_task_manager.submit(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    return source_structure_store.get_catalog_view(source=queued)
+
+
+@router.post(
+    "/api/packages/{package_id}/sources/{source_id}/catalog/pause",
+    response_model=SourceCatalogView,
+)
+def pause_package_source_catalog(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceCatalogView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    structure = source_structure_store.set_catalog_pause_requested(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+        requested=True,
+    )
+    if structure is None:
+        raise HTTPException(status_code=409, detail="No catalog snapshot is available to pause.")
+    return source_structure_store.get_catalog_view(source=source)
 
 
 @router.post("/api/packages/{package_id}/sources/{source_id}/structure/rebuild", response_model=SourceStructureView)

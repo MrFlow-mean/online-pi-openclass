@@ -337,7 +337,10 @@ class SourceStructureStore:
                 "structure_has_verified_toc": structure.has_verified_toc,
                 "structure_quality": structure.quality,
                 "structure_error": structure.error,
-                "structure_updated_at": structure.updated_at,
+                # The web cache treats this as the catalog identity. Ancillary
+                # writes (for example, on-demand visual caching) may advance the
+                # structure row without publishing a new catalog.
+                "structure_updated_at": structure.catalog_updated_at or structure.updated_at,
             }
         )
 
@@ -418,6 +421,32 @@ class SourceStructureStore:
         published: SourceStructure
         with self._lock:
             with self._connect() as conn:
+                expected_run_id = str(
+                    (run.metadata.get("active_catalog_run_id") if run is not None else "") or ""
+                ).strip()
+                if expected_run_id:
+                    source_row = conn.execute(
+                        """
+                        SELECT metadata_json FROM source_ingestions
+                        WHERE id = ? AND owner_user_id = ? AND package_id = ?
+                        """,
+                        (
+                            structure.source_ingestion_id,
+                            structure.owner_user_id,
+                            structure.package_id,
+                        ),
+                    ).fetchone()
+                    if source_row is None:
+                        raise RuntimeError("Source was removed before catalog publication.")
+                    try:
+                        source_metadata = json.loads(source_row["metadata_json"] or "{}")
+                    except (TypeError, ValueError):
+                        source_metadata = {}
+                    if source_metadata.get("active_catalog_run_id") != expected_run_id:
+                        raise RuntimeError("A newer catalog run superseded this publication.")
+                    expected_hash = str(source_metadata.get("content_hash") or "")
+                    if expected_hash and expected_hash != structure.source_content_hash:
+                        raise RuntimeError("Catalog publication source fingerprint changed.")
                 previous = conn.execute(
                     """
                     SELECT catalog_version
@@ -456,8 +485,11 @@ class SourceStructureStore:
                         "visual_index_version": 0,
                         "has_verified_toc": (
                             bool(published_chapters)
-                            if structure.metadata.get("catalog_task_contract")
-                            == "directory_pages_offset_tree_v1"
+                            if (
+                                structure.metadata.get("catalog_task_contract")
+                                == "directory_pages_offset_tree_v1"
+                                or structure.metadata.get("directory_status") == "complete"
+                            )
                             else any(
                                 chapter.mapping_status == "verified"
                                 for chapter in published_chapters
@@ -552,6 +584,172 @@ class SourceStructureStore:
                 visuals=visuals,
             ),
         )
+
+    def upsert_scoped_visuals(self, visuals: list[SourceVisualAsset]) -> None:
+        """Persist Board Agent-approved visuals without replacing the source catalog."""
+
+        if not visuals:
+            return
+        self.coordinator.run_write(
+            self.path,
+            lambda: self._upsert_scoped_visuals(visuals),
+        )
+
+    def _upsert_scoped_visuals(self, visuals: list[SourceVisualAsset]) -> None:
+        first = visuals[0]
+        if any(
+            visual.owner_user_id != first.owner_user_id
+            or visual.package_id != first.package_id
+            or visual.source_ingestion_id != first.source_ingestion_id
+            for visual in visuals
+        ):
+            raise ValueError("Scoped visuals must belong to one authenticated source.")
+        if any(
+            visual.anchor_status != "verified"
+            or not visual.metadata.get("source_range_verified")
+            for visual in visuals
+        ):
+            raise ValueError("Unverified scoped visuals cannot be persisted.")
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_visual_assets(
+                            id, owner_user_id, package_id, source_ingestion_id, structure_id,
+                            structure_version, chapter_id, kind, source_locator, page_start, page_end,
+                            paragraph_index, slide_no, sheet_name, bbox_json, before_chunk_id,
+                            after_chunk_id, caption, extracted_text, surrounding_text, anchor_status,
+                            mime_type, asset_path, storage_key, order_index, content_hash, position_hash,
+                            width, height, table_data_json, confidence, created_at, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            structure_id = excluded.structure_id,
+                            structure_version = excluded.structure_version,
+                            chapter_id = excluded.chapter_id,
+                            kind = excluded.kind,
+                            source_locator = excluded.source_locator,
+                            page_start = excluded.page_start,
+                            page_end = excluded.page_end,
+                            paragraph_index = excluded.paragraph_index,
+                            slide_no = excluded.slide_no,
+                            sheet_name = excluded.sheet_name,
+                            bbox_json = excluded.bbox_json,
+                            before_chunk_id = excluded.before_chunk_id,
+                            after_chunk_id = excluded.after_chunk_id,
+                            caption = excluded.caption,
+                            extracted_text = excluded.extracted_text,
+                            surrounding_text = excluded.surrounding_text,
+                            anchor_status = excluded.anchor_status,
+                            mime_type = excluded.mime_type,
+                            asset_path = excluded.asset_path,
+                            storage_key = excluded.storage_key,
+                            order_index = excluded.order_index,
+                            content_hash = excluded.content_hash,
+                            position_hash = excluded.position_hash,
+                            width = excluded.width,
+                            height = excluded.height,
+                            table_data_json = excluded.table_data_json,
+                            confidence = excluded.confidence,
+                            metadata_json = excluded.metadata_json
+                        """,
+                        [
+                            (
+                                visual.id, visual.owner_user_id, visual.package_id,
+                                visual.source_ingestion_id, visual.structure_id,
+                                visual.structure_version, visual.chapter_id, visual.kind,
+                                visual.source_locator, visual.page_start, visual.page_end,
+                                visual.paragraph_index, visual.slide_no, visual.sheet_name,
+                                _dumps(visual.bbox), visual.before_chunk_id,
+                                visual.after_chunk_id, visual.caption, visual.extracted_text,
+                                visual.surrounding_text, visual.anchor_status, visual.mime_type,
+                                visual.asset_path, visual.storage_key, visual.order_index,
+                                visual.content_hash, visual.position_hash, visual.width,
+                                visual.height, _dumps(visual.table_data), visual.confidence,
+                                visual.created_at, _dumps(visual.metadata),
+                            )
+                            for visual in visuals
+                        ],
+                    )
+                    conn.execute(
+                        """
+                        UPDATE source_structures
+                        SET visual_count = (
+                            SELECT COUNT(*) FROM source_visual_assets
+                            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                        ), visual_index_status = 'ready', visual_index_version = ?, updated_at = ?
+                        WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                        """,
+                        (
+                            first.owner_user_id, first.package_id, first.source_ingestion_id,
+                            first.structure_version, now_iso(), first.owner_user_id,
+                            first.package_id, first.source_ingestion_id,
+                        ),
+                    )
+
+    def scoped_visual_cache_complete(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_id: str,
+        scope_cache_key: str,
+    ) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT metadata_json FROM source_structures
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (owner_user_id, package_id, source_ingestion_id),
+                ).fetchone()
+        metadata = _loads(row["metadata_json"], {}) if row is not None else {}
+        return scope_cache_key in set(metadata.get("completed_visual_scope_keys") or [])
+
+    def mark_scoped_visual_cache_complete(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_id: str,
+        scope_cache_key: str,
+    ) -> None:
+        def write() -> None:
+            with self._lock:
+                with self._connect() as conn:
+                    with conn:
+                        row = conn.execute(
+                            """
+                            SELECT metadata_json FROM source_structures
+                            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                            """,
+                            (owner_user_id, package_id, source_ingestion_id),
+                        ).fetchone()
+                        if row is None:
+                            return
+                        metadata = dict(_loads(row["metadata_json"], {}))
+                        keys = [
+                            str(value)
+                            for value in metadata.get("completed_visual_scope_keys") or []
+                            if str(value) and str(value) != scope_cache_key
+                        ]
+                        metadata["completed_visual_scope_keys"] = [
+                            *keys[-127:],
+                            scope_cache_key,
+                        ]
+                        conn.execute(
+                            """
+                            UPDATE source_structures SET metadata_json = ?, updated_at = ?
+                            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                            """,
+                            (
+                                _dumps(metadata), now_iso(), owner_user_id,
+                                package_id, source_ingestion_id,
+                            ),
+                        )
+
+        self.coordinator.run_write(self.path, write)
 
     def _save_structure_bundle(
         self,
@@ -817,24 +1015,36 @@ class SourceStructureStore:
     def _record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
         warning = "资料目录重新建立失败，已保留上一次可用的目录。"
         warnings = list(dict.fromkeys([*structure.warnings, warning]))
+        metadata = dict(structure.metadata)
+        if metadata.get("catalog_pipeline") == "agent_catalog_v3":
+            metadata.update(
+                {
+                    "work_state": "paused",
+                    "can_refine": True,
+                    "auto_continuing": False,
+                    "background_refine_active": False,
+                    "stop_reason": "后台续建失败，上一版可引用目录已保留；可手动恢复后继续。",
+                }
+            )
         with self._lock:
             with self._connect() as conn:
                 with conn:
                     conn.execute(
                         """
                         UPDATE source_structures
-                        SET error = ?, warnings_json = ?
+                        SET error = ?, warnings_json = ?, metadata_json = ?
                         WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
                         """,
                         (
                             error,
                             _dumps(warnings),
+                            _dumps(metadata),
                             structure.owner_user_id,
                             structure.package_id,
                             structure.source_ingestion_id,
                         ),
                     )
-        return structure.model_copy(update={"error": error, "warnings": warnings})
+        return structure.model_copy(update={"error": error, "warnings": warnings, "metadata": metadata})
 
     def get_structure(self, *, owner_user_id: str, package_id: str, source_id: str) -> SourceStructure | None:
         with self._lock:
@@ -848,6 +1058,67 @@ class SourceStructureStore:
                     (owner_user_id, package_id, source_id),
                 ).fetchone()
         return self._structure_from_row(row) if row else None
+
+    def set_catalog_pause_requested(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        requested: bool,
+    ) -> SourceStructure | None:
+        def write() -> SourceStructure | None:
+            with self._lock:
+                with self._connect() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT * FROM source_structures
+                        WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                        """,
+                        (owner_user_id, package_id, source_id),
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    structure = self._structure_from_row(row)
+                    control_metadata = {
+                        "pause_requested": requested,
+                    }
+                    if not requested:
+                        control_metadata.update(
+                            {
+                                "work_state": "working",
+                                "can_refine": False,
+                                "stop_reason": "",
+                            }
+                        )
+                    updated = structure.model_copy(
+                        update={
+                            "metadata": {
+                                **structure.metadata,
+                                **control_metadata,
+                            },
+                            "updated_at": now_iso(),
+                        }
+                    )
+                    with conn:
+                        self._upsert_structure(conn, updated)
+                    return updated
+
+        return self.coordinator.run_write(self.path, write)
+
+    def catalog_pause_requested(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> bool:
+        structure = self.get_structure(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        return bool(structure and structure.metadata.get("pause_requested"))
 
     def get_catalog_view(self, *, source: SourceIngestionRecord) -> SourceCatalogView:
         batch = self.get_catalog_views(package_id=source.package_id, sources=[source])
@@ -958,6 +1229,24 @@ class SourceStructureStore:
             for chapter in chapters
         ]
         verified_count = sum(chapter.mapping_status == "verified" for chapter in catalog_chapters)
+        structure_metadata = structure.metadata if structure else {}
+        raw_payload = structure_metadata.get("agent_catalog_payload")
+        agent_payload = raw_payload if isinstance(raw_payload, dict) else {}
+        raw_regimes = agent_payload.get("pagination_regimes")
+        pagination_regimes = raw_regimes if isinstance(raw_regimes, list) else []
+        locator_sources = {
+            str(chapter.metadata.get("locator_source") or "")
+            for chapter in catalog_chapters
+            if str(chapter.metadata.get("locator_source") or "")
+        }
+        if locator_sources and locator_sources <= {"native_navigation"}:
+            locator_method = "native_navigation"
+        elif pagination_regimes:
+            locator_method = "exact_p_regimes"
+        elif locator_sources:
+            locator_method = "+".join(sorted(locator_sources))
+        else:
+            locator_method = ""
         return SourceCatalogView(
             source=SourceCatalogSourceSummary(
                 id=source.id,
@@ -985,6 +1274,78 @@ class SourceStructureStore:
                 str(structure.metadata.get("catalog_task_contract") or "")
                 if structure
                 else ""
+            ),
+            work_state=(
+                str(structure_metadata.get("work_state") or "satisfied")
+                if structure
+                else "satisfied"
+            ),
+            phase=str(structure_metadata.get("phase") or "terminal") if structure else "terminal",
+            directory_status=(
+                str(structure_metadata.get("directory_status") or "complete")
+                if structure
+                else "complete"
+            ),
+            index_status=(
+                str(
+                    structure_metadata.get("index_status")
+                    or ("complete" if verified_count == len(catalog_chapters) else "partial")
+                )
+                if structure
+                else "complete"
+            ),
+            summary=str(structure_metadata.get("summary") or "") if structure else "",
+            next_plan=str(structure_metadata.get("next_plan") or "") if structure else "",
+            stop_reason=str(structure_metadata.get("stop_reason") or "") if structure else "",
+            completion_reason=(
+                str(structure_metadata.get("completion_reason") or "") if structure else ""
+            ),
+            directory_gaps=(
+                [str(item) for item in structure_metadata.get("directory_gaps", [])]
+                if structure and isinstance(structure_metadata.get("directory_gaps"), list)
+                else []
+            ),
+            remaining_work=(
+                [item for item in structure_metadata.get("remaining_work", []) if isinstance(item, dict)]
+                if structure and isinstance(structure_metadata.get("remaining_work"), list)
+                else []
+            ),
+            remaining_work_count=(
+                len([item for item in structure_metadata.get("remaining_work", []) if isinstance(item, dict)])
+                if structure and isinstance(structure_metadata.get("remaining_work"), list)
+                else 0
+            ),
+            snapshot_reason=(
+                str(structure_metadata.get("snapshot_reason"))
+                if structure_metadata.get("snapshot_reason") in {
+                    "first_citable",
+                    "top_level_subtree",
+                    "batch",
+                    "budget_increment",
+                    "correction",
+                    "pause",
+                    "final",
+                }
+                else "budget_increment"
+            ),
+            background_refine_active=bool(
+                structure
+                and structure_metadata.get("work_state") in {"working", "partial"}
+                and not structure_metadata.get("pause_requested")
+            ),
+            pagination_regime_count=len(pagination_regimes),
+            unresolved_node_count=max(0, len(catalog_chapters) - verified_count),
+            locator_method=locator_method,
+            revision=catalog_version,
+            can_refine=(
+                bool(structure.metadata.get("can_refine", True))
+                if structure
+                else False
+            ),
+            recent_tool_activity=(
+                list(structure.metadata.get("recent_tool_activity") or [])[-20:]
+                if structure
+                else []
             ),
             chapter_count=len(catalog_chapters),
             verified_chapter_count=verified_count,
@@ -1104,6 +1465,28 @@ class SourceStructureStore:
         chapter_id: str | None = None,
         page_start: int | None = None,
         page_end: int | None = None,
+        scope_cache_key: str = "",
+    ) -> list[SourceVisualEvidence]:
+        return self._visual_evidence_for_scope(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_ingestion_id=source_ingestion_id,
+            chapter_id=chapter_id,
+            page_start=page_start,
+            page_end=page_end,
+            scope_cache_key=scope_cache_key,
+        )
+
+    def _visual_evidence_for_scope(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_id: str,
+        chapter_id: str | None = None,
+        page_start: int | None = None,
+        page_end: int | None = None,
+        scope_cache_key: str = "",
     ) -> list[SourceVisualEvidence]:
         with self._lock:
             with self._connect() as conn:
@@ -1121,6 +1504,10 @@ class SourceStructureStore:
             for asset in assets
             if asset.anchor_status == "verified"
             and (not chapter_id or asset.chapter_id == chapter_id)
+            and (
+                not scope_cache_key
+                or str(asset.metadata.get("scope_cache_key") or "") == scope_cache_key
+            )
             and _visual_in_page_range(asset, page_start=page_start, page_end=page_end)
         ]
         return [
@@ -1155,6 +1542,25 @@ class SourceStructureStore:
             )
             for asset in selected
         ]
+
+    def scoped_visual_evidence(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_id: str,
+        chapter_id: str,
+        scope_cache_key: str,
+    ) -> list[SourceVisualEvidence]:
+        """Read only assets frozen by the authenticated on-demand extractor."""
+
+        return self._visual_evidence_for_scope(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_ingestion_id=source_ingestion_id,
+            chapter_id=chapter_id,
+            scope_cache_key=scope_cache_key,
+        )
 
     def get_visual(
         self,

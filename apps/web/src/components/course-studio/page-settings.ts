@@ -21,15 +21,15 @@ export const PAGE_SIZE_OPTIONS = [
 ] as const;
 
 export const PAGE_MARGIN_OPTIONS = [
-  { value: "narrow", label: "窄", paddingX: 42, paddingY: 54 },
-  { value: "normal", label: "普通", paddingX: 56, paddingY: 68 },
-  { value: "wide", label: "宽", paddingX: 74, paddingY: 86 },
+  { value: "narrow", label: "narrow", paddingX: 42, paddingY: 54 },
+  { value: "normal", label: "ordinary", paddingX: 56, paddingY: 68 },
+  { value: "wide", label: "Width", paddingX: 74, paddingY: 86 },
 ] as const;
 
 export const PAGE_BACKGROUND_OPTIONS = [
-  { value: "plain", label: "纯白" },
-  { value: "warm", label: "暖白" },
-  { value: "grid", label: "网格纸" },
+  { value: "plain", label: "pure white" },
+  { value: "warm", label: "warm white" },
+  { value: "grid", label: "grid paper" },
 ] as const;
 
 export const PAGE_ZOOM_MIN = 50;

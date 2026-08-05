@@ -42,7 +42,7 @@ export function FollowingFeedContent() {
       .then(setCourses)
       .catch((loadError: unknown) => {
         if (!controller.signal.aborted) {
-          setError(loadError instanceof Error ? loadError.message : "暂时无法载入课程动态。");
+          setError(loadError instanceof Error ? loadError.message : "Course updates cannot be loaded at the moment.");
         }
       })
       .finally(() => {
@@ -59,7 +59,7 @@ export function FollowingFeedContent() {
       counts.set(course.owner_display_name, (counts.get(course.owner_display_name) ?? 0) + 1);
     });
     return Array.from(counts, ([name, count]) => ({ name, count })).sort(
-      (left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-CN"),
+      (left, right) => right.count - left.count || left.name.localeCompare(right.name, "en-US"),
     );
   }, [courses]);
   const normalizedQuery = query.trim().toLowerCase();
@@ -84,8 +84,8 @@ export function FollowingFeedContent() {
             <Activity className="h-4 w-4" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold">全部动态</span>
-            <span className="text-xs text-stone-400">{courses.length} 个真实项目</span>
+            <span className="block text-sm font-semibold">All updates</span>
+            <span className="text-xs text-stone-400">{courses.length}  real projects</span>
           </span>
         </button>
         <div className="mt-1 space-y-1">
@@ -116,10 +116,11 @@ export function FollowingFeedContent() {
           <div>
             <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
               <Activity className="h-5 w-5" />
-              {selectedCreator === "all" ? "课程动态" : selectedCreator}
+              {selectedCreator === "all" ? "Course dynamics" : selectedCreator}
             </h1>
             <p className="mt-2 text-sm leading-6 text-stone-500">
-              按真实公开课程的最近更新时间排列；下载后可在个人项目中编辑、保留历史并提交 PR 协作。
+
+              Sorted by the latest update time of real public courses; after downloading, you can edit, retain history and submit PR collaboration in your personal project.
             </p>
           </div>
           <div className="relative min-w-0 md:w-80">
@@ -127,7 +128,7 @@ export function FollowingFeedContent() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索作者、课程或主题"
+              placeholder="Search for authors, courses or topics"
               className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-4 text-sm outline-none focus:border-stone-950"
             />
           </div>
@@ -136,7 +137,8 @@ export function FollowingFeedContent() {
         {isLoading ? (
           <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-stone-200 py-16 text-sm text-stone-500">
             <LoaderCircle className="h-5 w-5 animate-spin" />
-            正在载入真实课程动态…
+
+            Loading real course updates...
           </div>
         ) : error ? (
           <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
@@ -148,13 +150,14 @@ export function FollowingFeedContent() {
               <PublicCourseDiscoveryCard
                 key={`${course.kind}:${course.id}`}
                 course={course}
-                badge="最近更新"
+                badge="Latest updates"
               />
             ))}
           </div>
         ) : (
           <div className="mt-6 rounded-xl border border-dashed border-stone-300 px-5 py-12 text-center text-sm text-stone-500">
-            没有找到匹配的公开课程动态。
+
+            No matching public course activity found.
           </div>
         )}
       </section>
@@ -172,14 +175,16 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100"
           >
             <ArrowLeft className="h-4 w-4" />
-            开放课堂
+
+            OpenClass
           </Link>
           <Link
             href="/"
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700"
           >
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            开放课堂
+
+            OpenClass
           </Link>
         </div>
       </header>
